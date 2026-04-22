@@ -3,12 +3,26 @@ package cli
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
+func writeConfig(t *testing.T, content string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	return p
+}
+
 func TestRun(t *testing.T) {
 	t.Parallel()
+
+	cfgPath := writeConfig(t, `github_token = "t"
+search = "s"`)
 
 	tests := []struct {
 		name    string
@@ -16,11 +30,12 @@ func TestRun(t *testing.T) {
 		wantOut string
 		wantErr bool
 	}{
-		{name: "default", args: nil, wantOut: "hello from kiroshi"},
+		{name: "default", args: []string{"-config", cfgPath}, wantOut: "kiroshi ready"},
 		{name: "version", args: []string{"-version"}, wantOut: "kiroshi"},
-		{name: "verbose", args: []string{"-verbose"}, wantOut: "hello from kiroshi"},
+		{name: "verbose", args: []string{"-verbose", "-config", cfgPath}, wantOut: "kiroshi ready"},
 		{name: "help", args: []string{"-h"}},
 		{name: "unknown flag", args: []string{"-nope"}, wantErr: true},
+		{name: "missing config file", args: []string{"-config", filepath.Join(t.TempDir(), "nope.toml")}, wantErr: true},
 	}
 
 	for _, tt := range tests {
@@ -46,11 +61,14 @@ func TestRun(t *testing.T) {
 func TestRun_CancelledContext(t *testing.T) {
 	t.Parallel()
 
+	cfgPath := writeConfig(t, `github_token = "t"
+search = "s"`)
+
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	var stdout, stderr bytes.Buffer
-	err := Run(ctx, nil, &stdout, &stderr)
+	err := Run(ctx, []string{"-config", cfgPath}, &stdout, &stderr)
 	if err == nil {
 		t.Fatal("expected error on cancelled context, got nil")
 	}

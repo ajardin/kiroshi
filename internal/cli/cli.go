@@ -9,13 +9,15 @@ import (
 	"io"
 	"log/slog"
 
+	"github.com/ajardin/kiroshi/internal/config"
 	"github.com/ajardin/kiroshi/internal/version"
 )
 
 // Run parses args and executes the kiroshi CLI, writing user-facing output to
-// stdout and diagnostics to stderr. It returns an error when parsing fails or
-// when the underlying command fails; a cancelled ctx surfaces as a wrapped
-// context error so callers can distinguish clean shutdowns.
+// stdout and diagnostics to stderr. It returns an error when parsing,
+// configuration loading or the underlying command fails; a cancelled ctx
+// surfaces as a wrapped context error so callers can distinguish clean
+// shutdowns.
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("kiroshi", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -23,9 +25,11 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	var (
 		showVersion bool
 		verbose     bool
+		configPath  string
 	)
 	fs.BoolVar(&showVersion, "version", false, "print version and exit")
 	fs.BoolVar(&verbose, "verbose", false, "enable verbose logging")
+	fs.StringVar(&configPath, "config", "", "path to config file (default: $XDG_CONFIG_HOME/kiroshi/config.toml)")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -47,17 +51,22 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 	logger := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level}))
 
-	return run(ctx, logger, stdout)
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+
+	return run(ctx, logger, cfg, stdout)
 }
 
-func run(ctx context.Context, logger *slog.Logger, stdout io.Writer) error {
-	logger.DebugContext(ctx, "starting kiroshi")
+func run(ctx context.Context, logger *slog.Logger, cfg *config.Config, stdout io.Writer) error {
+	logger.DebugContext(ctx, "loaded config", "config", cfg)
 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
-	if _, err := fmt.Fprintln(stdout, "hello from kiroshi"); err != nil {
+	if _, err := fmt.Fprintf(stdout, "kiroshi ready: search=%q\n", cfg.Search); err != nil {
 		return fmt.Errorf("write output: %w", err)
 	}
 	return nil
