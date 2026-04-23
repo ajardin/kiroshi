@@ -3,10 +3,13 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ajardin/kiroshi/internal/gh"
 )
 
 func writeConfig(t *testing.T, content string) string {
@@ -18,24 +21,54 @@ func writeConfig(t *testing.T, content string) string {
 	return p
 }
 
+type fakeClient struct {
+	user gh.User
+	err  error
+}
+
+func (f fakeClient) AuthenticatedUser(context.Context) (gh.User, error) {
+	return f.user, f.err
+}
+
 func TestRun(t *testing.T) {
 	t.Parallel()
 
 	cfgPath := writeConfig(t, `github_token = "t"
-search = "s"`)
+search = "my-search"`)
 
 	tests := []struct {
 		name    string
 		args    []string
+		client  gh.UserFetcher
 		wantOut string
 		wantErr bool
 	}{
-		{name: "default", args: []string{"-config", cfgPath}, wantOut: "kiroshi ready"},
-		{name: "version", args: []string{"-version"}, wantOut: "kiroshi"},
-		{name: "verbose", args: []string{"-verbose", "-config", cfgPath}, wantOut: "kiroshi ready"},
+		{
+			name:    "default prints greeting with login and search",
+			args:    []string{"-config", cfgPath},
+			client:  fakeClient{user: gh.User{Login: "alexandrejardin"}},
+			wantOut: `kiroshi ready as @alexandrejardin (search="my-search")`,
+		},
+		{
+			name:    "verbose does not change stdout content",
+			args:    []string{"-verbose", "-config", cfgPath},
+			client:  fakeClient{user: gh.User{Login: "alexandrejardin"}},
+			wantOut: "kiroshi ready as @alexandrejardin",
+		},
+		{
+			name:    "version skips github call",
+			args:    []string{"-version"},
+			wantOut: "kiroshi",
+		},
 		{name: "help", args: []string{"-h"}},
 		{name: "unknown flag", args: []string{"-nope"}, wantErr: true},
 		{name: "missing config file", args: []string{"-config", filepath.Join(t.TempDir(), "nope.toml")}, wantErr: true},
+		{
+			name:    "github auth failure is wrapped",
+			args:    []string{"-config", cfgPath},
+			client:  fakeClient{err: gh.ErrInvalidToken},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -43,7 +76,11 @@ search = "s"`)
 			t.Parallel()
 
 			var stdout, stderr bytes.Buffer
-			err := Run(t.Context(), tt.args, &stdout, &stderr)
+			var opts []Option
+			if tt.client != nil {
+				opts = append(opts, WithGitHubClient(tt.client))
+			}
+			err := Run(t.Context(), tt.args, &stdout, &stderr, opts...)
 
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("Run() err = %v, wantErr = %v (stderr=%q)", err, tt.wantErr, stderr.String())
@@ -58,6 +95,23 @@ search = "s"`)
 	}
 }
 
+func TestRun_GitHubErrorPreservesInvalidToken(t *testing.T) {
+	t.Parallel()
+
+	cfgPath := writeConfig(t, `github_token = "t"
+search = "s"`)
+
+	var stdout, stderr bytes.Buffer
+	err := Run(t.Context(), []string{"-config", cfgPath}, &stdout, &stderr,
+		WithGitHubClient(fakeClient{err: gh.ErrInvalidToken}))
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, gh.ErrInvalidToken) {
+		t.Errorf("err = %v, want errors.Is(gh.ErrInvalidToken)", err)
+	}
+}
+
 func TestRun_CancelledContext(t *testing.T) {
 	t.Parallel()
 
@@ -68,7 +122,8 @@ search = "s"`)
 	cancel()
 
 	var stdout, stderr bytes.Buffer
-	err := Run(ctx, []string{"-config", cfgPath}, &stdout, &stderr)
+	err := Run(ctx, []string{"-config", cfgPath}, &stdout, &stderr,
+		WithGitHubClient(fakeClient{err: context.Canceled}))
 	if err == nil {
 		t.Fatal("expected error on cancelled context, got nil")
 	}
