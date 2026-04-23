@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ajardin/kiroshi/internal/gh"
+	"github.com/ajardin/kiroshi/internal/tui"
 )
 
 func writeConfig(t *testing.T, content string) string {
@@ -22,12 +24,18 @@ func writeConfig(t *testing.T, content string) string {
 }
 
 type fakeClient struct {
-	user gh.User
-	err  error
+	user      gh.User
+	err       error
+	prs       []gh.PullRequest
+	searchErr error
 }
 
 func (f fakeClient) AuthenticatedUser(context.Context) (gh.User, error) {
 	return f.user, f.err
+}
+
+func (f fakeClient) SearchPullRequests(context.Context, string) ([]gh.PullRequest, error) {
+	return f.prs, f.searchErr
 }
 
 func TestRun(t *testing.T) {
@@ -39,21 +47,21 @@ search = "my-search"`)
 	tests := []struct {
 		name    string
 		args    []string
-		client  gh.UserFetcher
+		client  gh.API
 		wantOut string
 		wantErr bool
 	}{
 		{
 			name:    "default prints greeting with login and search",
 			args:    []string{"-config", cfgPath},
-			client:  fakeClient{user: gh.User{Login: "alexandrejardin"}},
-			wantOut: `kiroshi ready as @alexandrejardin (search="my-search")`,
+			client:  fakeClient{user: gh.User{Login: "ajardin"}},
+			wantOut: `kiroshi ready as @ajardin (search="my-search")`,
 		},
 		{
 			name:    "verbose does not change stdout content",
 			args:    []string{"-verbose", "-config", cfgPath},
-			client:  fakeClient{user: gh.User{Login: "alexandrejardin"}},
-			wantOut: "kiroshi ready as @alexandrejardin",
+			client:  fakeClient{user: gh.User{Login: "ajardin"}},
+			wantOut: "kiroshi ready as @ajardin",
 		},
 		{
 			name:    "version skips github call",
@@ -67,6 +75,35 @@ search = "my-search"`)
 			name:    "github auth failure is wrapped",
 			args:    []string{"-config", cfgPath},
 			client:  fakeClient{err: gh.ErrInvalidToken},
+			wantErr: true,
+		},
+		{
+			name: "lists matching pull requests",
+			args: []string{"-no-tui", "-config", cfgPath},
+			client: fakeClient{
+				user: gh.User{Login: "ajardin"},
+				prs: []gh.PullRequest{{
+					Owner:     "ajardin",
+					Repo:      "kiroshi",
+					Number:    42,
+					Title:     "Add PR search",
+					Author:    "alice",
+					URL:       "https://github.com/ajardin/kiroshi/pull/42",
+					UpdatedAt: time.Date(2026, 4, 20, 0, 0, 0, 0, time.UTC),
+				}},
+			},
+			wantOut: "[ajardin/kiroshi#42] Add PR search",
+		},
+		{
+			name:    "no matching pull requests",
+			args:    []string{"-config", cfgPath},
+			client:  fakeClient{user: gh.User{Login: "ajardin"}},
+			wantOut: "No pull requests match the search.",
+		},
+		{
+			name:    "search failure is wrapped",
+			args:    []string{"-config", cfgPath},
+			client:  fakeClient{user: gh.User{Login: "ajardin"}, searchErr: errors.New("boom")},
 			wantErr: true,
 		},
 	}
@@ -109,6 +146,104 @@ search = "s"`)
 	}
 	if !errors.Is(err, gh.ErrInvalidToken) {
 		t.Errorf("err = %v, want errors.Is(gh.ErrInvalidToken)", err)
+	}
+}
+
+func TestRun_TUIRunnerInvokedWithPRs(t *testing.T) {
+	t.Parallel()
+
+	cfgPath := writeConfig(t, `github_token = "t"
+search = "s"`)
+
+	prs := []gh.PullRequest{{
+		Owner: "ajardin", Repo: "kiroshi", Number: 1,
+		Title: "first", Author: "alice",
+		URL:       "https://github.com/ajardin/kiroshi/pull/1",
+		UpdatedAt: time.Date(2026, 4, 20, 0, 0, 0, 0, time.UTC),
+	}}
+
+	var called bool
+	runner := func(_ tui.Model) error {
+		called = true
+		return nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	err := Run(t.Context(), []string{"-config", cfgPath}, &stdout, &stderr,
+		WithGitHubClient(fakeClient{user: gh.User{Login: "u"}, prs: prs}),
+		WithTUIRunner(runner),
+	)
+	if err != nil {
+		t.Fatalf("unexpected err: %v (stderr=%q)", err, stderr.String())
+	}
+	if !called {
+		t.Error("TUI runner was not invoked")
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("stdout should be empty when TUI runs, got %q", stdout.String())
+	}
+}
+
+func TestRun_TUISkippedWhenNoPRs(t *testing.T) {
+	t.Parallel()
+
+	cfgPath := writeConfig(t, `github_token = "t"
+search = "s"`)
+
+	var called bool
+	runner := func(_ tui.Model) error {
+		called = true
+		return nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	err := Run(t.Context(), []string{"-config", cfgPath}, &stdout, &stderr,
+		WithGitHubClient(fakeClient{user: gh.User{Login: "u"}}),
+		WithTUIRunner(runner),
+	)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if called {
+		t.Error("TUI runner should not be invoked when there are zero PRs")
+	}
+	if !strings.Contains(stdout.String(), "No pull requests match the search.") {
+		t.Errorf("stdout = %q, want plain-text fallback", stdout.String())
+	}
+}
+
+func TestRun_NoTUIFlagForcesTextOutput(t *testing.T) {
+	t.Parallel()
+
+	cfgPath := writeConfig(t, `github_token = "t"
+search = "s"`)
+
+	prs := []gh.PullRequest{{
+		Owner: "ajardin", Repo: "kiroshi", Number: 1,
+		Title: "first", Author: "alice",
+		URL:       "https://github.com/ajardin/kiroshi/pull/1",
+		UpdatedAt: time.Date(2026, 4, 20, 0, 0, 0, 0, time.UTC),
+	}}
+
+	var called bool
+	runner := func(_ tui.Model) error {
+		called = true
+		return nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	err := Run(t.Context(), []string{"-no-tui", "-config", cfgPath}, &stdout, &stderr,
+		WithGitHubClient(fakeClient{user: gh.User{Login: "u"}, prs: prs}),
+		WithTUIRunner(runner),
+	)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if called {
+		t.Error("-no-tui must bypass the TUI runner")
+	}
+	if !strings.Contains(stdout.String(), "[ajardin/kiroshi#1] first") {
+		t.Errorf("stdout = %q, want text rendering", stdout.String())
 	}
 }
 
