@@ -1,0 +1,67 @@
+package gh
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+)
+
+// BenchmarkSearchPullRequests_Enrichment measures end-to-end search +
+// enrichment throughput against a mocked GitHub that injects a 5ms
+// latency on each REST call to approximate real network round-trips.
+// Useful as a baseline before changing enrichConcurrency or adding a new
+// per-PR enricher (e.g. the upcoming Jira lookup): if a change adds an
+// extra REST call per PR, ns/op should roughly grow by latency/concurrency
+// × PR count and nothing else.
+func BenchmarkSearchPullRequests_Enrichment(b *testing.B) {
+	const (
+		prCount = 50
+		latency = 5 * time.Millisecond
+		owner   = "ajardin"
+		repo    = "bench"
+	)
+
+	body := multiSearchBody(prCount, owner, repo)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/search/issues" {
+			_, _ = w.Write([]byte(body))
+			return
+		}
+		time.Sleep(latency)
+		path := r.URL.Path
+		switch {
+		case strings.HasSuffix(path, "/requested_reviewers"):
+			fmt.Fprint(w, `{"users":[],"teams":[]}`)
+		case strings.HasSuffix(path, "/reviews"):
+			fmt.Fprint(w, `[]`)
+		case strings.HasSuffix(path, "/check-runs"):
+			fmt.Fprint(w, `{"total_count":0,"check_runs":[]}`)
+		case strings.Contains(path, "/pulls/"):
+			num := path[strings.LastIndex(path, "/")+1:]
+			fmt.Fprintf(w, `{"number":%s,"head":{"sha":"sha-%s"}}`, num, num)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	srv := httptest.NewServer(handler)
+	b.Cleanup(srv.Close)
+
+	c := newClient("bench-token", srv.URL+"/")
+	ctx := context.Background()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		prs, err := c.SearchPullRequests(ctx, "org:"+owner+" is:pr")
+		if err != nil {
+			b.Fatalf("SearchPullRequests: %v", err)
+		}
+		if len(prs) != prCount {
+			b.Fatalf("got %d PRs, want %d", len(prs), prCount)
+		}
+	}
+}
