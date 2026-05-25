@@ -14,7 +14,7 @@ LDFLAGS := -s -w \
 GO       ?= go
 GOFLAGS  ?=
 
-.PHONY: all build test cover lint fmt tidy run clean help
+.PHONY: all build test bench cover lint fmt tidy run clean help
 
 all: lint test build ## lint, test, build
 
@@ -24,6 +24,9 @@ build: ## compile the binary into ./bin
 
 test: ## run tests with race detector
 	$(GO) test -race -count=1 ./...
+
+bench: ## run benchmarks (no tests, with allocation stats)
+	$(GO) test -bench=. -run=^$$ -benchmem ./...
 
 cover: ## run tests with coverage report
 	$(GO) test -race -coverprofile=coverage.out -covermode=atomic ./...
