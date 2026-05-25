@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/ajardin/kiroshi/internal/gh"
 )
@@ -19,6 +20,7 @@ func samplePRs() []gh.PullRequest {
 			Title: "Add PR search", Author: "alice",
 			URL:       "https://github.com/ajardin/kiroshi/pull/42",
 			UpdatedAt: time.Date(2026, 4, 20, 0, 0, 0, 0, time.UTC),
+			Additions: 120, Deletions: 30,
 		},
 		{
 			Owner: "ajardin", Repo: "kiroshi", Number: 43,
@@ -258,6 +260,7 @@ func TestView_RendersHeaderCardsAndKeys(t *testing.T) {
 		"[j/k]", "[o]", "[r]", "[f]", "[?]", "[q]",
 		"github", "jira",
 		"Add PR search", "Add TUI",
+		"+120", "-30", // diff stats for PR #42
 	} {
 		if !strings.Contains(view, want) {
 			t.Errorf("view missing %q\nview=\n%s", want, view)
@@ -397,6 +400,30 @@ func TestBucketFor(t *testing.T) {
 				t.Errorf("bucketFor() = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestRenderDiff(t *testing.T) {
+	t.Parallel()
+	// Bare-bones styler: no background, no bold — we only care about the text
+	// produced. lipgloss.Style.Render with no attributes returns the input
+	// verbatim, so we can assert on the raw string.
+	styler := func(_ lipgloss.Color, _ bool) lipgloss.Style {
+		return lipgloss.NewStyle()
+	}
+	cases := []struct {
+		add, del int
+		want     string
+	}{
+		{0, 0, "—"},
+		{42, 0, "+42 -0"},
+		{0, 7, "+0 -7"},
+		{42, 7, "+42 -7"},
+	}
+	for _, c := range cases {
+		if got := renderDiff(c.add, c.del, styler); got != c.want {
+			t.Errorf("renderDiff(%d, %d) = %q, want %q", c.add, c.del, got, c.want)
+		}
 	}
 }
 

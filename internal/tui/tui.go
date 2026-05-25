@@ -634,7 +634,7 @@ func (m Model) renderRow(pr gh.PullRequest, selected bool) string {
 	line1Body := prefix + title
 
 	author := st(colDim, false).Render("@" + pr.Author)
-	diff := st(colMuted, false).Render("—")
+	diff := renderDiff(pr.Additions, pr.Deletions, st)
 	ticket := st(colMuted, false).Render("—")
 	ciText, ciColor := ciFragment(pr.CIState)
 	ci := st(ciColor, false).Render(ciText)
@@ -719,6 +719,22 @@ func keyHint(key, action string) string {
 }
 
 // --- helpers -------------------------------------------------------------
+
+// renderDiff renders the "+N -M" cell. styler is the row's st() closure so
+// the diff cell inherits the selected-row background fill. An all-zero diff
+// (e.g. rename-only PR) falls back to a muted em-dash; otherwise both sides
+// are always shown — including a "+0" or "-0" — so neighboring columns stay
+// aligned across rows. Green / red usage mirrors `git diff` and every diff
+// viewer users already know — this is the second documented exception to
+// the "red = errors only" palette rule (see CLAUDE.md).
+func renderDiff(additions, deletions int, styler func(lipgloss.Color, bool) lipgloss.Style) string {
+	if additions == 0 && deletions == 0 {
+		return styler(colMuted, false).Render("—")
+	}
+	plus := styler(colGreen, false).Render(fmt.Sprintf("+%d", additions))
+	minus := styler(colRed, false).Render(fmt.Sprintf("-%d", deletions))
+	return plus + styler(colMuted, false).Render(" ") + minus
+}
 
 // ciFragment returns the label and accent color for the CI cell of a row.
 // Pending is rendered in cyan (the project's "in progress elsewhere" hue);

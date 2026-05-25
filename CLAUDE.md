@@ -47,11 +47,20 @@ addition — accepted because "approved/ready" reads as green by universal
 convention (CI, GitHub merge button). Do not introduce a fourth chromatic
 accent without a discussion.
 
-The per-row CI cell reuses the same palette: green for passing, red for
-failing (the only place colRed leaves the reserved-for-errors bucket and
-shows up on a non-error row), **cyan for pending** (matches "in progress
-elsewhere" — yellow would collide semantically with "Waiting On You"),
-muted for "no CI". See `ciFragment` in `internal/tui/tui.go`.
+Two documented exceptions where colRed leaves its reserved-for-errors
+bucket and shows up on a non-error row:
+
+1. **CI cell** — green for passing, red for failing, **cyan for pending**
+   (matches "in progress elsewhere"; yellow would collide semantically with
+   "Waiting On You"), muted for "no CI". See `ciFragment` in
+   `internal/tui/tui.go`.
+2. **Diff cell** — `+N` in green and `-N` in red, like `git diff` and every
+   diff viewer users already know. Both sides are always shown (including
+   a `+0` or `-0`) so neighboring columns stay aligned across rows; an
+   all-zero diff falls back to a muted em-dash. See `renderDiff`.
+
+Both exceptions are deliberate concessions to universal conventions; do
+not extend the list without discussion.
 
 ### CI state aggregation (locked)
 
@@ -186,11 +195,16 @@ takes `bodyW := totalWidth - 2` to compensate. Don't undo that.
   extra REST calls per PR — serial today; parallelize if rescan latency
   becomes a problem.
 - **Phase 3 (current)**: enrich placeholder fields (CI, diff stats, Jira).
-  - CI ✅ shipped. `enrichCIState` calls `PullRequests.Get` for the head
-    SHA, then `Checks.ListCheckRunsForRef` and folds the runs through
-    `aggregateCheckRuns`. Two more REST calls per PR (four total with
-    Phase 2), still serial — same parallelization caveat applies.
-  - Diff stats: not started.
+  - CI ✅ shipped. `enrichCIState` reads `Checks.ListCheckRunsForRef`
+    against `pr.HeadSHA` and folds the runs through `aggregateCheckRuns`.
+  - Diff stats ✅ shipped. `enrichDetail` calls `PullRequests.Get` once and
+    fills `HeadSHA`, `Additions`, `Deletions` together — the head SHA is a
+    prerequisite for the Checks call, so this was the natural seam. No new
+    REST cost on top of CI; the row renders `+N -M` via `renderDiff`.
   - Jira ticket: not started.
+
+  Enrichment runs serially in this order per PR: `enrichReviewState` →
+  `enrichDetail` → `enrichCIState`. Four extra REST calls total. Parallelize
+  if rescan latency becomes a problem.
 - **Phase 4**: `?` help overlay (currently a no-op since the footer
   already shows the keys).

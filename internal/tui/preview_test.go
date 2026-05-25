@@ -22,22 +22,26 @@ func TestPreview(t *testing.T) {
 			Owner: "ajardin", Repo: "crm-core", Number: 2847, Title: "Refactor lead qualification pipeline",
 			Author: "sarah-dev", URL: "x", UpdatedAt: time.Now().Add(-14 * time.Minute),
 			RequestedReviewers: []string{"ajardin"}, CIState: gh.CIStatePending,
+			Additions: 348, Deletions: 127,
 		},
 		{
 			Owner: "ajardin", Repo: "agent-portal", Number: 1203, Title: "Add commission simulator widget",
 			Author: "mike-fr", URL: "x", UpdatedAt: time.Now().Add(-3 * time.Hour),
 			Approvals: []string{"ajardin"}, RequestedReviewers: []string{"lucas-be"},
-			CIState: gh.CIStateSuccess,
+			CIState:   gh.CIStateSuccess,
+			Additions: 612, Deletions: 14,
 		},
 		{
 			Owner: "ajardin", Repo: "listing-api", Number: 589, Title: "Migrate search to Meilisearch v1.8",
 			Author: "lucas-be", URL: "x", UpdatedAt: time.Now().Add(-26 * time.Hour),
 			Approvals: []string{"ajardin", "sarah-dev"}, CIState: gh.CIStateSuccess,
+			Additions: 1842, Deletions: 980,
 		},
 		{
 			Owner: "ajardin", Repo: "infra-terraform", Number: 144, Title: "Add staging replica for crm-core",
 			Author: "ops-team", URL: "x", UpdatedAt: time.Now().Add(-50 * time.Hour),
-			CIState: gh.CIStateFailure,
+			CIState:   gh.CIStateFailure,
+			Additions: 89, Deletions: 0,
 		},
 		{
 			Owner: "ajardin", Repo: "kiroshi", Number: 12, Title: "feat: add SQLite cache layer",

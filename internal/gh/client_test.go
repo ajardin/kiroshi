@@ -169,7 +169,7 @@ func TestClient_SearchPullRequests(t *testing.T) {
 					  {"user":{"login":"erin"},"state":"COMMENTED","submitted_at":"2026-04-20T13:00:00Z"}
 					]`)
 				case "/repos/ajardin/repo-a/pulls/123":
-					fmt.Fprint(w, `{"number":123,"head":{"sha":"deadbeefcafe"}}`)
+					fmt.Fprint(w, `{"number":123,"head":{"sha":"deadbeefcafe"},"additions":42,"deletions":7}`)
 				case "/repos/ajardin/repo-a/commits/deadbeefcafe/check-runs":
 					fmt.Fprint(w, `{
 					  "total_count": 2,
@@ -197,6 +197,8 @@ func TestClient_SearchPullRequests(t *testing.T) {
 				Commented:          []string{"dave", "erin"},
 				HeadSHA:            "deadbeefcafe",
 				CIState:            CIStateSuccess,
+				Additions:          42,
+				Deletions:          7,
 			},
 		},
 		{
@@ -270,6 +272,12 @@ func TestClient_SearchPullRequests(t *testing.T) {
 					}
 					if got.CIState != want.CIState {
 						t.Errorf("CIState = %q, want %q", got.CIState, want.CIState)
+					}
+					if got.Additions != want.Additions {
+						t.Errorf("Additions = %d, want %d", got.Additions, want.Additions)
+					}
+					if got.Deletions != want.Deletions {
+						t.Errorf("Deletions = %d, want %d", got.Deletions, want.Deletions)
 					}
 				}
 			}

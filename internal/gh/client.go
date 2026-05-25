@@ -55,7 +55,9 @@ const (
 // state entirely.
 //
 // HeadSHA is the SHA of the pull request's head commit; CIState is the
-// aggregated outcome of the check runs reported against it.
+// aggregated outcome of the check runs reported against it. Additions and
+// Deletions are the line counts reported by GitHub on PullRequests.Get
+// (the issues/search response doesn't include them).
 type PullRequest struct {
 	Owner              string
 	Repo               string
@@ -71,6 +73,8 @@ type PullRequest struct {
 	Commented          []string
 	HeadSHA            string
 	CIState            CIState
+	Additions          int
+	Deletions          int
 }
 
 // API is the subset of the GitHub API kiroshi consumes. It is declared as an
@@ -157,9 +161,10 @@ func (c *Client) AuthenticatedUser(ctx context.Context) (User, error) {
 // SearchPullRequests runs a GitHub issues/search query and returns only the
 // pull requests it resolves to. It follows pagination to completion; the
 // search API caps results at 1000 regardless. Each result is enriched with
-// requested reviewers, review state, and CI state (four additional REST
-// calls per PR — list reviewers, list reviews, pull request detail for the
-// head SHA, list check runs). A 401 is translated into ErrInvalidToken.
+// requested reviewers, review state, head-SHA + diff stats, and CI state
+// (four additional REST calls per PR — list reviewers, list reviews, pull
+// request detail, list check runs). A 401 is translated into
+// ErrInvalidToken.
 func (c *Client) SearchPullRequests(ctx context.Context, query string) ([]PullRequest, error) {
 	opts := &github.SearchOptions{ListOptions: github.ListOptions{PerPage: 100}}
 	var out []PullRequest
@@ -185,6 +190,9 @@ func (c *Client) SearchPullRequests(ctx context.Context, query string) ([]PullRe
 
 	for i := range out {
 		if err := c.enrichReviewState(ctx, &out[i]); err != nil {
+			return nil, err
+		}
+		if err := c.enrichDetail(ctx, &out[i]); err != nil {
 			return nil, err
 		}
 		if err := c.enrichCIState(ctx, &out[i]); err != nil {
@@ -303,12 +311,12 @@ func summarizeReviews(reviews []*github.PullRequestReview, author string) (appro
 	return
 }
 
-// enrichCIState fetches the pull request's head SHA, then aggregates the
-// check runs reported against that SHA into pr.CIState. The issues/search
-// response doesn't include the head SHA, so a PullRequests.Get is required
-// before we can ask the Checks API anything. Skipped silently when the PR
-// coordinates are incomplete.
-func (c *Client) enrichCIState(ctx context.Context, pr *PullRequest) error {
+// enrichDetail fetches the per-PR detail (PullRequests.Get) and populates
+// the fields that the issues/search response doesn't carry: head SHA, line
+// additions, line deletions. enrichCIState relies on pr.HeadSHA being set,
+// so this must run first. Skipped silently when the PR coordinates are
+// incomplete.
+func (c *Client) enrichDetail(ctx context.Context, pr *PullRequest) error {
 	if pr.Owner == "" || pr.Repo == "" || pr.Number == 0 {
 		return nil
 	}
@@ -320,11 +328,22 @@ func (c *Client) enrichCIState(ctx context.Context, pr *PullRequest) error {
 		}
 		return fmt.Errorf("fetch pull request %s/%s#%d: %w", pr.Owner, pr.Repo, pr.Number, err)
 	}
-	if detail == nil || detail.GetHead() == nil {
+	if detail == nil {
 		return nil
 	}
-	pr.HeadSHA = detail.GetHead().GetSHA()
-	if pr.HeadSHA == "" {
+	if head := detail.GetHead(); head != nil {
+		pr.HeadSHA = head.GetSHA()
+	}
+	pr.Additions = detail.GetAdditions()
+	pr.Deletions = detail.GetDeletions()
+	return nil
+}
+
+// enrichCIState aggregates the check runs reported against pr.HeadSHA into
+// pr.CIState. It is a no-op when HeadSHA is empty — enrichDetail must run
+// first to populate it.
+func (c *Client) enrichCIState(ctx context.Context, pr *PullRequest) error {
+	if pr.Owner == "" || pr.Repo == "" || pr.HeadSHA == "" {
 		return nil
 	}
 
