@@ -297,9 +297,6 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.filterMode = true
 		m.status = ""
 		return m, nil
-	case "?":
-		// Phase 1: keybindings are already visible in the footer.
-		return m, nil
 	}
 	return m, nil
 }
@@ -671,7 +668,6 @@ func (m Model) footerView() string {
 		keyHint("o", "open"),
 		keyHint("r", "rescan"),
 		keyHint("f", "filter"),
-		keyHint("?", "help"),
 		keyHint("q", "quit"),
 	}
 	sepStyle := lipgloss.NewStyle().Foreground(colMuted).Render(" · ")

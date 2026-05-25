@@ -66,7 +66,6 @@ automatically — TTY detection lives in `cli.isTerminal`.
 | o    | open selected PR in browser |
 | r    | rescan from GitHub      |
 | f    | filter the visible list |
-| ?    | help                    |
 | q    | quit                    |
 
 ## Development

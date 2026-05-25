@@ -211,5 +211,8 @@ takes `bodyW := totalWidth - 2` to compensate. Don't undo that.
   requests per token); raise it if you ever need to handle hundreds of PRs
   in one rescan. Error semantics are fail-fast — the first enricher error
   cancels the others and surfaces through the rescan status line.
-- **Phase 4**: `?` help overlay (currently a no-op since the footer
-  already shows the keys).
+- **Phase 4**: `?` help overlay. Not started. The footer used to
+  advertise `?` as a key hint with a no-op handler; both were removed
+  to avoid promising a shortcut that does nothing. When Phase 4 lands,
+  add the hint back to `footerView` and wire the handler in
+  `handleListKey`.

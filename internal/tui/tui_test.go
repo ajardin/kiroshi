@@ -257,7 +257,7 @@ func TestView_RendersHeaderCardsAndKeys(t *testing.T) {
 		"KIROSHI", "v0.0.1", "@ajardin",
 		"WAITING ON YOU", "WAITING ON OTHERS", "READY TO MERGE", "IN FLIGHT",
 		"ALL PULL REQUESTS",
-		"[j/k]", "[o]", "[r]", "[f]", "[?]", "[q]",
+		"[j/k]", "[o]", "[r]", "[f]", "[q]",
 		"github", "jira",
 		"Add PR search", "Add TUI",
 		"+120", "-30", // diff stats for PR #42

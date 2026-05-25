@@ -8,7 +8,9 @@
       "Bash(rtk make *)",
       "Bash(rtk proxy *)",
       "Bash(rtk git *)",
-      "Bash(rtk grep *)"
+      "Bash(rtk grep *)",
+      "WebFetch(domain:github.com)",
+      "Bash(rtk curl *)"
     ]
   }
 }
