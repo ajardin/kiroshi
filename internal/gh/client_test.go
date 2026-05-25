@@ -285,6 +285,145 @@ func TestClient_SearchPullRequests(t *testing.T) {
 	}
 }
 
+// multiSearchBody builds a search/issues response with n PRs at owner/repo.
+// PR numbers are 1..n.
+func multiSearchBody(n int, owner, repo string) string {
+	items := make([]string, 0, n)
+	for i := 1; i <= n; i++ {
+		items = append(items, fmt.Sprintf(`{
+			"number":%d,"title":"PR %d","user":{"login":"alice"},
+			"html_url":"https://github.com/%s/%s/pull/%d",
+			"repository_url":"https://api.github.com/repos/%s/%s",
+			"updated_at":"2026-04-20T10:00:00Z",
+			"pull_request":{"url":"https://api.github.com/repos/%s/%s/pulls/%d"}
+		}`, i, i, owner, repo, i, owner, repo, owner, repo, i))
+	}
+	return fmt.Sprintf(`{"total_count":%d,"items":[%s]}`, n, strings.Join(items, ","))
+}
+
+// defaultEnrichmentHandler answers the common enrichment endpoints with
+// successful, empty payloads. Pull-request detail responses synthesize a
+// per-PR head SHA "sha-{N}" so tests can verify ordering without
+// cross-pollution. Use this as the fallback in tests that want to inject
+// delays or failures for a specific subset of paths.
+func defaultEnrichmentHandler(t *testing.T) http.HandlerFunc {
+	t.Helper()
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		switch {
+		case strings.HasSuffix(path, "/requested_reviewers"):
+			fmt.Fprint(w, `{"users":[],"teams":[]}`)
+		case strings.HasSuffix(path, "/reviews"):
+			fmt.Fprint(w, `[]`)
+		case strings.HasSuffix(path, "/check-runs"):
+			fmt.Fprint(w, `{"total_count":0,"check_runs":[]}`)
+		case strings.Contains(path, "/pulls/"):
+			num := path[strings.LastIndex(path, "/")+1:]
+			fmt.Fprintf(w, `{"number":%s,"head":{"sha":"sha-%s"}}`, num, num)
+		default:
+			t.Errorf("unexpected path %q", path)
+			http.NotFound(w, r)
+		}
+	}
+}
+
+func TestClient_SearchPullRequests_EnrichesConcurrently(t *testing.T) {
+	t.Parallel()
+
+	const enrichDelay = 50 * time.Millisecond
+	fallback := defaultEnrichmentHandler(t)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/search/issues" {
+			fmt.Fprint(w, multiSearchBody(3, "ajardin", "repo-x"))
+			return
+		}
+		time.Sleep(enrichDelay)
+		fallback(w, r)
+	})
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	c := newClient("test-token", srv.URL+"/")
+	start := time.Now()
+	prs, err := c.SearchPullRequests(t.Context(), "org:ajardin is:pr")
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(prs) != 3 {
+		t.Fatalf("got %d PRs, want 3", len(prs))
+	}
+	// Serial wall-clock would be 3 PRs × 4 endpoints × 50ms = 600ms.
+	// Parallel pool of 8 should complete in ≈200ms; bound at 400ms so the
+	// test still tolerates a slow CI host without going flaky.
+	if elapsed > 400*time.Millisecond {
+		t.Errorf("elapsed = %v, want <400ms (enrichment serialized?)", elapsed)
+	}
+	for i, pr := range prs {
+		want := i + 1
+		if pr.Number != want {
+			t.Errorf("prs[%d].Number = %d, want %d", i, pr.Number, want)
+		}
+		wantSHA := fmt.Sprintf("sha-%d", want)
+		if pr.HeadSHA != wantSHA {
+			t.Errorf("prs[%d].HeadSHA = %q, want %q", i, pr.HeadSHA, wantSHA)
+		}
+	}
+}
+
+func TestClient_SearchPullRequests_PartialFailureCancels(t *testing.T) {
+	t.Parallel()
+
+	fallback := defaultEnrichmentHandler(t)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/search/issues":
+			fmt.Fprint(w, multiSearchBody(3, "ajardin", "repo-x"))
+		case "/repos/ajardin/repo-x/pulls/2":
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprint(w, `{"message":"boom"}`)
+		default:
+			fallback(w, r)
+		}
+	})
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	c := newClient("test-token", srv.URL+"/")
+	_, err := c.SearchPullRequests(t.Context(), "org:ajardin is:pr")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "fetch pull request") {
+		t.Errorf("err = %v, want substring %q", err, "fetch pull request")
+	}
+}
+
+func TestClient_SearchPullRequests_UnauthorizedDuringEnrichment(t *testing.T) {
+	t.Parallel()
+
+	fallback := defaultEnrichmentHandler(t)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/search/issues":
+			fmt.Fprint(w, multiSearchBody(3, "ajardin", "repo-x"))
+		case "/repos/ajardin/repo-x/pulls/2/reviews":
+			w.WriteHeader(http.StatusUnauthorized)
+			fmt.Fprint(w, `{"message":"bad credentials"}`)
+		default:
+			fallback(w, r)
+		}
+	})
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	c := newClient("test-token", srv.URL+"/")
+	_, err := c.SearchPullRequests(t.Context(), "org:ajardin is:pr")
+	if !errors.Is(err, ErrInvalidToken) {
+		t.Errorf("err = %v, want errors.Is(ErrInvalidToken)", err)
+	}
+}
+
 func TestAggregateCheckRuns(t *testing.T) {
 	t.Parallel()
 

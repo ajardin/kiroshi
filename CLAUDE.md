@@ -192,8 +192,7 @@ takes `bodyW := totalWidth - 2` to compensate. Don't undo that.
   `PullRequests.ListReviewers` (pending requested reviewers) and
   `PullRequests.ListReviews` (review history) for every PR in the search
   result, then summarizes per-reviewer state via `summarizeReviews`. Two
-  extra REST calls per PR — serial today; parallelize if rescan latency
-  becomes a problem.
+  extra REST calls per PR.
 - **Phase 3 (current)**: enrich placeholder fields (CI, diff stats, Jira).
   - CI ✅ shipped. `enrichCIState` reads `Checks.ListCheckRunsForRef`
     against `pr.HeadSHA` and folds the runs through `aggregateCheckRuns`.
@@ -203,8 +202,14 @@ takes `bodyW := totalWidth - 2` to compensate. Don't undo that.
     REST cost on top of CI; the row renders `+N -M` via `renderDiff`.
   - Jira ticket: not started.
 
-  Enrichment runs serially in this order per PR: `enrichReviewState` →
-  `enrichDetail` → `enrichCIState`. Four extra REST calls total. Parallelize
-  if rescan latency becomes a problem.
+  Per-PR enrichment runs in this order via `enrichPullRequest`:
+  `enrichReviewState` → `enrichDetail` → `enrichCIState` (the dependency is
+  real — CI needs the head SHA published by detail). Four extra REST calls
+  per PR. **Across PRs, enrichment is parallelized** through an
+  `errgroup` worker pool capped at `enrichConcurrency` (8). Eight is a
+  comfortable margin under GitHub's secondary rate limit (~100 concurrent
+  requests per token); raise it if you ever need to handle hundreds of PRs
+  in one rescan. Error semantics are fail-fast — the first enricher error
+  cancels the others and surfaces through the rescan status line.
 - **Phase 4**: `?` help overlay (currently a no-op since the footer
   already shows the keys).

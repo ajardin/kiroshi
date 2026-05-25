@@ -15,10 +15,17 @@ import (
 	"time"
 
 	"github.com/google/go-github/v80/github"
+	"golang.org/x/sync/errgroup"
 )
 
 // HTTPTimeout is the hard deadline applied to every GitHub request.
 const HTTPTimeout = 10 * time.Second
+
+// enrichConcurrency bounds the number of pull requests enriched in
+// parallel. GitHub's secondary rate limit kicks in around 100 concurrent
+// requests per token; 8 keeps comfortable headroom while fully
+// parallelising a typical dashboard.
+const enrichConcurrency = 8
 
 // User is the identity of the account backing a GitHub token.
 type User struct {
@@ -163,7 +170,9 @@ func (c *Client) AuthenticatedUser(ctx context.Context) (User, error) {
 // search API caps results at 1000 regardless. Each result is enriched with
 // requested reviewers, review state, head-SHA + diff stats, and CI state
 // (four additional REST calls per PR — list reviewers, list reviews, pull
-// request detail, list check runs). A 401 is translated into
+// request detail, list check runs). Enrichment runs in parallel across PRs
+// with a worker pool of enrichConcurrency; the order of the returned slice
+// matches the search response order regardless. A 401 is translated into
 // ErrInvalidToken.
 func (c *Client) SearchPullRequests(ctx context.Context, query string) ([]PullRequest, error) {
 	opts := &github.SearchOptions{ListOptions: github.ListOptions{PerPage: 100}}
@@ -188,18 +197,29 @@ func (c *Client) SearchPullRequests(ctx context.Context, query string) ([]PullRe
 		opts.Page = resp.NextPage
 	}
 
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(enrichConcurrency)
 	for i := range out {
-		if err := c.enrichReviewState(ctx, &out[i]); err != nil {
-			return nil, err
-		}
-		if err := c.enrichDetail(ctx, &out[i]); err != nil {
-			return nil, err
-		}
-		if err := c.enrichCIState(ctx, &out[i]); err != nil {
-			return nil, err
-		}
+		g.Go(func() error { return c.enrichPullRequest(gctx, &out[i]) })
+	}
+	if err := g.Wait(); err != nil {
+		return nil, err
 	}
 	return out, nil
+}
+
+// enrichPullRequest chains the three per-PR enrichers in dependency order:
+// review state and PR detail (head SHA + diff stats) before the CI state
+// call which consumes the SHA. Extracted so the worker pool in
+// SearchPullRequests has a single closure to call per PR.
+func (c *Client) enrichPullRequest(ctx context.Context, pr *PullRequest) error {
+	if err := c.enrichReviewState(ctx, pr); err != nil {
+		return err
+	}
+	if err := c.enrichDetail(ctx, pr); err != nil {
+		return err
+	}
+	return c.enrichCIState(ctx, pr)
 }
 
 func pullRequestFromIssue(iss *github.Issue) PullRequest {
