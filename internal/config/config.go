@@ -25,10 +25,15 @@ import (
 // in the config file; the value of this constant is not itself a credential.
 const envToken = "GITHUB_TOKEN" //nolint:gosec // G101: env var name, not a token
 
+// DefaultMinReviews is the fallback for the min_reviews field when the user
+// does not set it explicitly in the config file.
+const DefaultMinReviews = 2
+
 // Config is the runtime kiroshi configuration.
 type Config struct {
 	GitHubToken string
 	Search      string
+	MinReviews  int
 }
 
 // LogValue implements slog.LogValuer to prevent the token from leaking into
@@ -36,13 +41,17 @@ type Config struct {
 func (c *Config) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.String("search", c.Search),
+		slog.Int("min_reviews", c.MinReviews),
 		slog.String("github_token", "<redacted>"),
 	)
 }
 
+// fileConfig mirrors the TOML schema. MinReviews is a pointer so we can tell
+// "absent" (apply DefaultMinReviews) from "explicitly set to 0".
 type fileConfig struct {
 	GitHubToken string `toml:"github_token"`
 	Search      string `toml:"search"`
+	MinReviews  *int   `toml:"min_reviews"`
 }
 
 // Load reads the TOML configuration at path. When path is empty, the default
@@ -75,9 +84,15 @@ func Load(path string) (*Config, error) {
 		token = strings.TrimSpace(fc.GitHubToken)
 	}
 
+	minReviews := DefaultMinReviews
+	if fc.MinReviews != nil {
+		minReviews = *fc.MinReviews
+	}
+
 	cfg := &Config{
 		GitHubToken: token,
 		Search:      strings.TrimSpace(fc.Search),
+		MinReviews:  minReviews,
 	}
 	if err := cfg.validate(); err != nil {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
@@ -109,6 +124,9 @@ func (c *Config) validate() error {
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("missing required field(s): %s", strings.Join(missing, "; "))
+	}
+	if c.MinReviews < 0 {
+		return fmt.Errorf("min_reviews must be >= 0, got %d", c.MinReviews)
 	}
 	return nil
 }

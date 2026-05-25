@@ -132,6 +132,61 @@ search = "  s  "`)
 			t.Errorf("not trimmed: token=%q search=%q", cfg.GitHubToken, cfg.Search)
 		}
 	})
+
+	t.Run("min_reviews defaults when absent", func(t *testing.T) {
+		p := writeConfig(t, `github_token = "t"
+search = "s"`)
+
+		cfg, err := Load(p)
+		if err != nil {
+			t.Fatalf("Load() err = %v", err)
+		}
+		if cfg.MinReviews != DefaultMinReviews {
+			t.Errorf("MinReviews = %d, want %d", cfg.MinReviews, DefaultMinReviews)
+		}
+	})
+
+	t.Run("min_reviews is overridable", func(t *testing.T) {
+		p := writeConfig(t, `github_token = "t"
+search = "s"
+min_reviews = 3`)
+
+		cfg, err := Load(p)
+		if err != nil {
+			t.Fatalf("Load() err = %v", err)
+		}
+		if cfg.MinReviews != 3 {
+			t.Errorf("MinReviews = %d, want 3", cfg.MinReviews)
+		}
+	})
+
+	t.Run("min_reviews = 0 is allowed", func(t *testing.T) {
+		p := writeConfig(t, `github_token = "t"
+search = "s"
+min_reviews = 0`)
+
+		cfg, err := Load(p)
+		if err != nil {
+			t.Fatalf("Load() err = %v", err)
+		}
+		if cfg.MinReviews != 0 {
+			t.Errorf("MinReviews = %d, want 0 (explicit)", cfg.MinReviews)
+		}
+	})
+
+	t.Run("min_reviews rejects negative", func(t *testing.T) {
+		p := writeConfig(t, `github_token = "t"
+search = "s"
+min_reviews = -1`)
+
+		_, err := Load(p)
+		if err == nil {
+			t.Fatal("expected error for negative min_reviews, got nil")
+		}
+		if !strings.Contains(err.Error(), "min_reviews") {
+			t.Errorf("expected min_reviews error, got %v", err)
+		}
+	})
 }
 
 func TestDefaultPath(t *testing.T) {

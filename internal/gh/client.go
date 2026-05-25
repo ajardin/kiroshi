@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -26,14 +27,31 @@ type User struct {
 
 // PullRequest is the subset of a GitHub pull request kiroshi cares about when
 // listing search results.
+//
+// RequestedReviewers contains the logins of users who are currently expected
+// to review and have not yet submitted any review (GitHub removes a user from
+// this list once they submit ANY review, including a COMMENTED one).
+//
+// Approvals and ChangesRequested hold unique reviewer logins (excluding the
+// author) whose latest decisive review state is the matching one. Commented
+// holds reviewers whose only review activity is COMMENTED — they were
+// implicitly requested at some point (otherwise GitHub wouldn't surface them
+// in the Reviewers panel) and haven't given a decisive answer; classifiers
+// treat them as still "on the hook". DISMISSED reviews reset the per-reviewer
+// state entirely.
 type PullRequest struct {
-	Owner     string
-	Repo      string
-	Number    int
-	Title     string
-	Author    string
-	URL       string
-	UpdatedAt time.Time
+	Owner              string
+	Repo               string
+	Number             int
+	Title              string
+	Author             string
+	URL                string
+	UpdatedAt          time.Time
+	IsDraft            bool
+	RequestedReviewers []string
+	Approvals          []string
+	ChangesRequested   []string
+	Commented          []string
 }
 
 // API is the subset of the GitHub API kiroshi consumes. It is declared as an
@@ -119,8 +137,9 @@ func (c *Client) AuthenticatedUser(ctx context.Context) (User, error) {
 
 // SearchPullRequests runs a GitHub issues/search query and returns only the
 // pull requests it resolves to. It follows pagination to completion; the
-// search API caps results at 1000 regardless. A 401 is translated into
-// ErrInvalidToken.
+// search API caps results at 1000 regardless. Each result is enriched with
+// requested reviewers and review state (two additional REST calls per PR).
+// A 401 is translated into ErrInvalidToken.
 func (c *Client) SearchPullRequests(ctx context.Context, query string) ([]PullRequest, error) {
 	opts := &github.SearchOptions{ListOptions: github.ListOptions{PerPage: 100}}
 	var out []PullRequest
@@ -143,6 +162,12 @@ func (c *Client) SearchPullRequests(ctx context.Context, query string) ([]PullRe
 		}
 		opts.Page = resp.NextPage
 	}
+
+	for i := range out {
+		if err := c.enrichReviewState(ctx, &out[i]); err != nil {
+			return nil, err
+		}
+	}
 	return out, nil
 }
 
@@ -156,7 +181,103 @@ func pullRequestFromIssue(iss *github.Issue) PullRequest {
 		Author:    iss.GetUser().GetLogin(),
 		URL:       iss.GetHTMLURL(),
 		UpdatedAt: iss.GetUpdatedAt().Time,
+		IsDraft:   iss.GetDraft(),
 	}
+}
+
+// enrichReviewState fetches the pending requested reviewers and the review
+// history of pr, populating pr.RequestedReviewers, pr.Approvals and
+// pr.ChangesRequested in place.
+func (c *Client) enrichReviewState(ctx context.Context, pr *PullRequest) error {
+	if pr.Owner == "" || pr.Repo == "" || pr.Number == 0 {
+		return nil
+	}
+
+	reviewers, resp, err := c.gh.PullRequests.ListReviewers(ctx, pr.Owner, pr.Repo, pr.Number, nil)
+	if err != nil {
+		if resp != nil && resp.StatusCode == http.StatusUnauthorized {
+			return ErrInvalidToken
+		}
+		return fmt.Errorf("list requested reviewers for %s/%s#%d: %w", pr.Owner, pr.Repo, pr.Number, err)
+	}
+	if reviewers != nil {
+		for _, u := range reviewers.Users {
+			if login := u.GetLogin(); login != "" {
+				pr.RequestedReviewers = append(pr.RequestedReviewers, login)
+			}
+		}
+		sort.Strings(pr.RequestedReviewers)
+	}
+
+	var reviews []*github.PullRequestReview
+	listOpts := &github.ListOptions{PerPage: 100}
+	for {
+		page, rresp, err := c.gh.PullRequests.ListReviews(ctx, pr.Owner, pr.Repo, pr.Number, listOpts)
+		if err != nil {
+			if rresp != nil && rresp.StatusCode == http.StatusUnauthorized {
+				return ErrInvalidToken
+			}
+			return fmt.Errorf("list reviews for %s/%s#%d: %w", pr.Owner, pr.Repo, pr.Number, err)
+		}
+		reviews = append(reviews, page...)
+		if rresp.NextPage == 0 {
+			break
+		}
+		listOpts.Page = rresp.NextPage
+	}
+	pr.Approvals, pr.ChangesRequested, pr.Commented = summarizeReviews(reviews, pr.Author)
+	return nil
+}
+
+// summarizeReviews collapses a chronological review log into the current state
+// per reviewer, then partitions reviewers (excluding the PR author) by their
+// latest review state. DISMISSED clears any prior state for that reviewer,
+// matching GitHub. A COMMENTED review only sets the state when no decisive
+// review (APPROVED / CHANGES_REQUESTED) has been recorded for that reviewer;
+// once a reviewer has given a decisive answer, a later comment doesn't
+// undo it.
+func summarizeReviews(reviews []*github.PullRequestReview, author string) (approvals, changesRequested, commented []string) {
+	sort.SliceStable(reviews, func(i, j int) bool {
+		return reviews[i].GetSubmittedAt().Before(reviews[j].GetSubmittedAt().Time)
+	})
+
+	state := map[string]string{}
+	for _, r := range reviews {
+		if r == nil {
+			continue
+		}
+		login := r.GetUser().GetLogin()
+		if login == "" || login == author {
+			continue
+		}
+		switch r.GetState() {
+		case "APPROVED":
+			state[login] = "APPROVED"
+		case "CHANGES_REQUESTED":
+			state[login] = "CHANGES_REQUESTED"
+		case "COMMENTED":
+			if _, has := state[login]; !has {
+				state[login] = "COMMENTED"
+			}
+		case "DISMISSED":
+			delete(state, login)
+		}
+	}
+
+	for login, s := range state {
+		switch s {
+		case "APPROVED":
+			approvals = append(approvals, login)
+		case "CHANGES_REQUESTED":
+			changesRequested = append(changesRequested, login)
+		case "COMMENTED":
+			commented = append(commented, login)
+		}
+	}
+	sort.Strings(approvals)
+	sort.Strings(changesRequested)
+	sort.Strings(commented)
+	return
 }
 
 // parseRepoFromAPIURL extracts owner and repo from a GitHub repository API

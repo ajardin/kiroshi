@@ -31,7 +31,7 @@ func samplePRs() []gh.PullRequest {
 
 func newTestModel(t *testing.T, open Opener, refresh Refresher) Model {
 	t.Helper()
-	m := NewModel(samplePRs(), "ajardin", "v0.0.1", time.Now(), open, refresh)
+	m := NewModel(samplePRs(), "ajardin", "v0.0.1", 2, time.Now(), open, refresh)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	return updated.(Model)
 }
@@ -268,7 +268,7 @@ func TestView_RendersHeaderCardsAndKeys(t *testing.T) {
 func TestView_TerminalTooSmall(t *testing.T) {
 	t.Parallel()
 
-	m := NewModel(samplePRs(), "u", "v", time.Now(), nil, nil)
+	m := NewModel(samplePRs(), "u", "v", 2, time.Now(), nil, nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 40, Height: 10})
 	if !strings.Contains(updated.(Model).View(), "Terminal too small") {
 		t.Errorf("expected too-small message, got\n%s", updated.(Model).View())
@@ -291,6 +291,112 @@ func TestHumanAgo(t *testing.T) {
 		if got := humanAgo(c.d); got != c.want {
 			t.Errorf("humanAgo(%v) = %q, want %q", c.d, got, c.want)
 		}
+	}
+}
+
+func TestBucketFor(t *testing.T) {
+	t.Parallel()
+
+	const viewer = "viewer"
+	cases := []struct {
+		name string
+		pr   gh.PullRequest
+		min  int
+		want Bucket
+	}{
+		{
+			name: "draft is always in-flight",
+			pr:   gh.PullRequest{Author: "alice", IsDraft: true, Approvals: []string{"a", "b"}},
+			min:  2,
+			want: BucketInFlight,
+		},
+		{
+			name: "ready when approvals meet threshold and no changes requested",
+			pr:   gh.PullRequest{Author: "alice", Approvals: []string{"a", "b"}},
+			min:  2,
+			want: BucketReadyToShip,
+		},
+		{
+			name: "ready overrides viewer-as-author",
+			pr:   gh.PullRequest{Author: viewer, Approvals: []string{"a", "b"}},
+			min:  2,
+			want: BucketReadyToShip,
+		},
+		{
+			name: "changes requested blocks ready even with enough approvals",
+			pr:   gh.PullRequest{Author: "alice", Approvals: []string{"a", "b"}, ChangesRequested: []string{"c"}},
+			min:  2,
+			want: BucketInFlight,
+		},
+		{
+			name: "waiting on viewer when requested and not enough approvals",
+			pr:   gh.PullRequest{Author: "alice", RequestedReviewers: []string{viewer, "bob"}},
+			min:  2,
+			want: BucketWaitingOnYou,
+		},
+		{
+			name: "commented-only viewer still waits on viewer",
+			pr:   gh.PullRequest{Author: "alice", Commented: []string{viewer}, Approvals: []string{"bob"}},
+			min:  2,
+			want: BucketWaitingOnYou,
+		},
+		{
+			name: "viewer approved (after commenting) is no longer waiting on viewer",
+			pr:   gh.PullRequest{Author: "alice", Approvals: []string{viewer}},
+			min:  2,
+			want: BucketInFlight,
+		},
+		{
+			name: "viewer requested changes is not waiting on viewer even if also requested",
+			pr:   gh.PullRequest{Author: "alice", ChangesRequested: []string{viewer}, RequestedReviewers: []string{viewer}},
+			min:  2,
+			want: BucketInFlight,
+		},
+		{
+			name: "viewer's own PR with one approval stays in flight (not waiting on viewer)",
+			pr:   gh.PullRequest{Author: viewer, Approvals: []string{"bob"}, RequestedReviewers: []string{"carol"}},
+			min:  2,
+			want: BucketInFlight,
+		},
+		{
+			name: "waiting on others when viewer approved and others still requested",
+			pr:   gh.PullRequest{Author: "alice", Approvals: []string{viewer}, RequestedReviewers: []string{"bob"}},
+			min:  2,
+			want: BucketWaitingOnOthers,
+		},
+		{
+			name: "waiting on others when viewer approved and others only commented",
+			pr:   gh.PullRequest{Author: "alice", Approvals: []string{viewer}, Commented: []string{"bob"}},
+			min:  2,
+			want: BucketWaitingOnOthers,
+		},
+		{
+			name: "viewer requested changes and others still pending → waiting on others",
+			pr:   gh.PullRequest{Author: "alice", ChangesRequested: []string{viewer}, RequestedReviewers: []string{"bob"}},
+			min:  2,
+			want: BucketWaitingOnOthers,
+		},
+		{
+			name: "no requested reviewers, viewer not involved → in flight",
+			pr:   gh.PullRequest{Author: "alice", Approvals: []string{"bob"}},
+			min:  2,
+			want: BucketInFlight,
+		},
+		{
+			name: "min=0 makes everything ready",
+			pr:   gh.PullRequest{Author: "alice"},
+			min:  0,
+			want: BucketReadyToShip,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := bucketFor(tc.pr, viewer, tc.min); got != tc.want {
+				t.Errorf("bucketFor() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

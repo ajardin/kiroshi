@@ -50,14 +50,50 @@ accent without a discussion.
 ### Bucket semantics (locked)
 
 ```
-WaitingOnYou    = viewer is a requested reviewer who hasn't reviewed yet
-WaitingOnOthers = viewer reviewed; at least one other reviewer hasn't
-ReadyToShip     = approved by viewer and all required reviewers
-InFlight        = total of all PRs in the search (default/unclassified)
+WaitingOnYou    = viewer is still expected to act (in requested_reviewers OR
+                  has only COMMENTED so far) AND hasn't given a decisive
+                  answer (no APPROVED / CHANGES_REQUESTED)
+WaitingOnOthers = viewer gave a decisive answer; someone else is still
+                  expected to act (requested_reviewers or COMMENTED-only)
+ReadyToShip     = >= min_reviews non-author approvals AND no outstanding
+                  CHANGES_REQUESTED
+InFlight        = anything else (drafts, viewer is the author with no
+                  decision pending elsewhere, etc.)
 ```
 
-Phase 1 puts every PR in `InFlight`; later phases will populate the
-review-state buckets. Card order in the header is fixed:
+Classification order matters and is encoded in `bucketFor`:
+
+1. Drafts → InFlight (never mergeable).
+2. ReadyToShip wins over the viewer-as-author check — a user wants to see
+   "ready to merge" on their own PRs, since they're the one who clicks
+   merge.
+3. CHANGES_REQUESTED from any non-author reviewer blocks ReadyToShip even
+   if there are enough approvals; this mirrors GitHub's own block-on-
+   changes behavior.
+4. WaitingOnYou comes before the viewer-as-author short-circuit so that
+   if you've been re-requested on your own PR (rare but possible), it
+   still shows up as on you.
+
+**Why Commented matters.** Submitting *any* review on GitHub (including a
+COMMENTED one) removes you from `requested_reviewers`. But you're still on
+the hook: GitHub's Reviewers panel keeps you listed with a re-request
+icon, and "you commented and never approved" is exactly the case the user
+hits most. So `summarizeReviews` produces a separate `Commented` list and
+`bucketFor` treats it as "still pending" for both the WaitingOnYou and
+WaitingOnOthers branches.
+
+The `min_reviews` threshold is project-configurable (`config.MinReviews`,
+default `2`). It only counts approving reviews from logins *other than the
+author*. Per reviewer:
+
+- APPROVED / CHANGES_REQUESTED win unconditionally (latest decisive
+  review sticks).
+- COMMENTED only fills the state if there's no decisive review yet for
+  that reviewer.
+- DISMISSED clears any prior state — a later COMMENTED can then surface
+  the reviewer in `Commented`.
+
+Card order in the header is fixed:
 `Waiting On You → Waiting On Others → Ready To Ship → In Flight`.
 
 ### Selected row treatment
@@ -65,7 +101,11 @@ review-state buckets. Card order in the header is fixed:
 The mockup's subtle highlight wasn't readable enough. The locked treatment:
 
 - Bar character: `┃` (selected) vs `│` (unselected)
-- Bar color: yellow when selected (overrides bucket accent)
+- Bar color: **always the bucket accent**, never overridden by the selection
+  state. An earlier version forced yellow on the selected bar; that
+  collided with the "Waiting On You" yellow card and made every selected
+  row look like it was waiting on the viewer. Selection is signalled by
+  the bar *character* + arrow + title weight + background fill instead.
 - Arrow: `▶` (selected) vs `▷` (unselected)
 - Title: `colBright` + bold (selected) vs `colText` regular
 - Background: full-width `colSelectedBg` fill on both rows of the entry
@@ -109,10 +149,13 @@ takes `bodyW := totalWidth - 2` to compensate. Don't undo that.
 
 ## Phase roadmap
 
-- **Phase 1 (current)**: visual shell. All PRs in `InFlight`. Placeholder
-  `—` for review state, CI status, diff stats, Jira links.
-- **Phase 2**: review-state classification — implement `bucketFor` against
-  the GitHub Reviews API to populate the three semantic buckets.
-- **Phase 3**: enrich placeholder fields (CI, diff stats, Jira).
+- **Phase 1**: visual shell. ✅ shipped.
+- **Phase 2**: review-state classification. ✅ shipped. `bucketFor` queries
+  `PullRequests.ListReviewers` (pending requested reviewers) and
+  `PullRequests.ListReviews` (review history) for every PR in the search
+  result, then summarizes per-reviewer state via `summarizeReviews`. Two
+  extra REST calls per PR — serial today; parallelize if rescan latency
+  becomes a problem.
+- **Phase 3 (current)**: enrich placeholder fields (CI, diff stats, Jira).
 - **Phase 4**: `?` help overlay (currently a no-op since the footer
   already shows the keys).

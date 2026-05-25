@@ -137,7 +137,7 @@ func run(ctx context.Context, logger *slog.Logger, client gh.API, cfg *config.Co
 		refresh := func(ctx context.Context) ([]gh.PullRequest, error) {
 			return client.SearchPullRequests(ctx, cfg.Search)
 		}
-		model := tui.NewModel(prs, user.Login, version.String(), time.Now(), tui.OpenURL, refresh)
+		model := tui.NewModel(prs, user.Login, version.String(), cfg.MinReviews, time.Now(), tui.OpenURL, refresh)
 		if err := runTUI(model); err != nil {
 			return fmt.Errorf("run tui: %w", err)
 		}

@@ -80,15 +80,77 @@ type Stats struct {
 	InFlight        int
 }
 
-func bucketFor(_ gh.PullRequest, _ string) Bucket {
-	// Phase 1: no review-state classification yet. Everything is in flight.
+// bucketFor classifies pr from the viewer's perspective. minReviews is the
+// number of non-author approving reviews required for ReadyToShip.
+//
+// Order matters: drafts are never ready; ReadyToShip wins over the viewer-as-
+// author check so the user sees "ready to merge" on their own PRs; the
+// changes-requested gate mirrors GitHub's block-on-changes behavior.
+//
+// "Expected to review" is broader than the current RequestedReviewers list:
+// once you submit a COMMENTED review, GitHub removes you from
+// requested_reviewers, but you're still on the hook to give a decisive
+// answer (and the Reviewers panel still surfaces you with a re-request
+// affordance). So Commented logins are treated as still-pending.
+func bucketFor(pr gh.PullRequest, viewer string, minReviews int) Bucket {
+	if pr.IsDraft {
+		return BucketInFlight
+	}
+	if len(pr.ChangesRequested) == 0 && len(pr.Approvals) >= minReviews {
+		return BucketReadyToShip
+	}
+
+	viewerApproved := containsLogin(pr.Approvals, viewer)
+	viewerRequestedChanges := containsLogin(pr.ChangesRequested, viewer)
+	viewerCommented := containsLogin(pr.Commented, viewer)
+	viewerRequested := containsLogin(pr.RequestedReviewers, viewer)
+
+	if (viewerRequested || viewerCommented) && !viewerApproved && !viewerRequestedChanges {
+		return BucketWaitingOnYou
+	}
+
+	if pr.Author == viewer {
+		return BucketInFlight
+	}
+
+	if viewerApproved || viewerRequestedChanges {
+		if othersStillPending(pr, viewer) {
+			return BucketWaitingOnOthers
+		}
+	}
 	return BucketInFlight
 }
 
-func computeStats(prs []gh.PullRequest, viewer string) Stats {
+// othersStillPending reports whether anyone other than the viewer is still
+// expected to act on the PR — either a current requested reviewer or a
+// COMMENTED reviewer who hasn't given a decisive answer.
+func othersStillPending(pr gh.PullRequest, viewer string) bool {
+	for _, l := range pr.RequestedReviewers {
+		if l != viewer {
+			return true
+		}
+	}
+	for _, l := range pr.Commented {
+		if l != viewer {
+			return true
+		}
+	}
+	return false
+}
+
+func containsLogin(logins []string, target string) bool {
+	for _, l := range logins {
+		if l == target {
+			return true
+		}
+	}
+	return false
+}
+
+func computeStats(prs []gh.PullRequest, viewer string, minReviews int) Stats {
 	s := Stats{InFlight: len(prs)}
 	for _, pr := range prs {
-		switch bucketFor(pr, viewer) {
+		switch bucketFor(pr, viewer, minReviews) {
 		case BucketWaitingOnYou:
 			s.WaitingOnYou++
 		case BucketWaitingOnOthers:
@@ -108,6 +170,7 @@ type Model struct {
 	version string
 
 	prs        []gh.PullRequest
+	minReviews int
 	lastScan   time.Time
 	now        time.Time
 	cursor     int
@@ -123,16 +186,19 @@ type Model struct {
 
 // NewModel builds a Model populated with the given pull requests. Pass
 // time.Now() for lastScan; the header displays "last scan Xm ago" relative
-// to the live clock. open and refresh may be nil in tests.
-func NewModel(prs []gh.PullRequest, login, version string, lastScan time.Time, open Opener, refresh Refresher) Model {
+// to the live clock. minReviews is the team-wide threshold of non-author
+// approvals required to classify a PR as ReadyToShip. open and refresh may
+// be nil in tests.
+func NewModel(prs []gh.PullRequest, login, version string, minReviews int, lastScan time.Time, open Opener, refresh Refresher) Model {
 	return Model{
-		prs:      prs,
-		login:    login,
-		version:  version,
-		lastScan: lastScan,
-		now:      time.Now(),
-		open:     open,
-		refresh:  refresh,
+		prs:        prs,
+		login:      login,
+		version:    version,
+		minReviews: minReviews,
+		lastScan:   lastScan,
+		now:        time.Now(),
+		open:       open,
+		refresh:    refresh,
 	}
 }
 
@@ -431,7 +497,7 @@ func (m Model) ruleView() string {
 const minCardW = 21
 
 func (m Model) cardsView() string {
-	stats := computeStats(m.prs, m.login)
+	stats := computeStats(m.prs, m.login, m.minReviews)
 	gap := 2
 
 	// Each card's rendered width INCLUDING its 2 border chars. Lipgloss
@@ -520,7 +586,7 @@ func (m Model) listView() string {
 }
 
 func (m Model) renderRow(pr gh.PullRequest, selected bool) string {
-	bucket := bucketFor(pr, m.login)
+	bucket := bucketFor(pr, m.login, m.minReviews)
 	accent := bucket.Color()
 
 	var bg lipgloss.Color
@@ -528,7 +594,6 @@ func (m Model) renderRow(pr gh.PullRequest, selected bool) string {
 	arrow := "▷"
 	titleFg := colText
 	titleBold := false
-	barFg := accent
 
 	if selected {
 		bg = colSelectedBg
@@ -536,7 +601,6 @@ func (m Model) renderRow(pr gh.PullRequest, selected bool) string {
 		arrow = "▶"
 		titleFg = colBright
 		titleBold = true
-		barFg = colYellow // high-contrast accent on the active row
 	}
 
 	// st builds a style that includes the row background when the row is
@@ -554,7 +618,7 @@ func (m Model) renderRow(pr gh.PullRequest, selected bool) string {
 	}
 	sp := st(colMuted, false).Render(" ")
 
-	bar := st(barFg, true).Render(barChar)
+	bar := st(accent, true).Render(barChar)
 	arrowR := st(accent, true).Render(arrow)
 	repoR := st(colCyan, false).Render(fmt.Sprintf("%s/%s", pr.Owner, pr.Repo))
 	numR := st(colDim, false).Render(fmt.Sprintf("#%d", pr.Number))
