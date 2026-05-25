@@ -206,6 +206,9 @@ func TestDefaultPath(t *testing.T) {
 	t.Run("falls back to HOME/.config", func(t *testing.T) {
 		t.Setenv("XDG_CONFIG_HOME", "")
 		t.Setenv("HOME", "/tmp/home")
+		// os.UserHomeDir reads %USERPROFILE% on Windows, not $HOME, so the
+		// test has to override both to stay cross-platform.
+		t.Setenv("USERPROFILE", "/tmp/home")
 
 		got, err := DefaultPath()
 		if err != nil {
