@@ -47,6 +47,35 @@ addition — accepted because "approved/ready" reads as green by universal
 convention (CI, GitHub merge button). Do not introduce a fourth chromatic
 accent without a discussion.
 
+The per-row CI cell reuses the same palette: green for passing, red for
+failing (the only place colRed leaves the reserved-for-errors bucket and
+shows up on a non-error row), **cyan for pending** (matches "in progress
+elsewhere" — yellow would collide semantically with "Waiting On You"),
+muted for "no CI". See `ciFragment` in `internal/tui/tui.go`.
+
+### CI state aggregation (locked)
+
+`aggregateCheckRuns` in `internal/gh/client.go` collapses GitHub's check
+runs for the PR's head SHA into a single `CIState`:
+
+- **none** — no check runs reported (distinct from success — UI must not
+  render a green build for repos that don't run CI).
+- **failure** — any completed run with conclusion `failure`, `cancelled`,
+  `timed_out`, `action_required`, or `stale`. All five require human
+  intervention before merge, so they collapse together.
+- **pending** — any run whose status is not `completed` (`queued` or
+  `in_progress`), and no failures.
+- **success** — everything completed; `success`, `neutral`, and `skipped`
+  all count (GitHub doesn't block merge on neutral/skipped).
+
+Precedence is **failure > pending > success > none**. This mirrors what
+the GitHub PR page summarizes at the bottom of the conversation tab.
+
+Scope: we only consult the Checks API (Actions + GitHub Apps), **not** the
+legacy commit-statuses API. Repos that rely on webhook-only CI (some
+self-hosted Buildkite/CircleCI setups) will show `ci: —` here even though
+GitHub.com shows a status. Cross that bridge if anyone complains.
+
 ### Bucket semantics (locked)
 
 ```
@@ -157,5 +186,11 @@ takes `bodyW := totalWidth - 2` to compensate. Don't undo that.
   extra REST calls per PR — serial today; parallelize if rescan latency
   becomes a problem.
 - **Phase 3 (current)**: enrich placeholder fields (CI, diff stats, Jira).
+  - CI ✅ shipped. `enrichCIState` calls `PullRequests.Get` for the head
+    SHA, then `Checks.ListCheckRunsForRef` and folds the runs through
+    `aggregateCheckRuns`. Two more REST calls per PR (four total with
+    Phase 2), still serial — same parallelization caveat applies.
+  - Diff stats: not started.
+  - Jira ticket: not started.
 - **Phase 4**: `?` help overlay (currently a no-op since the footer
   already shows the keys).

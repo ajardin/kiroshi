@@ -7,7 +7,8 @@
       "Bash(rtk go *)",
       "Bash(rtk make *)",
       "Bash(rtk proxy *)",
-      "Bash(rtk git *)"
+      "Bash(rtk git *)",
+      "Bash(rtk grep *)"
     ]
   }
 }

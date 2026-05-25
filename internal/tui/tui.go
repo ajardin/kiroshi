@@ -636,7 +636,8 @@ func (m Model) renderRow(pr gh.PullRequest, selected bool) string {
 	author := st(colDim, false).Render("@" + pr.Author)
 	diff := st(colMuted, false).Render("—")
 	ticket := st(colMuted, false).Render("—")
-	ci := st(colMuted, false).Render("ci: —")
+	ciText, ciColor := ciFragment(pr.CIState)
+	ci := st(ciColor, false).Render(ciText)
 	updated := st(colMuted, false).Render("updated " + humanAgo(m.now.Sub(pr.UpdatedAt)))
 	line2Body := author + sp + dot + sp + diff + sp + dot + sp + ticket + sp + dot + sp + ci + sp + dot + sp + updated
 
@@ -718,6 +719,22 @@ func keyHint(key, action string) string {
 }
 
 // --- helpers -------------------------------------------------------------
+
+// ciFragment returns the label and accent color for the CI cell of a row.
+// Pending is rendered in cyan (the project's "in progress elsewhere" hue);
+// failure is the only place colRed leaves the reserved-for-errors bucket.
+func ciFragment(s gh.CIState) (string, lipgloss.Color) {
+	switch s {
+	case gh.CIStateSuccess:
+		return "ci: ✓ passing", colGreen
+	case gh.CIStatePending:
+		return "ci: ● pending", colCyan
+	case gh.CIStateFailure:
+		return "ci: ✗ failing", colRed
+	default:
+		return "ci: —", colMuted
+	}
+}
 
 func humanAgo(d time.Duration) string {
 	switch {

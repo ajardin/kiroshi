@@ -21,25 +21,28 @@ func TestPreview(t *testing.T) {
 		{
 			Owner: "ajardin", Repo: "crm-core", Number: 2847, Title: "Refactor lead qualification pipeline",
 			Author: "sarah-dev", URL: "x", UpdatedAt: time.Now().Add(-14 * time.Minute),
-			RequestedReviewers: []string{"ajardin"},
+			RequestedReviewers: []string{"ajardin"}, CIState: gh.CIStatePending,
 		},
 		{
 			Owner: "ajardin", Repo: "agent-portal", Number: 1203, Title: "Add commission simulator widget",
 			Author: "mike-fr", URL: "x", UpdatedAt: time.Now().Add(-3 * time.Hour),
 			Approvals: []string{"ajardin"}, RequestedReviewers: []string{"lucas-be"},
+			CIState: gh.CIStateSuccess,
 		},
 		{
 			Owner: "ajardin", Repo: "listing-api", Number: 589, Title: "Migrate search to Meilisearch v1.8",
 			Author: "lucas-be", URL: "x", UpdatedAt: time.Now().Add(-26 * time.Hour),
-			Approvals: []string{"ajardin", "sarah-dev"},
+			Approvals: []string{"ajardin", "sarah-dev"}, CIState: gh.CIStateSuccess,
 		},
 		{
 			Owner: "ajardin", Repo: "infra-terraform", Number: 144, Title: "Add staging replica for crm-core",
 			Author: "ops-team", URL: "x", UpdatedAt: time.Now().Add(-50 * time.Hour),
+			CIState: gh.CIStateFailure,
 		},
 		{
 			Owner: "ajardin", Repo: "kiroshi", Number: 12, Title: "feat: add SQLite cache layer",
 			Author: "ajardin", URL: "x", UpdatedAt: time.Now().Add(-2 * time.Hour),
+			CIState: gh.CIStateNone,
 		},
 	}
 	m := NewModel(prs, "ajardin", "v0.0.1", 2, time.Now().Add(-2*time.Minute), nil, nil)

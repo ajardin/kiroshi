@@ -400,6 +400,48 @@ func TestBucketFor(t *testing.T) {
 	}
 }
 
+func TestCIFragment(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		state    gh.CIState
+		wantText string
+	}{
+		{gh.CIStateNone, "ci: —"},
+		{gh.CIStateSuccess, "ci: ✓ passing"},
+		{gh.CIStatePending, "ci: ● pending"},
+		{gh.CIStateFailure, "ci: ✗ failing"},
+	}
+	for _, c := range cases {
+		got, _ := ciFragment(c.state)
+		if got != c.wantText {
+			t.Errorf("ciFragment(%q) text = %q, want %q", c.state, got, c.wantText)
+		}
+	}
+}
+
+func TestView_RendersCIStateForEachRow(t *testing.T) {
+	t.Parallel()
+
+	prs := []gh.PullRequest{
+		{Owner: "ajardin", Repo: "kiroshi", Number: 1, Title: "Green build", Author: "alice",
+			URL: "u1", UpdatedAt: time.Date(2026, 4, 20, 0, 0, 0, 0, time.UTC), CIState: gh.CIStateSuccess},
+		{Owner: "ajardin", Repo: "kiroshi", Number: 2, Title: "Building", Author: "bob",
+			URL: "u2", UpdatedAt: time.Date(2026, 4, 21, 0, 0, 0, 0, time.UTC), CIState: gh.CIStatePending},
+		{Owner: "ajardin", Repo: "kiroshi", Number: 3, Title: "Red build", Author: "carol",
+			URL: "u3", UpdatedAt: time.Date(2026, 4, 22, 0, 0, 0, 0, time.UTC), CIState: gh.CIStateFailure},
+		{Owner: "ajardin", Repo: "kiroshi", Number: 4, Title: "No CI", Author: "dave",
+			URL: "u4", UpdatedAt: time.Date(2026, 4, 23, 0, 0, 0, 0, time.UTC), CIState: gh.CIStateNone},
+	}
+	m := NewModel(prs, "viewer", "v0.0.1", 2, time.Now(), nil, nil)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 50})
+	view := updated.(Model).View()
+	for _, want := range []string{"ci: ✓ passing", "ci: ● pending", "ci: ✗ failing", "ci: —"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("view missing %q\nview=\n%s", want, view)
+		}
+	}
+}
+
 func TestTruncate(t *testing.T) {
 	t.Parallel()
 	if got := truncate("hello world", 100); got != "hello world" {

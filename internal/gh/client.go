@@ -25,6 +25,20 @@ type User struct {
 	Login string
 }
 
+// CIState is the aggregated outcome of all check runs reported against a pull
+// request's head commit. Combined via aggregateCheckRuns; see that function
+// for precedence rules.
+type CIState string
+
+// CI state values. CIStateNone is the zero value and means "no checks
+// reported" — distinct from a pending or successful build.
+const (
+	CIStateNone    CIState = ""
+	CIStatePending CIState = "pending"
+	CIStateSuccess CIState = "success"
+	CIStateFailure CIState = "failure"
+)
+
 // PullRequest is the subset of a GitHub pull request kiroshi cares about when
 // listing search results.
 //
@@ -39,6 +53,9 @@ type User struct {
 // in the Reviewers panel) and haven't given a decisive answer; classifiers
 // treat them as still "on the hook". DISMISSED reviews reset the per-reviewer
 // state entirely.
+//
+// HeadSHA is the SHA of the pull request's head commit; CIState is the
+// aggregated outcome of the check runs reported against it.
 type PullRequest struct {
 	Owner              string
 	Repo               string
@@ -52,6 +69,8 @@ type PullRequest struct {
 	Approvals          []string
 	ChangesRequested   []string
 	Commented          []string
+	HeadSHA            string
+	CIState            CIState
 }
 
 // API is the subset of the GitHub API kiroshi consumes. It is declared as an
@@ -138,8 +157,9 @@ func (c *Client) AuthenticatedUser(ctx context.Context) (User, error) {
 // SearchPullRequests runs a GitHub issues/search query and returns only the
 // pull requests it resolves to. It follows pagination to completion; the
 // search API caps results at 1000 regardless. Each result is enriched with
-// requested reviewers and review state (two additional REST calls per PR).
-// A 401 is translated into ErrInvalidToken.
+// requested reviewers, review state, and CI state (four additional REST
+// calls per PR — list reviewers, list reviews, pull request detail for the
+// head SHA, list check runs). A 401 is translated into ErrInvalidToken.
 func (c *Client) SearchPullRequests(ctx context.Context, query string) ([]PullRequest, error) {
 	opts := &github.SearchOptions{ListOptions: github.ListOptions{PerPage: 100}}
 	var out []PullRequest
@@ -165,6 +185,9 @@ func (c *Client) SearchPullRequests(ctx context.Context, query string) ([]PullRe
 
 	for i := range out {
 		if err := c.enrichReviewState(ctx, &out[i]); err != nil {
+			return nil, err
+		}
+		if err := c.enrichCIState(ctx, &out[i]); err != nil {
 			return nil, err
 		}
 	}
@@ -278,6 +301,85 @@ func summarizeReviews(reviews []*github.PullRequestReview, author string) (appro
 	sort.Strings(changesRequested)
 	sort.Strings(commented)
 	return
+}
+
+// enrichCIState fetches the pull request's head SHA, then aggregates the
+// check runs reported against that SHA into pr.CIState. The issues/search
+// response doesn't include the head SHA, so a PullRequests.Get is required
+// before we can ask the Checks API anything. Skipped silently when the PR
+// coordinates are incomplete.
+func (c *Client) enrichCIState(ctx context.Context, pr *PullRequest) error {
+	if pr.Owner == "" || pr.Repo == "" || pr.Number == 0 {
+		return nil
+	}
+
+	detail, resp, err := c.gh.PullRequests.Get(ctx, pr.Owner, pr.Repo, pr.Number)
+	if err != nil {
+		if resp != nil && resp.StatusCode == http.StatusUnauthorized {
+			return ErrInvalidToken
+		}
+		return fmt.Errorf("fetch pull request %s/%s#%d: %w", pr.Owner, pr.Repo, pr.Number, err)
+	}
+	if detail == nil || detail.GetHead() == nil {
+		return nil
+	}
+	pr.HeadSHA = detail.GetHead().GetSHA()
+	if pr.HeadSHA == "" {
+		return nil
+	}
+
+	var runs []*github.CheckRun
+	listOpts := &github.ListCheckRunsOptions{ListOptions: github.ListOptions{PerPage: 100}}
+	for {
+		page, cresp, err := c.gh.Checks.ListCheckRunsForRef(ctx, pr.Owner, pr.Repo, pr.HeadSHA, listOpts)
+		if err != nil {
+			if cresp != nil && cresp.StatusCode == http.StatusUnauthorized {
+				return ErrInvalidToken
+			}
+			return fmt.Errorf("list check runs for %s/%s@%s: %w", pr.Owner, pr.Repo, pr.HeadSHA, err)
+		}
+		if page != nil {
+			runs = append(runs, page.CheckRuns...)
+		}
+		if cresp.NextPage == 0 {
+			break
+		}
+		listOpts.Page = cresp.NextPage
+	}
+	pr.CIState = aggregateCheckRuns(runs)
+	return nil
+}
+
+// aggregateCheckRuns collapses a list of check runs into a single CIState
+// using GitHub's own merge-gate precedence: any failing run wins; otherwise
+// any still-running run yields pending; otherwise success. An empty list is
+// CIStateNone — distinct from success, so the UI can render "no CI" without
+// claiming a green build. "neutral" and "skipped" conclusions count as
+// success (GitHub doesn't block merge on them); "cancelled", "timed_out",
+// "action_required" and "stale" count as failure (they all require human
+// intervention before merge).
+func aggregateCheckRuns(runs []*github.CheckRun) CIState {
+	if len(runs) == 0 {
+		return CIStateNone
+	}
+	var hasPending bool
+	for _, r := range runs {
+		if r == nil {
+			continue
+		}
+		if r.GetStatus() != "completed" {
+			hasPending = true
+			continue
+		}
+		switch r.GetConclusion() {
+		case "failure", "cancelled", "timed_out", "action_required", "stale":
+			return CIStateFailure
+		}
+	}
+	if hasPending {
+		return CIStatePending
+	}
+	return CIStateSuccess
 }
 
 // parseRepoFromAPIURL extracts owner and repo from a GitHub repository API

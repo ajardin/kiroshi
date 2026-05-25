@@ -146,7 +146,7 @@ func TestClient_SearchPullRequests(t *testing.T) {
 		wantErrSub string
 	}{
 		{
-			name: "filters issues, keeps PRs, and enriches review state",
+			name: "filters issues, keeps PRs, and enriches review + CI state",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
 					t.Errorf("authorization header = %q", got)
@@ -168,6 +168,16 @@ func TestClient_SearchPullRequests(t *testing.T) {
 					  {"user":{"login":"dave"},"state":"COMMENTED","submitted_at":"2026-04-20T12:00:00Z"},
 					  {"user":{"login":"erin"},"state":"COMMENTED","submitted_at":"2026-04-20T13:00:00Z"}
 					]`)
+				case "/repos/ajardin/repo-a/pulls/123":
+					fmt.Fprint(w, `{"number":123,"head":{"sha":"deadbeefcafe"}}`)
+				case "/repos/ajardin/repo-a/commits/deadbeefcafe/check-runs":
+					fmt.Fprint(w, `{
+					  "total_count": 2,
+					  "check_runs": [
+					    {"name":"build","status":"completed","conclusion":"success"},
+					    {"name":"test","status":"completed","conclusion":"success"}
+					  ]
+					}`)
 				default:
 					t.Errorf("unexpected path %q", r.URL.Path)
 					http.NotFound(w, r)
@@ -185,6 +195,8 @@ func TestClient_SearchPullRequests(t *testing.T) {
 				RequestedReviewers: []string{"carol"},
 				Approvals:          []string{"bob"},
 				Commented:          []string{"dave", "erin"},
+				HeadSHA:            "deadbeefcafe",
+				CIState:            CIStateSuccess,
 			},
 		},
 		{
@@ -253,7 +265,106 @@ func TestClient_SearchPullRequests(t *testing.T) {
 					if !equalStrings(got.Commented, want.Commented) {
 						t.Errorf("Commented = %v, want %v", got.Commented, want.Commented)
 					}
+					if got.HeadSHA != want.HeadSHA {
+						t.Errorf("HeadSHA = %q, want %q", got.HeadSHA, want.HeadSHA)
+					}
+					if got.CIState != want.CIState {
+						t.Errorf("CIState = %q, want %q", got.CIState, want.CIState)
+					}
 				}
+			}
+		})
+	}
+}
+
+func TestAggregateCheckRuns(t *testing.T) {
+	t.Parallel()
+
+	run := func(status, conclusion string) *github.CheckRun {
+		s, c := status, conclusion
+		return &github.CheckRun{Status: &s, Conclusion: &c}
+	}
+
+	cases := []struct {
+		name string
+		runs []*github.CheckRun
+		want CIState
+	}{
+		{
+			name: "empty list is none",
+			runs: nil,
+			want: CIStateNone,
+		},
+		{
+			name: "all completed success is success",
+			runs: []*github.CheckRun{
+				run("completed", "success"),
+				run("completed", "success"),
+			},
+			want: CIStateSuccess,
+		},
+		{
+			name: "neutral and skipped count as success",
+			runs: []*github.CheckRun{
+				run("completed", "success"),
+				run("completed", "neutral"),
+				run("completed", "skipped"),
+			},
+			want: CIStateSuccess,
+		},
+		{
+			name: "any in_progress yields pending",
+			runs: []*github.CheckRun{
+				run("completed", "success"),
+				run("in_progress", ""),
+			},
+			want: CIStatePending,
+		},
+		{
+			name: "queued counts as pending",
+			runs: []*github.CheckRun{
+				run("queued", ""),
+			},
+			want: CIStatePending,
+		},
+		{
+			name: "failure dominates pending",
+			runs: []*github.CheckRun{
+				run("in_progress", ""),
+				run("completed", "failure"),
+			},
+			want: CIStateFailure,
+		},
+		{
+			name: "cancelled is a failure",
+			runs: []*github.CheckRun{
+				run("completed", "success"),
+				run("completed", "cancelled"),
+			},
+			want: CIStateFailure,
+		},
+		{
+			name: "timed_out, action_required, stale all count as failure",
+			runs: []*github.CheckRun{
+				run("completed", "timed_out"),
+			},
+			want: CIStateFailure,
+		},
+		{
+			name: "nil runs are skipped",
+			runs: []*github.CheckRun{
+				nil,
+				run("completed", "success"),
+			},
+			want: CIStateSuccess,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := aggregateCheckRuns(tc.runs); got != tc.want {
+				t.Errorf("aggregateCheckRuns() = %q, want %q", got, tc.want)
 			}
 		})
 	}
