@@ -159,6 +159,38 @@ a 120-col terminal, naively dividing the width gives cards 2 cols wider
 than expected, overflowing the layout. `renderCard(label, count, color, totalWidth)`
 takes `bodyW := totalWidth - 2` to compensate. Don't undo that.
 
+### Sort toggle
+
+The `s` key cycles `Model.sort` through three states with distinct
+semantics, all sorted client-side in `visiblePRs`:
+
+- `sortDefault` — `UpdatedAt desc` (most recent activity). Coincides with
+  GitHub's search API default but is sorted explicitly so the ordering is
+  deterministic regardless of API quirks.
+- `sortOldestFirst` — `CreatedAt asc` (oldest creations first).
+- `sortNewestFirst` — `CreatedAt desc` (newest creations first).
+
+The header appends `· oldest created` / `· newest created` for the two
+explicit modes; `sortDefault` shows no suffix. The labels say "created"
+on purpose: `sortDefault` ≠ `sortNewestFirst` precisely when a PR has
+been updated recently but created long ago (revived by a comment), so
+the user needs to know which field is in play.
+
+Two non-obvious bits in `visiblePRs`:
+
+1. **Always copy before sort.** When no filter is active, the local
+   `out` aliases `m.prs`. `sort.SliceStable` mutates in place, so
+   without `append([]gh.PullRequest(nil), out...)` the underlying
+   fixture would get silently reordered.
+2. **`sort.SliceStable`, not `sort.Slice`.** Equal timestamps
+   (bot-created batches) keep the GitHub API order as a stable
+   tiebreaker — the most intuitive secondary sort.
+
+Unlike `f` (filter), `s` does not reset the cursor: the set is
+identical, only the order changes. `cycleSort` captures the selected
+PR's URL before the toggle and relocates the cursor onto the same PR's
+new index. Reset-to-zero would be jarring.
+
 ## Conventions
 
 - **No comments unless the why is non-obvious.** Don't restate what

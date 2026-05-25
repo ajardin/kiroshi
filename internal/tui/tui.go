@@ -13,6 +13,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -162,6 +163,18 @@ func computeStats(prs []gh.PullRequest, viewer string, minReviews int) Stats {
 	return s
 }
 
+// sortMode controls the order in which PRs are listed. sortDefault preserves
+// the order returned by the GitHub search API (updated_at desc); the two
+// explicit modes sort by CreatedAt. The user cycles through the three states
+// with the `s` key.
+type sortMode int
+
+const (
+	sortDefault sortMode = iota
+	sortOldestFirst
+	sortNewestFirst
+)
+
 // Model is the Bubble Tea model backing the dashboard.
 type Model struct {
 	open    Opener
@@ -182,6 +195,7 @@ type Model struct {
 	refreshing bool
 	filterMode bool
 	filter     string
+	sort       sortMode
 }
 
 // NewModel builds a Model populated with the given pull requests. Pass
@@ -297,8 +311,30 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.filterMode = true
 		m.status = ""
 		return m, nil
+	case "s":
+		return m.cycleSort(), nil
 	}
 	return m, nil
+}
+
+// cycleSort advances sort to the next mode (with wrap-around) and repositions
+// the cursor on the previously-selected PR's new index. Reset-to-zero would be
+// disorienting here: the set is identical, only the order changes.
+func (m Model) cycleSort() Model {
+	var selectedURL string
+	if before := m.visiblePRs(); m.cursor < len(before) {
+		selectedURL = before[m.cursor].URL
+	}
+	m.sort = (m.sort + 1) % 3
+	if selectedURL != "" {
+		for i, pr := range m.visiblePRs() {
+			if pr.URL == selectedURL {
+				m.cursor = i
+				return m.scrollIntoView()
+			}
+		}
+	}
+	return m.clampCursor()
 }
 
 func (m Model) handleFilterKey(msg tea.KeyMsg) (Model, tea.Cmd) {
@@ -349,18 +385,33 @@ func (m Model) rescanCmd() tea.Cmd {
 }
 
 func (m Model) visiblePRs() []gh.PullRequest {
-	if m.filter == "" {
-		return m.prs
-	}
-	needle := strings.ToLower(m.filter)
-	var out []gh.PullRequest
-	for _, pr := range m.prs {
-		hay := strings.ToLower(fmt.Sprintf("%s/%s %s %s", pr.Owner, pr.Repo, pr.Title, pr.Author))
-		if strings.Contains(hay, needle) {
-			out = append(out, pr)
+	out := m.prs
+	if m.filter != "" {
+		needle := strings.ToLower(m.filter)
+		out = nil
+		for _, pr := range m.prs {
+			hay := strings.ToLower(fmt.Sprintf("%s/%s %s %s", pr.Owner, pr.Repo, pr.Title, pr.Author))
+			if strings.Contains(hay, needle) {
+				out = append(out, pr)
+			}
 		}
 	}
-	return out
+	// Copy before sorting: sort.SliceStable mutates in place, and when no
+	// filter is active `out` aliases m.prs — sorting it would silently
+	// reorder the underlying fixture and confuse anything that reads m.prs
+	// directly.
+	sorted := append([]gh.PullRequest(nil), out...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		switch m.sort {
+		case sortOldestFirst:
+			return sorted[i].CreatedAt.Before(sorted[j].CreatedAt)
+		case sortNewestFirst:
+			return sorted[i].CreatedAt.After(sorted[j].CreatedAt)
+		default:
+			return sorted[i].UpdatedAt.After(sorted[j].UpdatedAt)
+		}
+	})
+	return sorted
 }
 
 func (m Model) moveDown() Model {
@@ -554,6 +605,12 @@ func (m Model) sectionHeaderView() string {
 	if m.filter != "" {
 		text = fmt.Sprintf("FILTERED %q — %d / %d ITEM(S)", m.filter, len(visible), len(m.prs))
 	}
+	switch m.sort {
+	case sortOldestFirst:
+		text += " · oldest created"
+	case sortNewestFirst:
+		text += " · newest created"
+	}
 	arrow := lipgloss.NewStyle().Foreground(colMuted).Bold(true).Render("▶")
 	label := lipgloss.NewStyle().Foreground(colDim).Bold(true).Render(text)
 	return " " + arrow + "  " + label
@@ -668,6 +725,7 @@ func (m Model) footerView() string {
 		keyHint("o", "open"),
 		keyHint("r", "rescan"),
 		keyHint("f", "filter"),
+		keyHint("s", "sort"),
 		keyHint("q", "quit"),
 	}
 	sepStyle := lipgloss.NewStyle().Foreground(colMuted).Render(" · ")

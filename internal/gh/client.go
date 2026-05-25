@@ -72,6 +72,7 @@ type PullRequest struct {
 	Title              string
 	Author             string
 	URL                string
+	CreatedAt          time.Time
 	UpdatedAt          time.Time
 	IsDraft            bool
 	RequestedReviewers []string
@@ -240,6 +241,7 @@ func pullRequestFromIssue(iss *github.Issue) PullRequest {
 		Title:     iss.GetTitle(),
 		Author:    iss.GetUser().GetLogin(),
 		URL:       iss.GetHTMLURL(),
+		CreatedAt: iss.GetCreatedAt().Time,
 		UpdatedAt: iss.GetUpdatedAt().Time,
 		IsDraft:   iss.GetDraft(),
 	}

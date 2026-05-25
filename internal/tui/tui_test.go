@@ -19,6 +19,7 @@ func samplePRs() []gh.PullRequest {
 			Owner: "ajardin", Repo: "kiroshi", Number: 42,
 			Title: "Add PR search", Author: "alice",
 			URL:       "https://github.com/ajardin/kiroshi/pull/42",
+			CreatedAt: time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC),
 			UpdatedAt: time.Date(2026, 4, 20, 0, 0, 0, 0, time.UTC),
 			Additions: 120, Deletions: 30,
 		},
@@ -26,6 +27,7 @@ func samplePRs() []gh.PullRequest {
 			Owner: "ajardin", Repo: "kiroshi", Number: 43,
 			Title: "Add TUI", Author: "bob",
 			URL:       "https://github.com/ajardin/kiroshi/pull/43",
+			CreatedAt: time.Date(2026, 4, 10, 0, 0, 0, 0, time.UTC),
 			UpdatedAt: time.Date(2026, 4, 22, 0, 0, 0, 0, time.UTC),
 		},
 	}
@@ -65,7 +67,8 @@ func TestModel_EnterOpensSelectedPR(t *testing.T) {
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	got := applyCmd(t, updated.(Model), cmd)
 
-	want := "https://github.com/ajardin/kiroshi/pull/42"
+	// Default sort is updated_at desc, so PR #43 (updated Apr 22) is at index 0.
+	want := "https://github.com/ajardin/kiroshi/pull/43"
 	if opened != want {
 		t.Errorf("opened = %q, want %q", opened, want)
 	}
@@ -171,6 +174,110 @@ func TestModel_FilterModeSwallowsNavigation(t *testing.T) {
 	if opened {
 		t.Error("opener invoked while filtering")
 	}
+}
+
+func pressKey(t *testing.T, m Model, r rune) Model {
+	t.Helper()
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	return updated.(Model)
+}
+
+func TestModel_SortCycleAdvancesMode(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(t, nil, nil)
+	if m.sort != sortDefault {
+		t.Fatalf("initial sort = %d, want sortDefault", m.sort)
+	}
+	m = pressKey(t, m, 's')
+	if m.sort != sortOldestFirst {
+		t.Errorf("after 1st s: sort = %d, want sortOldestFirst", m.sort)
+	}
+	m = pressKey(t, m, 's')
+	if m.sort != sortNewestFirst {
+		t.Errorf("after 2nd s: sort = %d, want sortNewestFirst", m.sort)
+	}
+	m = pressKey(t, m, 's')
+	if m.sort != sortDefault {
+		t.Errorf("after 3rd s: sort = %d, want sortDefault (wrap)", m.sort)
+	}
+}
+
+func TestModel_SortChronologicalOrdersByCreatedAt(t *testing.T) {
+	t.Parallel()
+
+	m := pressKey(t, newTestModel(t, nil, nil), 's')
+	visible := m.visiblePRs()
+	if len(visible) != 2 || visible[0].Number != 43 || visible[1].Number != 42 {
+		t.Errorf("chronological order = [%d, %d], want [43, 42]",
+			numberOf(visible, 0), numberOf(visible, 1))
+	}
+}
+
+func TestModel_SortAntiChronologicalOrdersByCreatedAt(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(t, nil, nil)
+	m = pressKey(t, m, 's')
+	m = pressKey(t, m, 's')
+	visible := m.visiblePRs()
+	if len(visible) != 2 || visible[0].Number != 42 || visible[1].Number != 43 {
+		t.Errorf("anti-chronological order = [%d, %d], want [42, 43]",
+			numberOf(visible, 0), numberOf(visible, 1))
+	}
+}
+
+func TestModel_SortDefaultOrdersByUpdatedAtDesc(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(t, nil, nil)
+	// Cycle through and back to default; this also exercises wrap-around.
+	for i := 0; i < 3; i++ {
+		m = pressKey(t, m, 's')
+	}
+	if m.sort != sortDefault {
+		t.Fatalf("sort after 3 cycles = %d, want sortDefault", m.sort)
+	}
+	visible := m.visiblePRs()
+	// PR #43 was updated Apr 22, #42 was updated Apr 20 → #43 first.
+	if len(visible) != 2 || visible[0].Number != 43 || visible[1].Number != 42 {
+		t.Errorf("default order = [%d, %d], want [43, 42] (most recently updated first)",
+			numberOf(visible, 0), numberOf(visible, 1))
+	}
+	// Regression: visiblePRs must copy before sorting; m.prs should still
+	// be in its original fixture order after the cycles.
+	if m.prs[0].Number != 42 || m.prs[1].Number != 43 {
+		t.Errorf("m.prs reordered by sort: got [%d, %d], want [42, 43]",
+			m.prs[0].Number, m.prs[1].Number)
+	}
+}
+
+func TestModel_SortPreservesSelection(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(t, nil, nil)
+	// Default order is [#43, #42] (UpdatedAt desc); cursor on j moves to #42.
+	m = pressKey(t, m, 'j')
+	if got := m.visiblePRs()[m.cursor].Number; got != 42 {
+		t.Fatalf("setup: selected PR = #%d, want #42", got)
+	}
+	// sortOldestFirst gives [#43, #42] too (CreatedAt asc: #43 Apr 10, #42 Apr 15).
+	// sortNewestFirst flips to [#42, #43] — cursor must follow #42 to index 0.
+	m = pressKey(t, m, 's')
+	m = pressKey(t, m, 's')
+	if got := m.visiblePRs()[m.cursor].Number; got != 42 {
+		t.Errorf("after sort cycles, selected PR = #%d, want #42", got)
+	}
+	if m.cursor != 0 {
+		t.Errorf("cursor = %d, want 0 (PR #42 moved to index 0)", m.cursor)
+	}
+}
+
+func numberOf(prs []gh.PullRequest, i int) int {
+	if i >= len(prs) {
+		return -1
+	}
+	return prs[i].Number
 }
 
 func TestModel_RescanRunsRefresh(t *testing.T) {
