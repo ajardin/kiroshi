@@ -151,16 +151,28 @@ func (t *advancedSearchTransport) RoundTrip(req *http.Request) (*http.Response, 
 // request, signalling the PAT is missing, revoked or expired.
 var ErrInvalidToken = errors.New("invalid or expired GitHub token")
 
+// wrapAPIError translates a go-github (response, error) pair into the error
+// kiroshi exposes to callers: a 401 becomes ErrInvalidToken so the CLI can
+// print an actionable message; anything else is wrapped with op as context.
+// Returns nil when err is nil. Centralised here so every new REST call
+// inherits the 401 → ErrInvalidToken translation by default.
+func wrapAPIError(op string, resp *github.Response, err error) error {
+	if err == nil {
+		return nil
+	}
+	if resp != nil && resp.StatusCode == http.StatusUnauthorized {
+		return ErrInvalidToken
+	}
+	return fmt.Errorf("%s: %w", op, err)
+}
+
 // AuthenticatedUser returns the account associated with the client's token.
 // A 401 is translated into ErrInvalidToken so callers can print an actionable
 // message instead of a raw HTTP error.
 func (c *Client) AuthenticatedUser(ctx context.Context) (User, error) {
 	u, resp, err := c.gh.Users.Get(ctx, "")
 	if err != nil {
-		if resp != nil && resp.StatusCode == http.StatusUnauthorized {
-			return User{}, ErrInvalidToken
-		}
-		return User{}, fmt.Errorf("fetch authenticated user: %w", err)
+		return User{}, wrapAPIError("fetch authenticated user", resp, err)
 	}
 	return User{Login: u.GetLogin()}, nil
 }
@@ -180,10 +192,7 @@ func (c *Client) SearchPullRequests(ctx context.Context, query string) ([]PullRe
 	for {
 		res, resp, err := c.gh.Search.Issues(ctx, query, opts)
 		if err != nil {
-			if resp != nil && resp.StatusCode == http.StatusUnauthorized {
-				return nil, ErrInvalidToken
-			}
-			return nil, fmt.Errorf("search pull requests: %w", err)
+			return nil, wrapAPIError("search pull requests", resp, err)
 		}
 		for _, iss := range res.Issues {
 			if iss == nil || !iss.IsPullRequest() {
@@ -246,10 +255,7 @@ func (c *Client) enrichReviewState(ctx context.Context, pr *PullRequest) error {
 
 	reviewers, resp, err := c.gh.PullRequests.ListReviewers(ctx, pr.Owner, pr.Repo, pr.Number, nil)
 	if err != nil {
-		if resp != nil && resp.StatusCode == http.StatusUnauthorized {
-			return ErrInvalidToken
-		}
-		return fmt.Errorf("list requested reviewers for %s/%s#%d: %w", pr.Owner, pr.Repo, pr.Number, err)
+		return wrapAPIError(fmt.Sprintf("list requested reviewers for %s/%s#%d", pr.Owner, pr.Repo, pr.Number), resp, err)
 	}
 	if reviewers != nil {
 		for _, u := range reviewers.Users {
@@ -265,10 +271,7 @@ func (c *Client) enrichReviewState(ctx context.Context, pr *PullRequest) error {
 	for {
 		page, rresp, err := c.gh.PullRequests.ListReviews(ctx, pr.Owner, pr.Repo, pr.Number, listOpts)
 		if err != nil {
-			if rresp != nil && rresp.StatusCode == http.StatusUnauthorized {
-				return ErrInvalidToken
-			}
-			return fmt.Errorf("list reviews for %s/%s#%d: %w", pr.Owner, pr.Repo, pr.Number, err)
+			return wrapAPIError(fmt.Sprintf("list reviews for %s/%s#%d", pr.Owner, pr.Repo, pr.Number), rresp, err)
 		}
 		reviews = append(reviews, page...)
 		if rresp.NextPage == 0 {
@@ -343,10 +346,7 @@ func (c *Client) enrichDetail(ctx context.Context, pr *PullRequest) error {
 
 	detail, resp, err := c.gh.PullRequests.Get(ctx, pr.Owner, pr.Repo, pr.Number)
 	if err != nil {
-		if resp != nil && resp.StatusCode == http.StatusUnauthorized {
-			return ErrInvalidToken
-		}
-		return fmt.Errorf("fetch pull request %s/%s#%d: %w", pr.Owner, pr.Repo, pr.Number, err)
+		return wrapAPIError(fmt.Sprintf("fetch pull request %s/%s#%d", pr.Owner, pr.Repo, pr.Number), resp, err)
 	}
 	if detail == nil {
 		return nil
@@ -372,10 +372,7 @@ func (c *Client) enrichCIState(ctx context.Context, pr *PullRequest) error {
 	for {
 		page, cresp, err := c.gh.Checks.ListCheckRunsForRef(ctx, pr.Owner, pr.Repo, pr.HeadSHA, listOpts)
 		if err != nil {
-			if cresp != nil && cresp.StatusCode == http.StatusUnauthorized {
-				return ErrInvalidToken
-			}
-			return fmt.Errorf("list check runs for %s/%s@%s: %w", pr.Owner, pr.Repo, pr.HeadSHA, err)
+			return wrapAPIError(fmt.Sprintf("list check runs for %s/%s@%s", pr.Owner, pr.Repo, pr.HeadSHA), cresp, err)
 		}
 		if page != nil {
 			runs = append(runs, page.CheckRuns...)
