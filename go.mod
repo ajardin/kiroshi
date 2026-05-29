@@ -1,12 +1,12 @@
 module github.com/ajardin/kiroshi
 
-go 1.24.2
+go 1.25.0
 
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
-	golang.org/x/sync v0.10.0
+	golang.org/x/sync v0.20.0
 )
 
 require (
