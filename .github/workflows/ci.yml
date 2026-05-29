@@ -62,3 +62,18 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: go build -trimpath -ldflags="-s -w" -o bin/kiroshi ./cmd/kiroshi
+
+  goreleaser-check:
+    name: Goreleaser config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: check

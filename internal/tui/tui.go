@@ -828,11 +828,23 @@ func truncate(s string, maxW int) string {
 	if lipgloss.Width(s) <= maxW {
 		return s
 	}
-	runes := []rune(s)
-	if len(runes) <= maxW-1 {
-		return s
+	// Accumulate runes until the next one would push the prefix past maxW-1
+	// display columns, reserving the final column for the ellipsis. Width is
+	// measured per rune because wide glyphs (CJK, emoji) occupy two cells —
+	// slicing by rune count alone would overflow maxW and break the row's
+	// column alignment and selected-row background fill.
+	budget := maxW - 1
+	var b strings.Builder
+	used := 0
+	for _, r := range s {
+		w := lipgloss.Width(string(r))
+		if used+w > budget {
+			break
+		}
+		b.WriteRune(r)
+		used += w
 	}
-	return string(runes[:maxW-1]) + "…"
+	return b.String() + "…"
 }
 
 // Run executes the TUI to completion against the given input/output. Use

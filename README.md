@@ -14,8 +14,7 @@ go install github.com/ajardin/kiroshi/cmd/kiroshi@latest
 ```
 
 Requires Go 1.24 or newer. Pre-built binaries for Linux, macOS, and
-Windows ship with each tagged release on GitHub once the release
-pipeline is wired up.
+Windows ship with each tagged release on GitHub.
 
 ## Configure
 
@@ -66,6 +65,7 @@ automatically — TTY detection lives in `cli.isTerminal`.
 | o    | open selected PR in browser |
 | r    | rescan from GitHub      |
 | f    | filter the visible list |
+| s    | cycle sort order        |
 | q    | quit                    |
 
 ## Development

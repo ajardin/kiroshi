@@ -584,4 +584,13 @@ func TestTruncate(t *testing.T) {
 	if got := truncate("hello world", 5); got != "hell…" {
 		t.Errorf("truncate small = %q", got)
 	}
+	// Wide glyphs (CJK) occupy two cells each: the result must never exceed
+	// maxW display columns, even though that means fewer runes survive.
+	if got := truncate("日本語のタイトル", 5); lipgloss.Width(got) > 5 {
+		t.Errorf("truncate wide = %q (width %d > 5)", got, lipgloss.Width(got))
+	}
+	// maxW=5 → budget 4 cols → two 2-cell glyphs ("日本") + ellipsis.
+	if got := truncate("日本語のタイトル", 5); got != "日本…" {
+		t.Errorf("truncate wide = %q, want 日本…", got)
+	}
 }
