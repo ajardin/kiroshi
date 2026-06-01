@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ajardin/kiroshi/internal/config"
 	"github.com/ajardin/kiroshi/internal/gh"
 	"github.com/ajardin/kiroshi/internal/tui"
 )
@@ -244,6 +245,95 @@ search = "s"`)
 	}
 	if !strings.Contains(stdout.String(), "[ajardin/kiroshi#1] first") {
 		t.Errorf("stdout = %q, want text rendering", stdout.String())
+	}
+}
+
+func TestRun_InitWritesConfig(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+
+	var gotModel bool
+	runner := func(_ tui.WizardModel) (tui.WizardResult, error) {
+		gotModel = true
+		return tui.WizardResult{Completed: true, Token: "ghp_x", Search: "is:pr author:@me", MinReviews: 3}, nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	err := Run(t.Context(), []string{"-init", "-config", cfgPath}, &stdout, &stderr,
+		WithWizardRunner(runner))
+	if err != nil {
+		t.Fatalf("unexpected err: %v (stderr=%q)", err, stderr.String())
+	}
+	if !gotModel {
+		t.Error("wizard runner was not invoked")
+	}
+
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("written config does not load: %v", err)
+	}
+	if cfg.GitHubToken != "ghp_x" || cfg.Search != "is:pr author:@me" || cfg.MinReviews != 3 {
+		t.Errorf("config mismatch: %+v", cfg)
+	}
+	if !strings.Contains(stdout.String(), "Config written to") {
+		t.Errorf("stdout = %q, want confirmation", stdout.String())
+	}
+}
+
+func TestRun_InitAbortedWritesNothing(t *testing.T) {
+	t.Parallel()
+
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	runner := func(_ tui.WizardModel) (tui.WizardResult, error) {
+		return tui.WizardResult{Completed: false}, nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	err := Run(t.Context(), []string{"-init", "-config", cfgPath}, &stdout, &stderr,
+		WithWizardRunner(runner))
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if _, statErr := os.Stat(cfgPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Error("aborted wizard must not write a config file")
+	}
+	if !strings.Contains(stdout.String(), "aborted") {
+		t.Errorf("stdout = %q, want abort notice", stdout.String())
+	}
+}
+
+func TestRun_AutoWizardOnMissingConfig(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	var called bool
+	runner := func(_ tui.WizardModel) (tui.WizardResult, error) {
+		called = true
+		return tui.WizardResult{Completed: true, Token: "t", Search: "s", MinReviews: 2}, nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	// No -config and no config on disk: the wizard runner being set stands in
+	// for an interactive terminal, so the missing-config path offers setup.
+	err := Run(t.Context(), nil, &stdout, &stderr, WithWizardRunner(runner))
+	if err != nil {
+		t.Fatalf("unexpected err: %v (stderr=%q)", err, stderr.String())
+	}
+	if !called {
+		t.Error("missing config on a terminal should launch the wizard")
+	}
+}
+
+func TestRun_MissingConfigStillErrorsInPipe(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	// No wizard runner and a non-terminal stdout: must keep the error path so
+	// scripts and CI fail loudly instead of blocking on a prompt.
+	var stdout, stderr bytes.Buffer
+	err := Run(t.Context(), nil, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected an error when config is missing in a pipe")
 	}
 }
 

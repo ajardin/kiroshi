@@ -29,6 +29,11 @@ const envToken = "GITHUB_TOKEN" //nolint:gosec // G101: env var name, not a toke
 // does not set it explicitly in the config file.
 const DefaultMinReviews = 2
 
+// ErrNotFound wraps the error returned by Load when the default config path
+// does not exist. Callers use errors.Is to decide whether to offer the
+// interactive setup wizard instead of failing outright.
+var ErrNotFound = errors.New("config not found")
+
 // Config is the runtime kiroshi configuration.
 type Config struct {
 	GitHubToken string
@@ -71,7 +76,7 @@ func Load(path string) (*Config, error) {
 	md, err := toml.DecodeFile(path, &fc)
 	if err != nil {
 		if !explicit && errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("no config found at %s: create one or pass --config <path>", path)
+			return nil, fmt.Errorf("no config found at %s: run `kiroshi -init` to create one: %w", path, ErrNotFound)
 		}
 		return nil, fmt.Errorf("load config %s: %w", path, err)
 	}
@@ -112,6 +117,38 @@ func DefaultPath() (string, error) {
 		return "", fmt.Errorf("resolve home directory: %w", err)
 	}
 	return filepath.Join(home, ".config", "kiroshi", "config.toml"), nil
+}
+
+// Save writes c to path as TOML, creating parent directories as needed. The
+// file holds the GitHub token, so it is created with 0600 (and the directory
+// with 0700). MinReviews is always written explicitly via the fileConfig
+// pointer so a deliberate 0 round-trips instead of being re-defaulted on load.
+func Save(path string, c *Config) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create config dir: %w", err)
+	}
+	//nolint:gosec // G304: the config path is user-supplied by design (-config flag / XDG).
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("create config %s: %w", path, err)
+	}
+
+	mr := c.MinReviews
+	fc := fileConfig{
+		GitHubToken: c.GitHubToken,
+		Search:      c.Search,
+		MinReviews:  &mr,
+	}
+	if err := toml.NewEncoder(f).Encode(fc); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("encode config %s: %w", path, err)
+	}
+	// Check Close explicitly: it surfaces deferred write/flush errors that a
+	// deferred Close would silently swallow.
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close config %s: %w", path, err)
+	}
+	return nil
 }
 
 func (c *Config) validate() error {

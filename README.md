@@ -18,6 +18,17 @@ Windows ship with each tagged release on GitHub.
 
 ## Configure
 
+The fastest way to create the config is the interactive wizard:
+
+```bash
+kiroshi -init
+```
+
+It prompts for the token, search query, and `min_reviews`, validates the
+token against GitHub live, and writes the file (mode `0600`). kiroshi also
+launches the wizard automatically the first time you run it on a terminal
+with no config present. To write the file by hand instead:
+
 kiroshi reads a TOML file from
 `$XDG_CONFIG_HOME/kiroshi/config.toml`
 (or `~/.config/kiroshi/config.toml` when `XDG_CONFIG_HOME` is unset).
@@ -48,6 +59,7 @@ The token field is redacted from structured logs (see
 
 ```bash
 kiroshi                       # interactive TUI when stdout is a terminal
+kiroshi -init                 # interactively create the config file and exit
 kiroshi -no-tui               # plain text, always
 kiroshi -config ./my.toml     # override the config path
 kiroshi -verbose              # debug-level slog output on stderr

@@ -23,8 +23,10 @@ import (
 type Option func(*runOptions)
 
 type runOptions struct {
-	githubClient gh.API
-	runTUI       func(model tui.Model) error
+	githubClient   gh.API
+	runTUI         func(model tui.Model) error
+	runWizard      func(model tui.WizardModel) (tui.WizardResult, error)
+	tokenValidator func(ctx context.Context, token string) (login string, err error)
 }
 
 // WithGitHubClient overrides the default GitHub client with a fake, so tests
@@ -38,6 +40,19 @@ func WithGitHubClient(c gh.API) Option {
 // real Bubble Tea program against /dev/tty.
 func WithTUIRunner(run func(tui.Model) error) Option {
 	return func(o *runOptions) { o.runTUI = run }
+}
+
+// WithWizardRunner overrides the function used to run the setup wizard. Tests
+// pass a stub returning a fixed WizardResult so they can assert on the written
+// config without spinning up a Bubble Tea program against a real terminal.
+func WithWizardRunner(run func(tui.WizardModel) (tui.WizardResult, error)) Option {
+	return func(o *runOptions) { o.runWizard = run }
+}
+
+// WithTokenValidator overrides the live token check the wizard performs before
+// writing the config. Tests inject a fake so the wizard never hits the network.
+func WithTokenValidator(validate func(ctx context.Context, token string) (login string, err error)) Option {
+	return func(o *runOptions) { o.tokenValidator = validate }
 }
 
 // Run parses args and executes the kiroshi CLI, writing user-facing output to
@@ -57,11 +72,13 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, opts ...O
 		showVersion bool
 		verbose     bool
 		noTUI       bool
+		initMode    bool
 		configPath  string
 	)
 	fs.BoolVar(&showVersion, "version", false, "print version and exit")
 	fs.BoolVar(&verbose, "verbose", false, "enable verbose logging")
 	fs.BoolVar(&noTUI, "no-tui", false, "disable the interactive TUI and print plain text")
+	fs.BoolVar(&initMode, "init", false, "interactively create the config file and exit")
 	fs.StringVar(&configPath, "config", "", "path to config file (default: $XDG_CONFIG_HOME/kiroshi/config.toml)")
 
 	if err := fs.Parse(args); err != nil {
@@ -78,6 +95,10 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, opts ...O
 		return nil
 	}
 
+	if initMode {
+		return runWizard(ctx, configPath, stdout, ro)
+	}
+
 	level := slog.LevelInfo
 	if verbose {
 		level = slog.LevelDebug
@@ -86,6 +107,11 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, opts ...O
 
 	cfg, err := config.Load(configPath)
 	if err != nil {
+		// No config on an interactive terminal: offer setup instead of failing.
+		// Stays on the error path for pipes / CI / -no-tui so scripts behave.
+		if errors.Is(err, config.ErrNotFound) && !noTUI && (ro.runWizard != nil || isTerminal(stdout)) {
+			return runWizard(ctx, configPath, stdout, ro)
+		}
 		return err
 	}
 
@@ -116,6 +142,65 @@ func isTerminal(w io.Writer) bool {
 		return false
 	}
 	return (stat.Mode() & os.ModeCharDevice) != 0
+}
+
+// runWizard resolves the target config path, runs the interactive setup
+// wizard, and writes the resulting config. The default runner requires a real
+// terminal; the WithWizardRunner test seam bypasses that check.
+func runWizard(ctx context.Context, configPath string, stdout io.Writer, ro runOptions) error {
+	path := configPath
+	if path == "" {
+		def, err := config.DefaultPath()
+		if err != nil {
+			return err
+		}
+		path = def
+	}
+
+	runWiz := ro.runWizard
+	if runWiz == nil {
+		if !isTerminal(stdout) {
+			return fmt.Errorf("kiroshi -init requires an interactive terminal")
+		}
+		runWiz = func(m tui.WizardModel) (tui.WizardResult, error) {
+			return tui.RunWizard(m, os.Stdin, stdout)
+		}
+	}
+
+	validate := ro.tokenValidator
+	if validate == nil {
+		validate = func(ctx context.Context, token string) (string, error) {
+			user, err := gh.New(token).AuthenticatedUser(ctx)
+			if err != nil {
+				return "", err
+			}
+			return user.Login, nil
+		}
+	}
+
+	model := tui.NewWizardModel(func(token string) (string, error) {
+		return validate(ctx, token)
+	})
+	res, err := runWiz(model)
+	if err != nil {
+		return fmt.Errorf("run setup wizard: %w", err)
+	}
+	if !res.Completed {
+		_, err := fmt.Fprintln(stdout, "Setup aborted; no config written.")
+		return err
+	}
+
+	cfg := &config.Config{
+		GitHubToken: res.Token,
+		Search:      res.Search,
+		MinReviews:  res.MinReviews,
+	}
+	if err := config.Save(path, cfg); err != nil {
+		return fmt.Errorf("save config: %w", err)
+	}
+
+	_, err = fmt.Fprintf(stdout, "Config written to %s. Run kiroshi to start.\n", path)
+	return err
 }
 
 func run(ctx context.Context, logger *slog.Logger, client gh.API, cfg *config.Config, stdout io.Writer, useTUI bool, runTUI func(tui.Model) error) error {

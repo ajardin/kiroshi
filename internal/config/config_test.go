@@ -221,6 +221,47 @@ func TestDefaultPath(t *testing.T) {
 	})
 }
 
+func TestLoadDefaultMissingIsErrNotFound(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("GITHUB_TOKEN", "")
+
+	_, err := Load("")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestSaveRoundTrip(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nested", "config.toml")
+
+	want := &Config{GitHubToken: "tok", Search: "is:pr author:@me", MinReviews: 0}
+	if err := Save(path, want); err != nil {
+		t.Fatalf("Save() err = %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat written config: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("config perm = %o, want 600", perm)
+	}
+
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() err = %v", err)
+	}
+	// An explicit 0 must survive the round-trip rather than re-defaulting to 2.
+	if got.GitHubToken != want.GitHubToken || got.Search != want.Search || got.MinReviews != 0 {
+		t.Errorf("round-trip mismatch: got %+v, want %+v", got, want)
+	}
+}
+
 func TestConfigLogValue(t *testing.T) {
 	t.Parallel()
 

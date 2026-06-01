@@ -232,6 +232,16 @@ exactly one that survives `approvalMine`.
 - **Preview test** (`TestPreview`) is a developer aid that prints the
   rendered dashboard. It's skipped unless `-v` is passed. Keep it skipped
   by default — it's not an assertion.
+- **Setup wizard.** `kiroshi -init` (and the auto-fallback when no config
+  exists on a TTY) runs `tui.WizardModel`, a second Bubble Tea program with
+  its own `RunWizard`. It reuses the dashboard palette and the filter's
+  hand-rolled text-input pattern (no `bubbles/textinput`); the token step is
+  masked. The CLI gates the auto-fallback on `errors.Is(err,
+  config.ErrNotFound)` so pipes/CI/`-no-tui` still error out instead of
+  blocking on a prompt. Token validation and the wizard runner are injected
+  through `WithTokenValidator` / `WithWizardRunner` (same test-seam idea as
+  `WithTUIRunner`) so tests touch neither the network nor a real terminal.
+  `config.Save` writes the file at mode `0600`.
 
 ## Workflow
 
