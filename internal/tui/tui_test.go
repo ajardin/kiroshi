@@ -273,6 +273,107 @@ func TestModel_SortPreservesSelection(t *testing.T) {
 	}
 }
 
+// approvalPRs returns two PRs where only #42 is approved by the viewer
+// ("ajardin", the login used by newTestModel).
+func approvalPRs() []gh.PullRequest {
+	prs := samplePRs()
+	prs[0].Approvals = []string{"ajardin"} // #42
+	prs[1].Approvals = []string{"carol"}   // #43, not the viewer
+	return prs
+}
+
+func approvalModel(t *testing.T) Model {
+	t.Helper()
+	m := NewModel(approvalPRs(), "ajardin", "v0.0.1", 2, time.Now(), nil, nil)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	return updated.(Model)
+}
+
+func TestModel_ApprovalCycleAdvancesMode(t *testing.T) {
+	t.Parallel()
+
+	m := approvalModel(t)
+	if m.approval != approvalAll {
+		t.Fatalf("initial approval = %d, want approvalAll", m.approval)
+	}
+	m = pressKey(t, m, 'a')
+	if m.approval != approvalMine {
+		t.Errorf("after 1st a: approval = %d, want approvalMine", m.approval)
+	}
+	m = pressKey(t, m, 'a')
+	if m.approval != approvalNotMine {
+		t.Errorf("after 2nd a: approval = %d, want approvalNotMine", m.approval)
+	}
+	m = pressKey(t, m, 'a')
+	if m.approval != approvalAll {
+		t.Errorf("after 3rd a: approval = %d, want approvalAll (wrap)", m.approval)
+	}
+}
+
+func TestModel_ApprovalFilterNarrowsList(t *testing.T) {
+	t.Parallel()
+
+	m := approvalModel(t)
+
+	m.approval = approvalMine
+	if visible := m.visiblePRs(); len(visible) != 1 || visible[0].Number != 42 {
+		t.Errorf("approvalMine = %+v, want only PR #42", visible)
+	}
+
+	m.approval = approvalNotMine
+	if visible := m.visiblePRs(); len(visible) != 1 || visible[0].Number != 43 {
+		t.Errorf("approvalNotMine = %+v, want only PR #43", visible)
+	}
+
+	m.approval = approvalAll
+	if visible := m.visiblePRs(); len(visible) != 2 {
+		t.Errorf("approvalAll = %d items, want 2", len(visible))
+	}
+}
+
+func TestModel_ApprovalFilterCombinesWithTextFilter(t *testing.T) {
+	t.Parallel()
+
+	m := approvalModel(t)
+	m.filter = "kiroshi" // matches both PRs
+	m.approval = approvalMine
+	if visible := m.visiblePRs(); len(visible) != 1 || visible[0].Number != 42 {
+		t.Errorf("text+approval filter = %+v, want only PR #42", visible)
+	}
+}
+
+func TestModel_ApprovalCyclePreservesSelectionWhenVisible(t *testing.T) {
+	t.Parallel()
+
+	m := approvalModel(t)
+	// Default order [#43, #42]; move cursor onto #42 (the approved one).
+	m = pressKey(t, m, 'j')
+	if got := m.visiblePRs()[m.cursor].Number; got != 42 {
+		t.Fatalf("setup: selected PR = #%d, want #42", got)
+	}
+	// approvalMine keeps only #42 — cursor must follow it to index 0.
+	m = pressKey(t, m, 'a')
+	if got := m.visiblePRs()[m.cursor].Number; got != 42 {
+		t.Errorf("after a, selected PR = #%d, want #42", got)
+	}
+}
+
+func TestView_RendersApprovalMarker(t *testing.T) {
+	t.Parallel()
+
+	view := approvalModel(t).View()
+	if !strings.Contains(view, approvalFragment()) {
+		t.Errorf("view missing approval marker %q\nview=\n%s", approvalFragment(), view)
+	}
+	// The marker rides next to the approved PR's title (#42), so it must not
+	// appear when the viewer approved nothing.
+	none := NewModel(samplePRs(), "nobody", "v", 2, time.Now(), nil, nil)
+	upd, _ := none.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	if strings.Contains(upd.(Model).View(), approvalFragment()) {
+		t.Error("approval marker shown when viewer approved nothing")
+	}
+}
+
 func numberOf(prs []gh.PullRequest, i int) int {
 	if i >= len(prs) {
 		return -1

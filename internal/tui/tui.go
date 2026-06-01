@@ -175,6 +175,16 @@ const (
 	sortNewestFirst
 )
 
+// approvalFilter narrows the list to PRs the viewer has (or has not) approved.
+// The user cycles through the three states with the `a` key.
+type approvalFilter int
+
+const (
+	approvalAll     approvalFilter = iota // no filtering
+	approvalMine                          // only PRs the viewer approved
+	approvalNotMine                       // only PRs the viewer has not approved
+)
+
 // Model is the Bubble Tea model backing the dashboard.
 type Model struct {
 	open    Opener
@@ -196,6 +206,7 @@ type Model struct {
 	filterMode bool
 	filter     string
 	sort       sortMode
+	approval   approvalFilter
 }
 
 // NewModel builds a Model populated with the given pull requests. Pass
@@ -313,6 +324,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m, nil
 	case "s":
 		return m.cycleSort(), nil
+	case "a":
+		return m.cycleApproval(), nil
 	}
 	return m, nil
 }
@@ -334,6 +347,28 @@ func (m Model) cycleSort() Model {
 			}
 		}
 	}
+	return m.clampCursor()
+}
+
+// cycleApproval advances the approval filter to the next state (with
+// wrap-around) and keeps the cursor on the previously-selected PR when it
+// survives the new filter. Unlike cycleSort the visible set can shrink, so we
+// fall back to clampCursor when the selected PR is filtered out.
+func (m Model) cycleApproval() Model {
+	var selectedURL string
+	if before := m.visiblePRs(); m.cursor < len(before) {
+		selectedURL = before[m.cursor].URL
+	}
+	m.approval = (m.approval + 1) % 3
+	if selectedURL != "" {
+		for i, pr := range m.visiblePRs() {
+			if pr.URL == selectedURL {
+				m.cursor = i
+				return m.scrollIntoView()
+			}
+		}
+	}
+	m.cursor = 0
 	return m.clampCursor()
 }
 
@@ -395,6 +430,16 @@ func (m Model) visiblePRs() []gh.PullRequest {
 				out = append(out, pr)
 			}
 		}
+	}
+	if m.approval != approvalAll {
+		mine := m.approval == approvalMine
+		var filtered []gh.PullRequest
+		for _, pr := range out {
+			if containsLogin(pr.Approvals, m.login) == mine {
+				filtered = append(filtered, pr)
+			}
+		}
+		out = filtered
 	}
 	// Copy before sorting: sort.SliceStable mutates in place, and when no
 	// filter is active `out` aliases m.prs — sorting it would silently
@@ -611,6 +656,12 @@ func (m Model) sectionHeaderView() string {
 	case sortNewestFirst:
 		text += " · newest created"
 	}
+	switch m.approval {
+	case approvalMine:
+		text += " · approved by you"
+	case approvalNotMine:
+		text += " · not approved by you"
+	}
 	arrow := lipgloss.NewStyle().Foreground(colMuted).Bold(true).Render("▶")
 	label := lipgloss.NewStyle().Foreground(colDim).Bold(true).Render(text)
 	return " " + arrow + "  " + label
@@ -693,7 +744,11 @@ func (m Model) renderRow(pr gh.PullRequest, selected bool) string {
 	ciText, ciColor := ciFragment(pr.CIState)
 	ci := st(ciColor, false).Render(ciText)
 	updated := st(colMuted, false).Render("updated " + humanAgo(m.now.Sub(pr.UpdatedAt)))
-	line2Body := author + sp + dot + sp + diff + sp + dot + sp + ticket + sp + dot + sp + ci + sp + dot + sp + updated
+	line2Body := author
+	if containsLogin(pr.Approvals, m.login) {
+		line2Body += sp + dot + sp + st(colGreen, false).Render(approvalFragment())
+	}
+	line2Body += sp + dot + sp + diff + sp + dot + sp + ticket + sp + dot + sp + ci + sp + dot + sp + updated
 
 	// Compose " ┃ <body>" / " ┃   <body>" (line 2 indents to align with title).
 	line1 := sp + bar + sp + line1Body
@@ -726,6 +781,7 @@ func (m Model) footerView() string {
 		keyHint("r", "rescan"),
 		keyHint("f", "filter"),
 		keyHint("s", "sort"),
+		keyHint("a", "approved"),
 		keyHint("q", "quit"),
 	}
 	sepStyle := lipgloss.NewStyle().Foreground(colMuted).Render(" · ")
@@ -789,6 +845,12 @@ func renderDiff(additions, deletions int, styler func(lipgloss.Color, bool) lipg
 	minus := styler(colRed, false).Render(fmt.Sprintf("-%d", deletions))
 	return plus + styler(colMuted, false).Render(" ") + minus
 }
+
+// approvalFragment is the label for the "viewer approved this PR" cell. It is
+// rendered in colGreen — a green approval check follows the universal GitHub
+// "approved" convention, the third deliberate concession to convention in the
+// otherwise-locked palette (alongside the CI and diff cells; see CLAUDE.md).
+func approvalFragment() string { return "✓ you" }
 
 // ciFragment returns the label and accent color for the CI cell of a row.
 // Pending is rendered in cyan (the project's "in progress elsewhere" hue);

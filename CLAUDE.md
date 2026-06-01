@@ -62,6 +62,14 @@ bucket and shows up on a non-error row:
 Both exceptions are deliberate concessions to universal conventions; do
 not extend the list without discussion.
 
+A third, green-side concession: the **approval marker** (`approvalFragment`,
+a `✓ you` cell on the row's second line) renders in `colGreen` when the
+viewer has approved the PR. Green here means "your approval is in" — the
+universal GitHub "approved" convention — even though the row's bucket accent
+may be cyan (Waiting On Others) rather than green. The cell is omitted
+entirely when the viewer hasn't approved; it is *not* a permanent column, so
+unlike the diff cell it has no aligned-placeholder requirement.
+
 ### CI state aggregation (locked)
 
 `aggregateCheckRuns` in `internal/gh/client.go` collapses GitHub's check
@@ -190,6 +198,24 @@ Unlike `f` (filter), `s` does not reset the cursor: the set is
 identical, only the order changes. `cycleSort` captures the selected
 PR's URL before the toggle and relocates the cursor onto the same PR's
 new index. Reset-to-zero would be jarring.
+
+### Approval filter toggle
+
+The `a` key cycles `Model.approval` through three states, applied in
+`visiblePRs` after the text filter (the two stack):
+
+- `approvalAll` — no filtering.
+- `approvalMine` — only PRs the viewer approved
+  (`containsLogin(pr.Approvals, m.login)`).
+- `approvalNotMine` — the complement.
+
+The header appends `· approved by you` / `· not approved by you` for the two
+explicit modes. `cycleApproval` mirrors `cycleSort`'s cursor-follow logic but
+with a twist: the `a` filter *shrinks* the set, so when the previously
+selected PR is filtered out it falls back to `clampCursor` (cursor 0) instead
+of holding position. The visual counterpart is the `✓ you` row marker (see
+the palette note above) — same data source, so a PR showing the marker is
+exactly one that survives `approvalMine`.
 
 ## Conventions
 
