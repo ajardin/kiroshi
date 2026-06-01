@@ -16,6 +16,8 @@ import (
 
 	"github.com/google/go-github/v80/github"
 	"golang.org/x/sync/errgroup"
+
+	"github.com/ajardin/kiroshi/internal/jira"
 )
 
 // HTTPTimeout is the hard deadline applied to every GitHub request.
@@ -65,6 +67,13 @@ const (
 // aggregated outcome of the check runs reported against it. Additions and
 // Deletions are the line counts reported by GitHub on PullRequests.Get
 // (the issues/search response doesn't include them).
+//
+// HeadRef and Body are captured for Jira issue-key extraction. JiraKey is the
+// issue key referenced by the PR (from branch, title or body), empty when none
+// is found; JiraStatus and JiraCategory are the resolved Jira status, left
+// empty when Jira is unconfigured or the lookup fails (the cell degrades to
+// "no ticket"). JiraCategory holds the raw statusCategory key
+// ("new"/"indeterminate"/"done"); see internal/jira.
 type PullRequest struct {
 	Owner              string
 	Repo               string
@@ -80,9 +89,14 @@ type PullRequest struct {
 	ChangesRequested   []string
 	Commented          []string
 	HeadSHA            string
+	HeadRef            string
+	Body               string
 	CIState            CIState
 	Additions          int
 	Deletions          int
+	JiraKey            string
+	JiraStatus         string
+	JiraCategory       string
 }
 
 // API is the subset of the GitHub API kiroshi consumes. It is declared as an
@@ -93,21 +107,31 @@ type API interface {
 	SearchPullRequests(ctx context.Context, query string) ([]PullRequest, error)
 }
 
-// Client talks to the GitHub REST API on behalf of kiroshi.
+// Client talks to the GitHub REST API on behalf of kiroshi. When jira is
+// non-nil it also resolves the Jira issue status of each PR; a nil jira
+// disables that enrichment.
 type Client struct {
-	gh *github.Client
+	gh   *github.Client
+	jira jira.Lookup
 }
 
 // New returns a Client authenticated with the given personal access token,
-// targeting github.com with a fixed HTTPTimeout per request.
+// targeting github.com with a fixed HTTPTimeout per request. Jira enrichment
+// is disabled; use NewWithJira to enable it.
 func New(token string) *Client {
-	return newClient(token, "")
+	return newClient(token, "", nil)
+}
+
+// NewWithJira returns a Client that also resolves Jira issue status for each
+// PR. Pass a nil jiraClient to disable Jira enrichment (equivalent to New).
+func NewWithJira(token string, jiraClient jira.Lookup) *Client {
+	return newClient(token, "", jiraClient)
 }
 
 // newClient is the test-friendly constructor. An empty baseURL targets
 // api.github.com; anything else is used verbatim and lets tests point the
-// client at an httptest.Server.
-func newClient(token, baseURL string) *Client {
+// client at an httptest.Server. A nil jiraClient disables Jira enrichment.
+func newClient(token, baseURL string, jiraClient jira.Lookup) *Client {
 	httpClient := &http.Client{
 		Timeout:   HTTPTimeout,
 		Transport: &advancedSearchTransport{base: http.DefaultTransport},
@@ -118,7 +142,7 @@ func newClient(token, baseURL string) *Client {
 		ghClient.BaseURL = u
 		ghClient.UploadURL = u
 	}
-	return &Client{gh: ghClient}
+	return &Client{gh: ghClient, jira: jiraClient}
 }
 
 // advancedSearchTransport forces advanced_search=true on /search/issues
@@ -183,7 +207,8 @@ func (c *Client) AuthenticatedUser(ctx context.Context) (User, error) {
 // search API caps results at 1000 regardless. Each result is enriched with
 // requested reviewers, review state, head-SHA + diff stats, and CI state
 // (four additional REST calls per PR — list reviewers, list reviews, pull
-// request detail, list check runs). Enrichment runs in parallel across PRs
+// request detail, list check runs), plus an optional fifth Jira issue lookup
+// when the client was built with NewWithJira. Enrichment runs in parallel across PRs
 // with a worker pool of enrichConcurrency; the order of the returned slice
 // matches the search response order regardless. A 401 is translated into
 // ErrInvalidToken.
@@ -218,10 +243,11 @@ func (c *Client) SearchPullRequests(ctx context.Context, query string) ([]PullRe
 	return out, nil
 }
 
-// enrichPullRequest chains the three per-PR enrichers in dependency order:
-// review state and PR detail (head SHA + diff stats) before the CI state
-// call which consumes the SHA. Extracted so the worker pool in
-// SearchPullRequests has a single closure to call per PR.
+// enrichPullRequest chains the per-PR enrichers in dependency order: review
+// state and PR detail (head SHA + diff stats + branch/body) before the CI
+// state call which consumes the SHA and the Jira lookup which consumes the
+// branch/body. Extracted so the worker pool in SearchPullRequests has a single
+// closure to call per PR.
 func (c *Client) enrichPullRequest(ctx context.Context, pr *PullRequest) error {
 	if err := c.enrichReviewState(ctx, pr); err != nil {
 		return err
@@ -229,7 +255,37 @@ func (c *Client) enrichPullRequest(ctx context.Context, pr *PullRequest) error {
 	if err := c.enrichDetail(ctx, pr); err != nil {
 		return err
 	}
-	return c.enrichCIState(ctx, pr)
+	if err := c.enrichCIState(ctx, pr); err != nil {
+		return err
+	}
+	return c.enrichJiraStatus(ctx, pr)
+}
+
+// enrichJiraStatus resolves the Jira issue referenced by the PR's branch,
+// title or body into pr.JiraKey / pr.JiraStatus / pr.JiraCategory. It runs
+// last because it needs pr.HeadRef and pr.Body, both populated by enrichDetail.
+//
+// It is a no-op when Jira is unconfigured (c.jira == nil) or no issue key is
+// present. Unlike the other enrichers it never returns an error: Jira is an
+// optional decoration, so a failed lookup (auth, network, 404) leaves all
+// three fields empty and the row falls back to a muted "no ticket" cell rather
+// than failing the whole GitHub scan.
+func (c *Client) enrichJiraStatus(ctx context.Context, pr *PullRequest) error {
+	if c.jira == nil {
+		return nil
+	}
+	key := jira.ExtractKey(pr.HeadRef, pr.Title, pr.Body)
+	if key == "" {
+		return nil
+	}
+	st, err := c.jira.Issue(ctx, key)
+	if err != nil {
+		return nil //nolint:nilerr // Jira is optional: degrade to an empty cell, never fail the scan.
+	}
+	pr.JiraKey = key
+	pr.JiraStatus = st.Name
+	pr.JiraCategory = string(st.Category)
+	return nil
 }
 
 func pullRequestFromIssue(iss *github.Issue) PullRequest {
@@ -337,10 +393,10 @@ func summarizeReviews(reviews []*github.PullRequestReview, author string) (appro
 }
 
 // enrichDetail fetches the per-PR detail (PullRequests.Get) and populates
-// the fields that the issues/search response doesn't carry: head SHA, line
-// additions, line deletions. enrichCIState relies on pr.HeadSHA being set,
-// so this must run first. Skipped silently when the PR coordinates are
-// incomplete.
+// the fields that the issues/search response doesn't carry: head SHA, head
+// ref (branch), body, line additions, line deletions. enrichCIState relies on
+// pr.HeadSHA and enrichJiraStatus on pr.HeadRef/pr.Body, so this must run
+// before both. Skipped silently when the PR coordinates are incomplete.
 func (c *Client) enrichDetail(ctx context.Context, pr *PullRequest) error {
 	if pr.Owner == "" || pr.Repo == "" || pr.Number == 0 {
 		return nil
@@ -355,7 +411,9 @@ func (c *Client) enrichDetail(ctx context.Context, pr *PullRequest) error {
 	}
 	if head := detail.GetHead(); head != nil {
 		pr.HeadSHA = head.GetSHA()
+		pr.HeadRef = head.GetRef()
 	}
+	pr.Body = detail.GetBody()
 	pr.Additions = detail.GetAdditions()
 	pr.Deletions = detail.GetDeletions()
 	return nil

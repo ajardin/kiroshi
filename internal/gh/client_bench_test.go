@@ -14,9 +14,10 @@ import (
 // enrichment throughput against a mocked GitHub that injects a 5ms
 // latency on each REST call to approximate real network round-trips.
 // Useful as a baseline before changing enrichConcurrency or adding a new
-// per-PR enricher (e.g. the upcoming Jira lookup): if a change adds an
-// extra REST call per PR, ns/op should roughly grow by latency/concurrency
-// × PR count and nothing else.
+// per-PR enricher: if a change adds an extra REST call per PR, ns/op should
+// roughly grow by latency/concurrency × PR count and nothing else. (The
+// bench builds the client with a nil Jira lookup, so the optional Jira call
+// is not exercised here.)
 func BenchmarkSearchPullRequests_Enrichment(b *testing.B) {
 	const (
 		prCount = 50
@@ -50,7 +51,7 @@ func BenchmarkSearchPullRequests_Enrichment(b *testing.B) {
 	srv := httptest.NewServer(handler)
 	b.Cleanup(srv.Close)
 
-	c := newClient("bench-token", srv.URL+"/")
+	c := newClient("bench-token", srv.URL+"/", nil)
 	ctx := context.Background()
 
 	b.ResetTimer()

@@ -18,6 +18,11 @@ the code does, read the code; for *why* it looks the way it does, read here.
 - `internal/gh` — GitHub client. Uses an `advancedSearchTransport`
   RoundTripper to hit the v2 advanced search endpoint (the classic search
   endpoint can't express the queries we need).
+- `internal/jira` — optional Jira Cloud client (REST v3, HTTP Basic). A
+  separate package, not folded into `internal/gh`: it's a different service
+  with different auth, and keeping it out keeps the go-github wrapper and its
+  test harness clean. `gh` imports it (one-directional); `gh.NewWithJira`
+  wires it in. Also home to `ExtractKey` (PR → issue key).
 - `internal/config`, `internal/version` — self-explanatory.
 
 TTY detection lives in `cli.isTerminal` and uses `os.ModeCharDevice`. Any
@@ -69,6 +74,16 @@ universal GitHub "approved" convention — even though the row's bucket accent
 may be cyan (Waiting On Others) rather than green. The cell is omitted
 entirely when the viewer hasn't approved; it is *not* a permanent column, so
 unlike the diff cell it has no aligned-placeholder requirement.
+
+The **Jira cell** (`jiraFragment`) is a fourth concession, but a
+reuse-only one — it introduces no new accent. It colors by the issue's
+`statusCategory` with the same semantics as CI: `done` → green (like
+"ci: passing"), `indeterminate` → cyan (in progress elsewhere, like
+pending), `new`/unknown → `colDim`. There is deliberately **no red**
+state — a Jira ticket is never an "error". Like CI it's an aligned column,
+falling back to `jira: —` (muted) when the PR references no resolved ticket
+— either no key at all, or a lookup that failed (the enricher leaves all
+three Jira fields empty in both cases, so the cell can't tell them apart).
 
 ### CI state aggregation (locked)
 
@@ -236,12 +251,21 @@ exactly one that survives `approvalMine`.
   exists on a TTY) runs `tui.WizardModel`, a second Bubble Tea program with
   its own `RunWizard`. It reuses the dashboard palette and the filter's
   hand-rolled text-input pattern (no `bubbles/textinput`); the token step is
-  masked. The CLI gates the auto-fallback on `errors.Is(err,
+  masked. The steps are token → search → min-reviews → **3 optional Jira
+  steps** (base URL → email → token) → validating. The Jira steps are
+  skippable: a blank base URL jumps straight to validating, so users
+  without Jira never touch email/token. The Jira token step is masked like
+  the GitHub one. When Jira *is* configured, the validating step checks the
+  credentials live (`jira.Client.Validate` → `GET /rest/api/3/myself`)
+  after the GitHub token, via the injected `validateJira` func passed to
+  `NewWizardModel`; a failure lands on the shared error step ("validation
+  failed") and starting over re-walks the form with the typed values kept.
+  The CLI gates the auto-fallback on `errors.Is(err,
   config.ErrNotFound)` so pipes/CI/`-no-tui` still error out instead of
   blocking on a prompt. Token validation and the wizard runner are injected
   through `WithTokenValidator` / `WithWizardRunner` (same test-seam idea as
   `WithTUIRunner`) so tests touch neither the network nor a real terminal.
-  `config.Save` writes the file at mode `0600`.
+  `config.Save` writes the file at mode `0600` (it holds both tokens).
 
 ## Workflow
 
@@ -268,17 +292,32 @@ exactly one that survives `approvalMine`.
     fills `HeadSHA`, `Additions`, `Deletions` together — the head SHA is a
     prerequisite for the Checks call, so this was the natural seam. No new
     REST cost on top of CI; the row renders `+N -M` via `renderDiff`.
-  - Jira ticket: not started.
+  - Jira ticket ✅ shipped (optional). `enrichJiraStatus` extracts the
+    issue key from the PR's branch, title, then body (`jira.ExtractKey`,
+    regex `[A-Z][A-Z0-9]+-\d+`, first match wins) and resolves it through
+    the `internal/jira` Cloud client (`GET /rest/api/3/issue/{key}
+    ?fields=status`, HTTP Basic with email + API token). `enrichDetail`
+    captures `HeadRef` and `Body` for this — same `PullRequests.Get` call,
+    no new GitHub cost. One Jira REST call per PR that has a key. It's a
+    no-op when the client was built with `gh.New` (no Jira) rather than
+    `gh.NewWithJira`. Config is the optional `jira_base_url`/`jira_email`/
+    `jira_token` trio (env override `JIRA_API_TOKEN`); validation requires
+    all three or none.
 
   Per-PR enrichment runs in this order via `enrichPullRequest`:
-  `enrichReviewState` → `enrichDetail` → `enrichCIState` (the dependency is
-  real — CI needs the head SHA published by detail). Four extra REST calls
-  per PR. **Across PRs, enrichment is parallelized** through an
-  `errgroup` worker pool capped at `enrichConcurrency` (8). Eight is a
-  comfortable margin under GitHub's secondary rate limit (~100 concurrent
-  requests per token); raise it if you ever need to handle hundreds of PRs
-  in one rescan. Error semantics are fail-fast — the first enricher error
-  cancels the others and surfaces through the rescan status line.
+  `enrichReviewState` → `enrichDetail` → `enrichCIState` →
+  `enrichJiraStatus` (the dependencies are real — CI needs the head SHA,
+  Jira needs the branch/body, both published by detail). Four GitHub REST
+  calls per PR plus an optional fifth Jira call. **Across PRs, enrichment
+  is parallelized** through an `errgroup` worker pool capped at
+  `enrichConcurrency` (8). Eight is a comfortable margin under GitHub's
+  secondary rate limit (~100 concurrent requests per token); raise it if
+  you ever need to handle hundreds of PRs in one rescan. Error semantics
+  are fail-fast for the GitHub enrichers — the first error cancels the
+  others and surfaces through the rescan status line. **Jira is the
+  exception:** it's an optional decoration, so `enrichJiraStatus` swallows
+  all its errors (auth, network, 404) and degrades to a muted `jira: —`
+  cell rather than failing the whole scan.
 - **Phase 4**: `?` help overlay. Not started. The footer used to
   advertise `?` as a key hint with a no-op handler; both were removed
   to avoid promising a shortcut that does nothing. When Phase 4 lands,

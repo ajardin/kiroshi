@@ -14,6 +14,7 @@ import (
 
 	"github.com/ajardin/kiroshi/internal/config"
 	"github.com/ajardin/kiroshi/internal/gh"
+	"github.com/ajardin/kiroshi/internal/jira"
 	"github.com/ajardin/kiroshi/internal/tui"
 	"github.com/ajardin/kiroshi/internal/version"
 )
@@ -117,7 +118,11 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, opts ...O
 
 	client := ro.githubClient
 	if client == nil {
-		client = gh.New(cfg.GitHubToken)
+		if cfg.JiraBaseURL != "" {
+			client = gh.NewWithJira(cfg.GitHubToken, jira.New(cfg.JiraBaseURL, cfg.JiraEmail, cfg.JiraToken))
+		} else {
+			client = gh.New(cfg.GitHubToken)
+		}
 	}
 
 	useTUI := !noTUI && (ro.runTUI != nil || isTerminal(stdout))
@@ -178,9 +183,14 @@ func runWizard(ctx context.Context, configPath string, stdout io.Writer, ro runO
 		}
 	}
 
-	model := tui.NewWizardModel(func(token string) (string, error) {
-		return validate(ctx, token)
-	})
+	model := tui.NewWizardModel(
+		func(token string) (string, error) {
+			return validate(ctx, token)
+		},
+		func(baseURL, email, token string) error {
+			return jira.New(baseURL, email, token).Validate(ctx)
+		},
+	)
 	res, err := runWiz(model)
 	if err != nil {
 		return fmt.Errorf("run setup wizard: %w", err)
@@ -194,6 +204,9 @@ func runWizard(ctx context.Context, configPath string, stdout io.Writer, ro runO
 		GitHubToken: res.Token,
 		Search:      res.Search,
 		MinReviews:  res.MinReviews,
+		JiraBaseURL: res.JiraBaseURL,
+		JiraEmail:   res.JiraEmail,
+		JiraToken:   res.JiraToken,
 	}
 	if err := config.Save(path, cfg); err != nil {
 		return fmt.Errorf("save config: %w", err)
@@ -222,7 +235,7 @@ func run(ctx context.Context, logger *slog.Logger, client gh.API, cfg *config.Co
 		refresh := func(ctx context.Context) ([]gh.PullRequest, error) {
 			return client.SearchPullRequests(ctx, cfg.Search)
 		}
-		model := tui.NewModel(prs, user.Login, version.String(), cfg.MinReviews, time.Now(), tui.OpenURL, refresh)
+		model := tui.NewModel(prs, user.Login, version.String(), cfg.MinReviews, cfg.JiraBaseURL != "", time.Now(), tui.OpenURL, refresh)
 		if err := runTUI(model); err != nil {
 			return fmt.Errorf("run tui: %w", err)
 		}

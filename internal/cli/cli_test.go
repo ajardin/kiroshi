@@ -250,12 +250,21 @@ search = "s"`)
 
 func TestRun_InitWritesConfig(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("JIRA_API_TOKEN", "")
 	cfgPath := filepath.Join(t.TempDir(), "config.toml")
 
 	var gotModel bool
 	runner := func(_ tui.WizardModel) (tui.WizardResult, error) {
 		gotModel = true
-		return tui.WizardResult{Completed: true, Token: "ghp_x", Search: "is:pr author:@me", MinReviews: 3}, nil
+		return tui.WizardResult{
+			Completed:   true,
+			Token:       "ghp_x",
+			Search:      "is:pr author:@me",
+			MinReviews:  3,
+			JiraBaseURL: "https://acme.atlassian.net",
+			JiraEmail:   "me@acme.com",
+			JiraToken:   "jira-tok",
+		}, nil
 	}
 
 	var stdout, stderr bytes.Buffer
@@ -274,6 +283,9 @@ func TestRun_InitWritesConfig(t *testing.T) {
 	}
 	if cfg.GitHubToken != "ghp_x" || cfg.Search != "is:pr author:@me" || cfg.MinReviews != 3 {
 		t.Errorf("config mismatch: %+v", cfg)
+	}
+	if cfg.JiraBaseURL != "https://acme.atlassian.net" || cfg.JiraEmail != "me@acme.com" || cfg.JiraToken != "jira-tok" {
+		t.Errorf("jira config not persisted: %+v", cfg)
 	}
 	if !strings.Contains(stdout.String(), "Config written to") {
 		t.Errorf("stdout = %q, want confirmation", stdout.String())

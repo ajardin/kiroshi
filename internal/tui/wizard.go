@@ -26,6 +26,9 @@ const (
 	stepToken wizardStep = iota
 	stepSearch
 	stepMinReviews
+	stepJiraURL
+	stepJiraEmail
+	stepJiraToken
 	stepValidating
 	stepError
 	stepDone
@@ -35,10 +38,13 @@ const (
 // by RunWizard. Completed is false when the user aborted (esc / ctrl+c); in
 // that case the other fields are meaningless and nothing should be written.
 type WizardResult struct {
-	Completed  bool
-	Token      string
-	Search     string
-	MinReviews int
+	Completed   bool
+	Token       string
+	Search      string
+	MinReviews  int
+	JiraBaseURL string
+	JiraEmail   string
+	JiraToken   string
 }
 
 // wizardValidateMsg carries the result of the live token check back into the
@@ -58,6 +64,11 @@ type WizardModel struct {
 	// the placeholder default".
 	search        string
 	minReviewsStr string
+	// jira* hold the optional Jira config buffers. A blank jiraURL skips Jira
+	// setup entirely (the email/token steps are not shown).
+	jiraURL   string
+	jiraEmail string
+	jiraToken string
 
 	login  string // login resolved by a successful token validation
 	errMsg string // inline error shown on stepMinReviews / stepError
@@ -65,14 +76,19 @@ type WizardModel struct {
 	// validate performs the live token check. Injected so tests and the CLI
 	// can supply their own (the CLI closes over a context + gh client).
 	validate func(token string) (login string, err error)
+	// validateJira performs the live Jira credential check, called only when the
+	// user configured a Jira base URL. Injected for the same reason as validate.
+	validateJira func(baseURL, email, token string) error
 
 	width  int
 	height int
 }
 
-// NewWizardModel builds a wizard that validates tokens through validate.
-func NewWizardModel(validate func(token string) (login string, err error)) WizardModel {
-	return WizardModel{step: stepToken, validate: validate}
+// NewWizardModel builds a wizard that validates the GitHub token through
+// validate and (when Jira is configured) the Jira credentials through
+// validateJira.
+func NewWizardModel(validate func(token string) (login string, err error), validateJira func(baseURL, email, token string) error) WizardModel {
+	return WizardModel{step: stepToken, validate: validate, validateJira: validateJira}
 }
 
 // Init implements tea.Model. The wizard has no startup command.
@@ -124,6 +140,32 @@ func (m WizardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case stepMinReviews:
 		return m.handleMinReviewsKey(msg)
+	case stepJiraURL:
+		if msg.Type == tea.KeyEnter {
+			if strings.TrimSpace(m.jiraURL) == "" {
+				// Blank URL = skip Jira entirely; go straight to validation.
+				m.step = stepValidating
+				return m, m.validateCmd()
+			}
+			m.step = stepJiraEmail
+			return m, nil
+		}
+		m.jiraURL = applyKey(m.jiraURL, msg)
+		return m, nil
+	case stepJiraEmail:
+		if msg.Type == tea.KeyEnter {
+			m.step = stepJiraToken
+			return m, nil
+		}
+		m.jiraEmail = applyKey(m.jiraEmail, msg)
+		return m, nil
+	case stepJiraToken:
+		if msg.Type == tea.KeyEnter {
+			m.step = stepValidating
+			return m, m.validateCmd()
+		}
+		m.jiraToken = applyKey(m.jiraToken, msg)
+		return m, nil
 	case stepError:
 		// Any non-abort key returns to the token step to retry.
 		m.step = stepToken
@@ -160,8 +202,8 @@ func (m WizardModel) handleMinReviewsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.errMsg = ""
-		m.step = stepValidating
-		return m, m.validateCmd()
+		m.step = stepJiraURL
+		return m, nil
 	case tea.KeyBackspace, tea.KeyDelete:
 		if len(m.minReviewsStr) > 0 {
 			m.minReviewsStr = m.minReviewsStr[:len(m.minReviewsStr)-1]
@@ -204,9 +246,18 @@ func (m WizardModel) resolvedSearch() string {
 
 func (m WizardModel) validateCmd() tea.Cmd {
 	token, validate := m.token, m.validate
+	jiraURL, jiraEmail, jiraToken, validateJira := strings.TrimSpace(m.jiraURL), m.jiraEmail, m.jiraToken, m.validateJira
 	return func() tea.Msg {
 		login, err := validate(token)
-		return wizardValidateMsg{login: login, err: err}
+		if err != nil {
+			return wizardValidateMsg{err: err}
+		}
+		if jiraURL != "" {
+			if jerr := validateJira(jiraURL, jiraEmail, jiraToken); jerr != nil {
+				return wizardValidateMsg{err: fmt.Errorf("jira: %w", jerr)}
+			}
+		}
+		return wizardValidateMsg{login: login}
 	}
 }
 
@@ -217,10 +268,13 @@ func (m WizardModel) result() WizardResult {
 	}
 	mr, _ := m.parsedMinReviews() // already validated before leaving stepMinReviews
 	return WizardResult{
-		Completed:  true,
-		Token:      strings.TrimSpace(m.token),
-		Search:     m.resolvedSearch(),
-		MinReviews: mr,
+		Completed:   true,
+		Token:       strings.TrimSpace(m.token),
+		Search:      m.resolvedSearch(),
+		MinReviews:  mr,
+		JiraBaseURL: strings.TrimSpace(m.jiraURL),
+		JiraEmail:   strings.TrimSpace(m.jiraEmail),
+		JiraToken:   strings.TrimSpace(m.jiraToken),
 	}
 }
 
@@ -232,17 +286,23 @@ func (m WizardModel) View() string {
 	var body string
 	switch m.step {
 	case stepToken:
-		body = m.fieldView("1/3", "GitHub token", maskValue(m.token), "scopes: repo, read:org", "")
+		body = m.fieldView("1/6", "GitHub token", maskValue(m.token), "scopes: repo, read:org", "")
 	case stepSearch:
-		body = m.fieldView("2/3", "Search query", m.search, defaultSearch, "")
+		body = m.fieldView("2/6", "Search query", m.search, defaultSearch, "")
 	case stepMinReviews:
-		body = m.fieldView("3/3", "Minimum approvals to ship", m.minReviewsStr, strconv.Itoa(config.DefaultMinReviews), m.errMsg)
+		body = m.fieldView("3/6", "Minimum approvals to ship", m.minReviewsStr, strconv.Itoa(config.DefaultMinReviews), m.errMsg)
+	case stepJiraURL:
+		body = m.fieldView("4/6", "Jira base URL (optional)", m.jiraURL, "https://acme.atlassian.net · blank to skip", "")
+	case stepJiraEmail:
+		body = m.fieldView("5/6", "Jira account email", m.jiraEmail, "you@acme.com", "")
+	case stepJiraToken:
+		body = m.fieldView("6/6", "Jira API token", maskValue(m.jiraToken), "id.atlassian.com/manage-profile/security/api-tokens", "")
 	case stepValidating:
 		body = lipgloss.NewStyle().Foreground(colCyan).Render("Validating token with GitHub…")
 	case stepError:
-		head := lipgloss.NewStyle().Foreground(colRed).Bold(true).Render("✗ token rejected")
+		head := lipgloss.NewStyle().Foreground(colRed).Bold(true).Render("✗ validation failed")
 		detail := lipgloss.NewStyle().Foreground(colText).Render(m.errMsg)
-		hint := lipgloss.NewStyle().Foreground(colDim).Render("press any key to re-enter the token · esc to quit")
+		hint := lipgloss.NewStyle().Foreground(colDim).Render("press any key to start over · esc to quit")
 		body = head + "\n" + detail + "\n\n" + hint
 	case stepDone:
 		body = lipgloss.NewStyle().Foreground(colGreen).Render(fmt.Sprintf("✓ validated as @%s", m.login))

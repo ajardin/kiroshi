@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/ajardin/kiroshi/internal/gh"
+	"github.com/ajardin/kiroshi/internal/jira"
 )
 
 // TestPreview prints a rendered dashboard so the layout can be eyeballed via
@@ -23,6 +24,7 @@ func TestPreview(t *testing.T) {
 			Author: "sarah-dev", URL: "x", UpdatedAt: time.Now().Add(-14 * time.Minute),
 			RequestedReviewers: []string{"ajardin"}, CIState: gh.CIStatePending,
 			Additions: 348, Deletions: 127,
+			JiraKey: "CRM-2847", JiraStatus: "In Review", JiraCategory: string(jira.CategoryIndeterminate),
 		},
 		{
 			Owner: "ajardin", Repo: "agent-portal", Number: 1203, Title: "Add commission simulator widget",
@@ -30,12 +32,14 @@ func TestPreview(t *testing.T) {
 			Approvals: []string{"ajardin"}, RequestedReviewers: []string{"lucas-be"},
 			CIState:   gh.CIStateSuccess,
 			Additions: 612, Deletions: 14,
+			JiraKey: "PORT-1203", JiraStatus: "Done", JiraCategory: string(jira.CategoryDone),
 		},
 		{
 			Owner: "ajardin", Repo: "listing-api", Number: 589, Title: "Migrate search to Meilisearch v1.8",
 			Author: "lucas-be", URL: "x", UpdatedAt: time.Now().Add(-26 * time.Hour),
 			Approvals: []string{"ajardin", "sarah-dev"}, CIState: gh.CIStateSuccess,
 			Additions: 1842, Deletions: 980,
+			JiraKey: "SRCH-589", JiraStatus: "To Do", JiraCategory: string(jira.CategoryNew),
 		},
 		{
 			Owner: "ajardin", Repo: "infra-terraform", Number: 144, Title: "Add staging replica for crm-core",
@@ -49,7 +53,7 @@ func TestPreview(t *testing.T) {
 			CIState: gh.CIStateNone,
 		},
 	}
-	m := NewModel(prs, "ajardin", "v0.0.1", 2, time.Now().Add(-2*time.Minute), nil, nil)
+	m := NewModel(prs, "ajardin", "v0.0.1", 2, true, time.Now().Add(-2*time.Minute), nil, nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 36})
 	fmt.Println()
 	fmt.Println(updated.(Model).View())

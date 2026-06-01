@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/ajardin/kiroshi/internal/gh"
+	"github.com/ajardin/kiroshi/internal/jira"
 )
 
 func samplePRs() []gh.PullRequest {
@@ -35,7 +36,7 @@ func samplePRs() []gh.PullRequest {
 
 func newTestModel(t *testing.T, open Opener, refresh Refresher) Model {
 	t.Helper()
-	m := NewModel(samplePRs(), "ajardin", "v0.0.1", 2, time.Now(), open, refresh)
+	m := NewModel(samplePRs(), "ajardin", "v0.0.1", 2, false, time.Now(), open, refresh)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	return updated.(Model)
 }
@@ -284,7 +285,7 @@ func approvalPRs() []gh.PullRequest {
 
 func approvalModel(t *testing.T) Model {
 	t.Helper()
-	m := NewModel(approvalPRs(), "ajardin", "v0.0.1", 2, time.Now(), nil, nil)
+	m := NewModel(approvalPRs(), "ajardin", "v0.0.1", 2, false, time.Now(), nil, nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	return updated.(Model)
 }
@@ -367,7 +368,7 @@ func TestView_RendersApprovalMarker(t *testing.T) {
 	}
 	// The marker rides next to the approved PR's title (#42), so it must not
 	// appear when the viewer approved nothing.
-	none := NewModel(samplePRs(), "nobody", "v", 2, time.Now(), nil, nil)
+	none := NewModel(samplePRs(), "nobody", "v", 2, false, time.Now(), nil, nil)
 	upd, _ := none.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	if strings.Contains(upd.(Model).View(), approvalFragment()) {
 		t.Error("approval marker shown when viewer approved nothing")
@@ -476,10 +477,61 @@ func TestView_RendersHeaderCardsAndKeys(t *testing.T) {
 	}
 }
 
+func TestJiraFragment(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		key       string
+		status    string
+		category  string
+		wantLabel string
+		wantColor lipgloss.Color
+	}{
+		{"no key", "", "", "", "jira: —", colMuted},
+		{"done", "PROJ-1", "Done", string(jira.CategoryDone), "jira: PROJ-1 Done", colGreen},
+		{"in progress", "PROJ-2", "In Review", string(jira.CategoryIndeterminate), "jira: PROJ-2 In Review", colCyan},
+		{"to do", "PROJ-3", "To Do", string(jira.CategoryNew), "jira: PROJ-3 To Do", colDim},
+		{"unknown category", "PROJ-4", "Custom", "", "jira: PROJ-4 Custom", colDim},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			label, color := jiraFragment(tt.key, tt.status, tt.category)
+			if label != tt.wantLabel {
+				t.Errorf("label = %q, want %q", label, tt.wantLabel)
+			}
+			if color != tt.wantColor {
+				t.Errorf("color = %v, want %v", color, tt.wantColor)
+			}
+		})
+	}
+}
+
+func TestView_JiraEnabledIndicator(t *testing.T) {
+	t.Parallel()
+
+	prs := samplePRs()
+	prs[0].JiraKey = "PROJ-42"
+	prs[0].JiraStatus = "In Review"
+	prs[0].JiraCategory = string(jira.CategoryIndeterminate)
+
+	m := NewModel(prs, "ajardin", "v0.0.1", 2, true, time.Now(), nil, nil)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	view := updated.(Model).View()
+
+	if !strings.Contains(view, "● jira") {
+		t.Errorf("expected active jira indicator, view=\n%s", view)
+	}
+	if !strings.Contains(view, "PROJ-42") {
+		t.Errorf("expected Jira key in row, view=\n%s", view)
+	}
+}
+
 func TestView_TerminalTooSmall(t *testing.T) {
 	t.Parallel()
 
-	m := NewModel(samplePRs(), "u", "v", 2, time.Now(), nil, nil)
+	m := NewModel(samplePRs(), "u", "v", 2, false, time.Now(), nil, nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 40, Height: 10})
 	if !strings.Contains(updated.(Model).View(), "Terminal too small") {
 		t.Errorf("expected too-small message, got\n%s", updated.(Model).View())
@@ -667,7 +719,7 @@ func TestView_RendersCIStateForEachRow(t *testing.T) {
 		{Owner: "ajardin", Repo: "kiroshi", Number: 4, Title: "No CI", Author: "dave",
 			URL: "u4", UpdatedAt: time.Date(2026, 4, 23, 0, 0, 0, 0, time.UTC), CIState: gh.CIStateNone},
 	}
-	m := NewModel(prs, "viewer", "v0.0.1", 2, time.Now(), nil, nil)
+	m := NewModel(prs, "viewer", "v0.0.1", 2, false, time.Now(), nil, nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 50})
 	view := updated.(Model).View()
 	for _, want := range []string{"ci: ✓ passing", "ci: ● pending", "ci: ✗ failing", "ci: —"} {

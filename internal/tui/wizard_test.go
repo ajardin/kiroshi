@@ -34,10 +34,12 @@ func enter(t *testing.T, m WizardModel) (WizardModel, tea.Cmd) {
 
 func okValidator(string) (string, error) { return "octocat", nil }
 
+func okJiraValidator(_, _, _ string) error { return nil }
+
 func TestWizard_HappyPath(t *testing.T) {
 	t.Parallel()
 
-	m := NewWizardModel(okValidator)
+	m := NewWizardModel(okValidator, okJiraValidator)
 	m = typeRunes(t, m, "ghp_token")
 	m, _ = enter(t, m) // -> search
 
@@ -45,7 +47,9 @@ func TestWizard_HappyPath(t *testing.T) {
 	m, _ = enter(t, m) // -> min reviews
 
 	m = typeRunes(t, m, "3")
-	m, cmd := enter(t, m) // -> validating, fires validateCmd
+	m, _ = enter(t, m) // -> jira url
+
+	m, cmd := enter(t, m) // jira url left blank -> validating, fires validateCmd
 	if m.step != stepValidating {
 		t.Fatalf("step = %v, want stepValidating", m.step)
 	}
@@ -66,15 +70,88 @@ func TestWizard_HappyPath(t *testing.T) {
 	if res.Token != "ghp_token" || res.Search != "is:pr author:@me" || res.MinReviews != 3 {
 		t.Errorf("unexpected result: %+v", res)
 	}
+	if res.JiraBaseURL != "" || res.JiraEmail != "" || res.JiraToken != "" {
+		t.Errorf("expected blank Jira config, got %+v", res)
+	}
+}
+
+func TestWizard_JiraConfigured(t *testing.T) {
+	t.Parallel()
+
+	m := NewWizardModel(okValidator, okJiraValidator)
+	m = typeRunes(t, m, "ghp_token")
+	m, _ = enter(t, m) // -> search
+	m, _ = enter(t, m) // search blank -> min reviews
+	m, _ = enter(t, m) // min reviews blank -> jira url
+
+	m = typeRunes(t, m, "https://acme.atlassian.net")
+	m, _ = enter(t, m) // -> jira email
+	if m.step != stepJiraEmail {
+		t.Fatalf("step = %v, want stepJiraEmail", m.step)
+	}
+
+	m = typeRunes(t, m, "me@acme.com")
+	m, _ = enter(t, m) // -> jira token
+
+	m = typeRunes(t, m, "jira-secret")
+	m, cmd := enter(t, m) // -> validating
+	if m.step != stepValidating {
+		t.Fatalf("step = %v, want stepValidating", m.step)
+	}
+	m, _ = send(t, m, cmd())
+
+	res := m.result()
+	if res.JiraBaseURL != "https://acme.atlassian.net" || res.JiraEmail != "me@acme.com" || res.JiraToken != "jira-secret" {
+		t.Errorf("unexpected Jira config: %+v", res)
+	}
+}
+
+func TestWizard_JiraValidationFails(t *testing.T) {
+	t.Parallel()
+
+	badJira := func(_, _, _ string) error { return errors.New("jira unauthorized") }
+	m := NewWizardModel(okValidator, badJira)
+	m = typeRunes(t, m, "ghp_token")
+	m, _ = enter(t, m) // -> search
+	m, _ = enter(t, m) // -> min reviews
+	m, _ = enter(t, m) // -> jira url
+
+	m = typeRunes(t, m, "https://acme.atlassian.net")
+	m, _ = enter(t, m) // -> jira email
+	m = typeRunes(t, m, "me@acme.com")
+	m, _ = enter(t, m) // -> jira token
+	m = typeRunes(t, m, "bad-token")
+	m, cmd := enter(t, m) // -> validating
+
+	m, _ = send(t, m, cmd())
+	if m.step != stepError {
+		t.Fatalf("step = %v, want stepError", m.step)
+	}
+	if !strings.Contains(m.errMsg, "jira") {
+		t.Errorf("errMsg = %q, want it to mention jira", m.errMsg)
+	}
+}
+
+func TestWizard_JiraTokenIsMasked(t *testing.T) {
+	t.Parallel()
+
+	m := NewWizardModel(okValidator, okJiraValidator)
+	m.step = stepJiraToken
+	m = typeRunes(t, m, "jira-secret")
+	view := m.View()
+	if strings.Contains(view, "jira-secret") {
+		t.Error("raw Jira token leaked into the view")
+	}
 }
 
 func TestWizard_BlankFieldsUseDefaults(t *testing.T) {
 	t.Parallel()
 
-	m := NewWizardModel(okValidator)
+	m := NewWizardModel(okValidator, okJiraValidator)
 	m = typeRunes(t, m, "tok")
 	m, _ = enter(t, m) // search left blank
 	m, _ = enter(t, m) // min reviews left blank
+	m, _ = enter(t, m) // jira url left blank -> skip Jira
 	m, cmd := enter(t, m)
 	m, _ = send(t, m, cmd())
 
@@ -90,7 +167,7 @@ func TestWizard_BlankFieldsUseDefaults(t *testing.T) {
 func TestWizard_InvalidMinReviewsStays(t *testing.T) {
 	t.Parallel()
 
-	m := NewWizardModel(okValidator)
+	m := NewWizardModel(okValidator, okJiraValidator)
 	m = typeRunes(t, m, "tok")
 	m, _ = enter(t, m)
 	m, _ = enter(t, m) // -> min reviews
@@ -112,11 +189,12 @@ func TestWizard_TokenRejectedRecovers(t *testing.T) {
 	t.Parallel()
 
 	boom := func(string) (string, error) { return "", errors.New("bad credentials") }
-	m := NewWizardModel(boom)
+	m := NewWizardModel(boom, okJiraValidator)
 	m = typeRunes(t, m, "nope")
-	m, _ = enter(t, m)
-	m, _ = enter(t, m)
-	m, cmd := enter(t, m)
+	m, _ = enter(t, m)       // -> search
+	m, _ = enter(t, m)       // -> min reviews
+	m, _ = enter(t, m)       // -> jira url
+	m, cmd := enter(t, m)    // jira url blank -> validating
 	m, _ = send(t, m, cmd()) // validation fails
 
 	if m.step != stepError {
@@ -136,7 +214,7 @@ func TestWizard_TokenRejectedRecovers(t *testing.T) {
 func TestWizard_EscAborts(t *testing.T) {
 	t.Parallel()
 
-	m := NewWizardModel(okValidator)
+	m := NewWizardModel(okValidator, okJiraValidator)
 	m = typeRunes(t, m, "tok")
 	m, cmd := send(t, m, tea.KeyMsg{Type: tea.KeyEsc})
 
@@ -151,7 +229,7 @@ func TestWizard_EscAborts(t *testing.T) {
 func TestWizard_TokenIsMasked(t *testing.T) {
 	t.Parallel()
 
-	m := NewWizardModel(okValidator)
+	m := NewWizardModel(okValidator, okJiraValidator)
 	m = typeRunes(t, m, "secret")
 	view := m.View()
 	if strings.Contains(view, "secret") {

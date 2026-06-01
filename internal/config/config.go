@@ -25,6 +25,10 @@ import (
 // in the config file; the value of this constant is not itself a credential.
 const envToken = "GITHUB_TOKEN" //nolint:gosec // G101: env var name, not a token
 
+// envJiraToken overrides the Jira API token stored in the config file, mirroring
+// envToken; the value of this constant is not itself a credential.
+const envJiraToken = "JIRA_API_TOKEN" //nolint:gosec // G101: env var name, not a token
+
 // DefaultMinReviews is the fallback for the min_reviews field when the user
 // does not set it explicitly in the config file.
 const DefaultMinReviews = 2
@@ -35,19 +39,29 @@ const DefaultMinReviews = 2
 var ErrNotFound = errors.New("config not found")
 
 // Config is the runtime kiroshi configuration.
+//
+// The three Jira fields are optional and travel together: Jira enrichment is
+// enabled iff JiraBaseURL is set, and when any one is set validate requires all
+// three (Jira Cloud Basic auth needs the account email alongside the token).
 type Config struct {
 	GitHubToken string
 	Search      string
 	MinReviews  int
+	JiraBaseURL string
+	JiraEmail   string
+	JiraToken   string
 }
 
-// LogValue implements slog.LogValuer to prevent the token from leaking into
+// LogValue implements slog.LogValuer to prevent the tokens from leaking into
 // structured logs when a *Config is logged as an attribute.
 func (c *Config) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.String("search", c.Search),
 		slog.Int("min_reviews", c.MinReviews),
 		slog.String("github_token", "<redacted>"),
+		slog.String("jira_base_url", c.JiraBaseURL),
+		slog.String("jira_email", c.JiraEmail),
+		slog.String("jira_token", "<redacted>"),
 	)
 }
 
@@ -57,6 +71,9 @@ type fileConfig struct {
 	GitHubToken string `toml:"github_token"`
 	Search      string `toml:"search"`
 	MinReviews  *int   `toml:"min_reviews"`
+	JiraBaseURL string `toml:"jira_base_url"`
+	JiraEmail   string `toml:"jira_email"`
+	JiraToken   string `toml:"jira_token"`
 }
 
 // Load reads the TOML configuration at path. When path is empty, the default
@@ -89,6 +106,11 @@ func Load(path string) (*Config, error) {
 		token = strings.TrimSpace(fc.GitHubToken)
 	}
 
+	jiraToken := strings.TrimSpace(os.Getenv(envJiraToken))
+	if jiraToken == "" {
+		jiraToken = strings.TrimSpace(fc.JiraToken)
+	}
+
 	minReviews := DefaultMinReviews
 	if fc.MinReviews != nil {
 		minReviews = *fc.MinReviews
@@ -98,6 +120,9 @@ func Load(path string) (*Config, error) {
 		GitHubToken: token,
 		Search:      strings.TrimSpace(fc.Search),
 		MinReviews:  minReviews,
+		JiraBaseURL: strings.TrimSpace(fc.JiraBaseURL),
+		JiraEmail:   strings.TrimSpace(fc.JiraEmail),
+		JiraToken:   jiraToken,
 	}
 	if err := cfg.validate(); err != nil {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
@@ -138,6 +163,9 @@ func Save(path string, c *Config) error {
 		GitHubToken: c.GitHubToken,
 		Search:      c.Search,
 		MinReviews:  &mr,
+		JiraBaseURL: c.JiraBaseURL,
+		JiraEmail:   c.JiraEmail,
+		JiraToken:   c.JiraToken,
 	}
 	if err := toml.NewEncoder(f).Encode(fc); err != nil {
 		_ = f.Close()
@@ -164,6 +192,32 @@ func (c *Config) validate() error {
 	}
 	if c.MinReviews < 0 {
 		return fmt.Errorf("min_reviews must be >= 0, got %d", c.MinReviews)
+	}
+	if err := c.validateJira(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateJira enforces the all-or-nothing rule for the optional Jira trio: if
+// any of base URL, email or token is set, all three must be (Jira Cloud Basic
+// auth needs the email). Leaving all three empty disables Jira entirely.
+func (c *Config) validateJira() error {
+	if c.JiraBaseURL == "" && c.JiraEmail == "" && c.JiraToken == "" {
+		return nil
+	}
+	var missing []string
+	if c.JiraBaseURL == "" {
+		missing = append(missing, "jira_base_url")
+	}
+	if c.JiraEmail == "" {
+		missing = append(missing, "jira_email")
+	}
+	if c.JiraToken == "" {
+		missing = append(missing, "jira_token (set JIRA_API_TOKEN or add jira_token to the file)")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("incomplete jira config; missing: %s", strings.Join(missing, "; "))
 	}
 	return nil
 }

@@ -1,6 +1,7 @@
 package gh
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -10,7 +11,100 @@ import (
 	"time"
 
 	"github.com/google/go-github/v80/github"
+
+	"github.com/ajardin/kiroshi/internal/jira"
 )
+
+// fakeJira is a stub jira.Lookup: it returns a fixed status (or err) and
+// records the last key it was asked about.
+type fakeJira struct {
+	status  jira.Status
+	err     error
+	askedAt string
+}
+
+func (f *fakeJira) Issue(_ context.Context, key string) (jira.Status, error) {
+	f.askedAt = key
+	if f.err != nil {
+		return jira.Status{}, f.err
+	}
+	return f.status, nil
+}
+
+func TestEnrichJiraStatus(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil client is a no-op", func(t *testing.T) {
+		t.Parallel()
+		c := &Client{}
+		pr := &PullRequest{HeadRef: "feature/PROJ-1-foo"}
+		if err := c.enrichJiraStatus(context.Background(), pr); err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		if pr.JiraKey != "" || pr.JiraStatus != "" {
+			t.Errorf("expected no Jira fields set, got %+v", pr)
+		}
+	})
+
+	t.Run("no key is a no-op", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeJira{status: jira.Status{Name: "Done", Category: jira.CategoryDone}}
+		c := &Client{jira: fake}
+		pr := &PullRequest{HeadRef: "feature/no-key", Title: "nothing", Body: "here"}
+		if err := c.enrichJiraStatus(context.Background(), pr); err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		if pr.JiraKey != "" {
+			t.Errorf("JiraKey = %q, want empty", pr.JiraKey)
+		}
+		if fake.askedAt != "" {
+			t.Errorf("looked up %q, expected no lookup", fake.askedAt)
+		}
+	})
+
+	t.Run("resolves key from branch", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeJira{status: jira.Status{Name: "In Review", Category: jira.CategoryIndeterminate}}
+		c := &Client{jira: fake}
+		pr := &PullRequest{HeadRef: "feature/PROJ-7-foo", Title: "ignored ABC-9"}
+		if err := c.enrichJiraStatus(context.Background(), pr); err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		if fake.askedAt != "PROJ-7" {
+			t.Errorf("looked up %q, want PROJ-7", fake.askedAt)
+		}
+		if pr.JiraKey != "PROJ-7" || pr.JiraStatus != "In Review" || pr.JiraCategory != "indeterminate" {
+			t.Errorf("unexpected Jira fields: %+v", pr)
+		}
+	})
+
+	t.Run("lookup error degrades gracefully", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeJira{err: jira.ErrIssueNotFound}
+		c := &Client{jira: fake}
+		pr := &PullRequest{HeadRef: "feature/PROJ-7-foo"}
+		if err := c.enrichJiraStatus(context.Background(), pr); err != nil {
+			t.Fatalf("err = %v, want nil (graceful degradation)", err)
+		}
+		// A failed lookup leaves all Jira fields empty so the cell renders "—".
+		if pr.JiraKey != "" || pr.JiraStatus != "" || pr.JiraCategory != "" {
+			t.Errorf("expected all Jira fields empty on failed lookup, got %+v", pr)
+		}
+	})
+
+	t.Run("auth error also degrades", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeJira{err: jira.ErrInvalidToken}
+		c := &Client{jira: fake}
+		pr := &PullRequest{HeadRef: "feature/PROJ-7-foo"}
+		if err := c.enrichJiraStatus(context.Background(), pr); err != nil {
+			t.Fatalf("err = %v, want nil (graceful degradation)", err)
+		}
+		if pr.JiraKey != "" || pr.JiraStatus != "" {
+			t.Errorf("expected empty Jira fields, got %+v", pr)
+		}
+	})
+}
 
 type reviewInput struct {
 	login string
@@ -85,7 +179,7 @@ func TestClient_AuthenticatedUser(t *testing.T) {
 			srv := httptest.NewServer(tt.handler)
 			t.Cleanup(srv.Close)
 
-			c := newClient("test-token", srv.URL+"/")
+			c := newClient("test-token", srv.URL+"/", nil)
 			user, err := c.AuthenticatedUser(t.Context())
 
 			switch {
@@ -226,7 +320,7 @@ func TestClient_SearchPullRequests(t *testing.T) {
 			srv := httptest.NewServer(tt.handler)
 			t.Cleanup(srv.Close)
 
-			c := newClient("test-token", srv.URL+"/")
+			c := newClient("test-token", srv.URL+"/", nil)
 			prs, err := c.SearchPullRequests(t.Context(), "org:ajardin is:pr")
 
 			switch {
@@ -319,7 +413,7 @@ func defaultEnrichmentHandler(t *testing.T) http.HandlerFunc {
 			fmt.Fprint(w, `{"total_count":0,"check_runs":[]}`)
 		case strings.Contains(path, "/pulls/"):
 			num := path[strings.LastIndex(path, "/")+1:]
-			fmt.Fprintf(w, `{"number":%s,"head":{"sha":"sha-%s"}}`, num, num)
+			fmt.Fprintf(w, `{"number":%s,"head":{"sha":"sha-%s","ref":"feature/PROJ-%s-x"},"body":"see PROJ-%s"}`, num, num, num, num)
 		default:
 			t.Errorf("unexpected path %q", path)
 			http.NotFound(w, r)
@@ -343,7 +437,7 @@ func TestClient_SearchPullRequests_EnrichesConcurrently(t *testing.T) {
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
-	c := newClient("test-token", srv.URL+"/")
+	c := newClient("test-token", srv.URL+"/", nil)
 	start := time.Now()
 	prs, err := c.SearchPullRequests(t.Context(), "org:ajardin is:pr")
 	elapsed := time.Since(start)
@@ -368,6 +462,10 @@ func TestClient_SearchPullRequests_EnrichesConcurrently(t *testing.T) {
 		if pr.HeadSHA != wantSHA {
 			t.Errorf("prs[%d].HeadSHA = %q, want %q", i, pr.HeadSHA, wantSHA)
 		}
+		wantRef := fmt.Sprintf("feature/PROJ-%d-x", want)
+		if pr.HeadRef != wantRef {
+			t.Errorf("prs[%d].HeadRef = %q, want %q", i, pr.HeadRef, wantRef)
+		}
 	}
 }
 
@@ -389,7 +487,7 @@ func TestClient_SearchPullRequests_PartialFailureCancels(t *testing.T) {
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
-	c := newClient("test-token", srv.URL+"/")
+	c := newClient("test-token", srv.URL+"/", nil)
 	_, err := c.SearchPullRequests(t.Context(), "org:ajardin is:pr")
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -417,7 +515,7 @@ func TestClient_SearchPullRequests_UnauthorizedDuringEnrichment(t *testing.T) {
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
-	c := newClient("test-token", srv.URL+"/")
+	c := newClient("test-token", srv.URL+"/", nil)
 	_, err := c.SearchPullRequests(t.Context(), "org:ajardin is:pr")
 	if !errors.Is(err, ErrInvalidToken) {
 		t.Errorf("err = %v, want errors.Is(ErrInvalidToken)", err)

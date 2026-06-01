@@ -3,10 +3,9 @@
 // a top header bar, four status cards, a list of pull requests grouped under
 // a section header, and a footer with key hints and integration health dots.
 //
-// Phase 1 ships the visual shell: real GitHub data is rendered for the fields
-// we already have (repo, number, title, author, updated). Fields that depend
-// on classification, CI status, diff stats, and Jira are rendered as muted
-// placeholders ("—") and will be enriched in later phases.
+// Rows render real GitHub data (repo, number, title, author, updated) plus the
+// enriched fields: review-state bucket, diff stats, CI status, and the Jira
+// ticket status. A field with no data falls back to a muted placeholder ("—").
 package tui
 
 import (
@@ -21,6 +20,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/ajardin/kiroshi/internal/gh"
+	"github.com/ajardin/kiroshi/internal/jira"
 )
 
 // Color palette tuned for dark terminals to match the mockup.
@@ -192,38 +192,41 @@ type Model struct {
 	login   string
 	version string
 
-	prs        []gh.PullRequest
-	minReviews int
-	lastScan   time.Time
-	now        time.Time
-	cursor     int
-	offset     int
-	width      int
-	height     int
-	status     string
-	statusErr  bool
-	refreshing bool
-	filterMode bool
-	filter     string
-	sort       sortMode
-	approval   approvalFilter
+	prs         []gh.PullRequest
+	minReviews  int
+	jiraEnabled bool
+	lastScan    time.Time
+	now         time.Time
+	cursor      int
+	offset      int
+	width       int
+	height      int
+	status      string
+	statusErr   bool
+	refreshing  bool
+	filterMode  bool
+	filter      string
+	sort        sortMode
+	approval    approvalFilter
 }
 
 // NewModel builds a Model populated with the given pull requests. Pass
 // time.Now() for lastScan; the header displays "last scan Xm ago" relative
 // to the live clock. minReviews is the team-wide threshold of non-author
-// approvals required to classify a PR as ReadyToShip. open and refresh may
+// approvals required to classify a PR as ReadyToShip. jiraEnabled toggles the
+// footer's Jira indicator between active and inactive. open and refresh may
 // be nil in tests.
-func NewModel(prs []gh.PullRequest, login, version string, minReviews int, lastScan time.Time, open Opener, refresh Refresher) Model {
+func NewModel(prs []gh.PullRequest, login, version string, minReviews int, jiraEnabled bool, lastScan time.Time, open Opener, refresh Refresher) Model {
 	return Model{
-		prs:        prs,
-		login:      login,
-		version:    version,
-		minReviews: minReviews,
-		lastScan:   lastScan,
-		now:        time.Now(),
-		open:       open,
-		refresh:    refresh,
+		prs:         prs,
+		login:       login,
+		version:     version,
+		minReviews:  minReviews,
+		jiraEnabled: jiraEnabled,
+		lastScan:    lastScan,
+		now:         time.Now(),
+		open:        open,
+		refresh:     refresh,
 	}
 }
 
@@ -740,7 +743,8 @@ func (m Model) renderRow(pr gh.PullRequest, selected bool) string {
 
 	author := st(colDim, false).Render("@" + pr.Author)
 	diff := renderDiff(pr.Additions, pr.Deletions, st)
-	ticket := st(colMuted, false).Render("—")
+	jiraText, jiraColor := jiraFragment(pr.JiraKey, pr.JiraStatus, pr.JiraCategory)
+	ticket := st(jiraColor, false).Render(jiraText)
 	ciText, ciColor := ciFragment(pr.CIState)
 	ci := st(ciColor, false).Render(ciText)
 	updated := st(colMuted, false).Render("updated " + humanAgo(m.now.Sub(pr.UpdatedAt)))
@@ -787,9 +791,13 @@ func (m Model) footerView() string {
 	sepStyle := lipgloss.NewStyle().Foreground(colMuted).Render(" · ")
 	keyLine := strings.Join(keys, sepStyle)
 
+	jiraDot := lipgloss.NewStyle().Foreground(colMuted).Render("○ jira")
+	if m.jiraEnabled {
+		jiraDot = lipgloss.NewStyle().Foreground(colGreen).Render("● jira")
+	}
 	indicators := lipgloss.NewStyle().Foreground(colGreen).Render("● github") +
 		sepStyle +
-		lipgloss.NewStyle().Foreground(colMuted).Render("○ jira")
+		jiraDot
 
 	pad := m.width - lipgloss.Width(keyLine) - lipgloss.Width(indicators) - 2
 	if pad < 1 {
@@ -865,6 +873,29 @@ func ciFragment(s gh.CIState) (string, lipgloss.Color) {
 		return "ci: ✗ failing", colRed
 	default:
 		return "ci: —", colMuted
+	}
+}
+
+// jiraFragment returns the label and accent color for the Jira cell of a row.
+// Coloring keys off the issue's statusCategory and reuses the existing palette
+// semantics rather than introducing a new accent: done = green (ships, like CI
+// passing), in-progress = cyan (the project's "in progress elsewhere" hue, like
+// CI pending), to-do/unknown = dim. There is deliberately no red state — a Jira
+// ticket is never an "error". The cell always renders (an aligned column like
+// CI), falling back to "jira: —" when the PR references no resolved ticket
+// (no key, or a lookup that failed — the enricher leaves all fields empty).
+func jiraFragment(key, status, category string) (string, lipgloss.Color) {
+	if key == "" {
+		return "jira: —", colMuted
+	}
+	label := "jira: " + key + " " + status
+	switch jira.Category(category) {
+	case jira.CategoryDone:
+		return label, colGreen
+	case jira.CategoryIndeterminate:
+		return label, colCyan
+	default: // CategoryNew, CategoryUnknown
+		return label, colDim
 	}
 }
 
