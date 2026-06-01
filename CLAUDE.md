@@ -57,33 +57,68 @@ bucket and shows up on a non-error row:
 
 1. **CI cell** — green for passing, red for failing, **cyan for pending**
    (matches "in progress elsewhere"; yellow would collide semantically with
-   "Waiting On You"), muted for "no CI". See `ciFragment` in
-   `internal/tui/tui.go`.
+   "Waiting On You"), muted for "no CI". It's a fixed aligned column (see
+   "Row line-2 layout"), so the textual `ci:` prefix is dropped — position
+   identifies it. See `ciFragment` in `internal/tui/tui.go`.
 2. **Diff cell** — `+N` in green and `-N` in red, like `git diff` and every
    diff viewer users already know. Both sides are always shown (including
-   a `+0` or `-0`) so neighboring columns stay aligned across rows; an
-   all-zero diff falls back to a muted em-dash. See `renderDiff`.
+   a `+0` or `-0`); an all-zero diff falls back to a muted em-dash. It's a
+   real aligned column: `renderDiff` left-pads the `+N` sub-field to the
+   widest `+N` in the visible set so the `-M` parts line up under each other
+   across rows (see "Row line-2 layout"). See `renderDiff`.
 
 Both exceptions are deliberate concessions to universal conventions; do
 not extend the list without discussion.
 
 A third, green-side concession: the **approval marker** (`approvalFragment`,
-a `✓ you` cell on the row's second line) renders in `colGreen` when the
+a compact `✓` on the row's second line) renders in `colGreen` when the
 viewer has approved the PR. Green here means "your approval is in" — the
 universal GitHub "approved" convention — even though the row's bucket accent
-may be cyan (Waiting On Others) rather than green. The cell is omitted
-entirely when the viewer hasn't approved; it is *not* a permanent column, so
-unlike the diff cell it has no aligned-placeholder requirement.
+may be cyan (Waiting On Others) rather than green. It occupies a fixed
+one-column slot between the author and diff columns (a blank space when the
+viewer hasn't approved), so it keeps the diff/ci columns aligned rather than
+shifting them. The "you" word was dropped: position plus the green check
+carry the meaning.
 
 The **Jira cell** (`jiraFragment`) is a fourth concession, but a
 reuse-only one — it introduces no new accent. It colors by the issue's
 `statusCategory` with the same semantics as CI: `done` → green (like
 "ci: passing"), `indeterminate` → cyan (in progress elsewhere, like
 pending), `new`/unknown → `colDim`. There is deliberately **no red**
-state — a Jira ticket is never an "error". Like CI it's an aligned column,
-falling back to `jira: —` (muted) when the PR references no resolved ticket
-— either no key at all, or a lookup that failed (the enricher leaves all
-three Jira fields empty in both cases, so the cell can't tell them apart).
+state — a Jira ticket is never an "error". Unlike CI/diff it is **not** a
+fixed column: it's a flowing tail item rendering `KEY Status` (the `ABC-123`
+key shape identifies it, so the `jira:` prefix is dropped), and the cell is
+**omitted entirely** when the PR references no resolved ticket — either no
+key at all, or a lookup that failed (the enricher leaves all three Jira
+fields empty in both cases, so the cell can't tell them apart).
+
+### Row line-2 layout (column alignment)
+
+Each PR row's second line is **fixed-width columns followed by a flowing
+tail**, so the high-signal status cells line up vertically and the eye can
+scan one column ("which PRs are failing CI?"):
+
+```
+@author    ✓ +N   -M   <ci>    · <jira KEY Status> · <age>
+└ author ─┘↑ └─ diff ─┘ └ ci ─┘   └─────── flowing tail ───────┘
+          approval slot
+```
+
+- **Fixed columns** (always present, aligned across rows): author, the
+  one-col approval slot, diff, ci. Absent diff/ci render a muted `—`
+  *in the column* (the placeholder is justified — the column is real).
+- **Flowing tail** (` · `-separated, present items only): the Jira cell
+  (dropped when there's no key) then the age (`humanAgo`, no `updated`
+  prefix). Empty cells are dropped, not shown as `jira: —`/`ci: —` noise.
+
+Column widths are computed **once per render over the full visible set**
+(not just the on-screen page, so columns don't jump while scrolling) by
+`computeRowCols` → `rowCols`: max `@author` width (capped at `maxAuthorW`,
+longer names truncated), the widest `+N` (drives the diff sub-alignment),
+total diff width, and ci width. `renderRow` pads each styled cell to its
+column width with `padCell`, which appends **bg-aware** spaces — the
+selected-row background must reach the column boundary (same lipgloss
+back-fill constraint as `st()`; see "Selected row treatment").
 
 ### CI state aggregation (locked)
 
@@ -228,7 +263,7 @@ The header appends `· approved by you` / `· not approved by you` for the two
 explicit modes. `cycleApproval` mirrors `cycleSort`'s cursor-follow logic but
 with a twist: the `a` filter *shrinks* the set, so when the previously
 selected PR is filtered out it falls back to `clampCursor` (cursor 0) instead
-of holding position. The visual counterpart is the `✓ you` row marker (see
+of holding position. The visual counterpart is the `✓` approval marker (see
 the palette note above) — same data source, so a PR showing the marker is
 exactly one that survives `approvalMine`.
 
@@ -316,8 +351,8 @@ exactly one that survives `approvalMine`.
   are fail-fast for the GitHub enrichers — the first error cancels the
   others and surfaces through the rescan status line. **Jira is the
   exception:** it's an optional decoration, so `enrichJiraStatus` swallows
-  all its errors (auth, network, 404) and degrades to a muted `jira: —`
-  cell rather than failing the whole scan.
+  all its errors (auth, network, 404) and degrades to an omitted Jira cell
+  (the flowing tail simply drops it) rather than failing the whole scan.
 - **Phase 4**: `?` help overlay. Not started. The footer used to
   advertise `?` as a key hint with a no-op handler; both were removed
   to avoid promising a shortcut that does nothing. When Phase 4 lands,

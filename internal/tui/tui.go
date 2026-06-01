@@ -636,7 +636,7 @@ func renderCard(label string, count int, color lipgloss.Color, totalWidth int) s
 	body := lipgloss.NewStyle().Width(bodyW).Padding(0, 1).Render(
 		lipgloss.JoinVertical(lipgloss.Left,
 			lipgloss.NewStyle().Foreground(color).Bold(true).Render(label),
-			lipgloss.NewStyle().Foreground(colBright).Bold(true).Render(fmt.Sprintf("%02d", count)),
+			lipgloss.NewStyle().Foreground(colBright).Bold(true).Render(fmt.Sprintf("%d", count)),
 		),
 	)
 	return lipgloss.NewStyle().
@@ -667,7 +667,7 @@ func (m Model) sectionHeaderView() string {
 	}
 	arrow := lipgloss.NewStyle().Foreground(colMuted).Bold(true).Render("▶")
 	label := lipgloss.NewStyle().Foreground(colDim).Bold(true).Render(text)
-	return " " + arrow + "  " + label
+	return " " + arrow + " " + label
 }
 
 // --- List ----------------------------------------------------------------
@@ -686,14 +686,56 @@ func (m Model) listView() string {
 		end = len(visible)
 	}
 
+	cols := computeRowCols(visible)
 	var out []string
 	for i := m.offset; i < end; i++ {
-		out = append(out, m.renderRow(visible[i], i == m.cursor))
+		out = append(out, m.renderRow(visible[i], i == m.cursor, cols))
 	}
 	return strings.Join(out, "\n")
 }
 
-func (m Model) renderRow(pr gh.PullRequest, selected bool) string {
+// rowCols holds the per-render column widths for line 2 of each PR row. They are
+// computed once over the full visible set (not just the on-screen page) so the
+// diff and ci columns stay put while scrolling.
+type rowCols struct {
+	author int // width of the "@author" column (capped at maxAuthorW)
+	plus   int // width of the "+N" sub-field, so "-M" aligns across rows
+	diff   int // total width of the "+N -M" diff column
+	ci     int // width of the ci status column
+}
+
+const maxAuthorW = 18
+
+func computeRowCols(prs []gh.PullRequest) rowCols {
+	var c rowCols
+	var minusW int
+	for _, pr := range prs {
+		if w := lipgloss.Width("@" + pr.Author); w > c.author {
+			c.author = w
+		}
+		if pr.Additions != 0 || pr.Deletions != 0 {
+			if w := lipgloss.Width(fmt.Sprintf("+%d", pr.Additions)); w > c.plus {
+				c.plus = w
+			}
+			if w := lipgloss.Width(fmt.Sprintf("-%d", pr.Deletions)); w > minusW {
+				minusW = w
+			}
+		}
+		if t, _ := ciFragment(pr.CIState); lipgloss.Width(t) > c.ci {
+			c.ci = lipgloss.Width(t)
+		}
+	}
+	if c.author > maxAuthorW {
+		c.author = maxAuthorW
+	}
+	c.diff = c.plus + 1 + minusW
+	if c.diff < 1 {
+		c.diff = 1
+	}
+	return c
+}
+
+func (m Model) renderRow(pr gh.PullRequest, selected bool, cols rowCols) string {
 	bucket := bucketFor(pr, m.login, m.minReviews)
 	accent := bucket.Color()
 
@@ -741,18 +783,33 @@ func (m Model) renderRow(pr gh.PullRequest, selected bool) string {
 	title := st(titleFg, titleBold).Render(truncate(pr.Title, available))
 	line1Body := prefix + title
 
-	author := st(colDim, false).Render("@" + pr.Author)
-	diff := renderDiff(pr.Additions, pr.Deletions, st)
-	jiraText, jiraColor := jiraFragment(pr.JiraKey, pr.JiraStatus, pr.JiraCategory)
-	ticket := st(jiraColor, false).Render(jiraText)
-	ciText, ciColor := ciFragment(pr.CIState)
-	ci := st(ciColor, false).Render(ciText)
-	updated := st(colMuted, false).Render("updated " + humanAgo(m.now.Sub(pr.UpdatedAt)))
-	line2Body := author
-	if containsLogin(pr.Approvals, m.login) {
-		line2Body += sp + dot + sp + st(colGreen, false).Render(approvalFragment())
+	// Line 2 lays out fixed-width columns (author, approval, diff, ci) so the
+	// diff and ci cells line up vertically across rows for scanning; the Jira
+	// ticket and timestamp flow after, and absent cells are dropped rather than
+	// shown as placeholders. padCell right-pads an already-styled cell with
+	// bg-aware spaces so the row background reaches the column boundary on a
+	// selected row.
+	padCell := func(s string, w int) string {
+		if cw := lipgloss.Width(s); cw < w {
+			return s + st(colMuted, false).Render(strings.Repeat(" ", w-cw))
+		}
+		return s
 	}
-	line2Body += sp + dot + sp + diff + sp + dot + sp + ticket + sp + dot + sp + ci + sp + dot + sp + updated
+
+	authorCell := padCell(st(colDim, false).Render(truncate("@"+pr.Author, cols.author)), cols.author)
+	approval := st(colMuted, false).Render(" ")
+	if containsLogin(pr.Approvals, m.login) {
+		approval = st(colGreen, false).Render(approvalFragment())
+	}
+	diffCell := padCell(renderDiff(pr.Additions, pr.Deletions, cols.plus, st), cols.diff)
+	ciText, ciColor := ciFragment(pr.CIState)
+	ciCell := padCell(st(ciColor, false).Render(ciText), cols.ci)
+
+	line2Body := authorCell + sp + approval + sp + diffCell + sp + ciCell
+	if jiraText, jiraColor := jiraFragment(pr.JiraKey, pr.JiraStatus, pr.JiraCategory); pr.JiraKey != "" {
+		line2Body += sp + dot + sp + st(jiraColor, false).Render(jiraText)
+	}
+	line2Body += sp + dot + sp + st(colMuted, false).Render(humanAgo(m.now.Sub(pr.UpdatedAt)))
 
 	// Compose " ┃ <body>" / " ┃   <body>" (line 2 indents to align with title).
 	line1 := sp + bar + sp + line1Body
@@ -840,55 +897,63 @@ func keyHint(key, action string) string {
 
 // renderDiff renders the "+N -M" cell. styler is the row's st() closure so
 // the diff cell inherits the selected-row background fill. An all-zero diff
-// (e.g. rename-only PR) falls back to a muted em-dash; otherwise both sides
-// are always shown — including a "+0" or "-0" — so neighboring columns stay
-// aligned across rows. Green / red usage mirrors `git diff` and every diff
-// viewer users already know — this is the second documented exception to
-// the "red = errors only" palette rule (see CLAUDE.md).
-func renderDiff(additions, deletions int, styler func(lipgloss.Color, bool) lipgloss.Style) string {
+// (e.g. rename-only PR) falls back to a muted em-dash; otherwise both sides are
+// always shown — including a "+0" or "-0". The "+N" sub-field is left-padded to
+// plusW (the widest "+N" in the visible set) so the "-M" parts line up under
+// each other across rows; the caller pads the whole cell to the column width.
+// Green / red usage mirrors `git diff` and every diff viewer users already
+// know — the second documented exception to the "red = errors only" palette
+// rule (see CLAUDE.md).
+func renderDiff(additions, deletions, plusW int, styler func(lipgloss.Color, bool) lipgloss.Style) string {
 	if additions == 0 && deletions == 0 {
 		return styler(colMuted, false).Render("—")
 	}
-	plus := styler(colGreen, false).Render(fmt.Sprintf("+%d", additions))
+	plus := styler(colGreen, false).Render(fmt.Sprintf("%-*s", plusW, fmt.Sprintf("+%d", additions)))
 	minus := styler(colRed, false).Render(fmt.Sprintf("-%d", deletions))
 	return plus + styler(colMuted, false).Render(" ") + minus
 }
 
-// approvalFragment is the label for the "viewer approved this PR" cell. It is
-// rendered in colGreen — a green approval check follows the universal GitHub
-// "approved" convention, the third deliberate concession to convention in the
-// otherwise-locked palette (alongside the CI and diff cells; see CLAUDE.md).
-func approvalFragment() string { return "✓ you" }
+// approvalFragment is the marker for the "viewer approved this PR" cell — a
+// compact green check that occupies a fixed one-column slot between the author
+// and diff columns (a blank space when the viewer hasn't approved). Green
+// follows the universal GitHub "approved" convention, the third deliberate
+// concession to convention in the otherwise-locked palette (alongside the CI
+// and diff cells; see CLAUDE.md).
+func approvalFragment() string { return "✓" }
 
-// ciFragment returns the label and accent color for the CI cell of a row.
-// Pending is rendered in cyan (the project's "in progress elsewhere" hue);
-// failure is the only place colRed leaves the reserved-for-errors bucket.
+// ciFragment returns the label and accent color for the CI cell of a row. The
+// cell is an aligned column, so the textual "ci:" prefix is dropped — its fixed
+// position identifies it. Pending is rendered in cyan (the project's "in
+// progress elsewhere" hue); failure is the only place colRed leaves the
+// reserved-for-errors bucket.
 func ciFragment(s gh.CIState) (string, lipgloss.Color) {
 	switch s {
 	case gh.CIStateSuccess:
-		return "ci: ✓ passing", colGreen
+		return "✓ passing", colGreen
 	case gh.CIStatePending:
-		return "ci: ● pending", colCyan
+		return "● pending", colCyan
 	case gh.CIStateFailure:
-		return "ci: ✗ failing", colRed
+		return "✗ failing", colRed
 	default:
-		return "ci: —", colMuted
+		return "—", colMuted
 	}
 }
 
 // jiraFragment returns the label and accent color for the Jira cell of a row.
+// Unlike CI/diff this is a flowing tail item (not a fixed column): it renders as
+// "KEY Status" — the KEY's "ABC-123" shape identifies it, so the "jira:" prefix
+// is dropped — and is omitted entirely by the caller when there is no key.
 // Coloring keys off the issue's statusCategory and reuses the existing palette
 // semantics rather than introducing a new accent: done = green (ships, like CI
 // passing), in-progress = cyan (the project's "in progress elsewhere" hue, like
 // CI pending), to-do/unknown = dim. There is deliberately no red state — a Jira
-// ticket is never an "error". The cell always renders (an aligned column like
-// CI), falling back to "jira: —" when the PR references no resolved ticket
-// (no key, or a lookup that failed — the enricher leaves all fields empty).
+// ticket is never an "error". The "—" fallback is returned for an empty key but
+// is not rendered; the caller drops the cell instead.
 func jiraFragment(key, status, category string) (string, lipgloss.Color) {
 	if key == "" {
-		return "jira: —", colMuted
+		return "—", colMuted
 	}
-	label := "jira: " + key + " " + status
+	label := key + " " + status
 	switch jira.Category(category) {
 	case jira.CategoryDone:
 		return label, colGreen

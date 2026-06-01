@@ -488,11 +488,11 @@ func TestJiraFragment(t *testing.T) {
 		wantLabel string
 		wantColor lipgloss.Color
 	}{
-		{"no key", "", "", "", "jira: —", colMuted},
-		{"done", "PROJ-1", "Done", string(jira.CategoryDone), "jira: PROJ-1 Done", colGreen},
-		{"in progress", "PROJ-2", "In Review", string(jira.CategoryIndeterminate), "jira: PROJ-2 In Review", colCyan},
-		{"to do", "PROJ-3", "To Do", string(jira.CategoryNew), "jira: PROJ-3 To Do", colDim},
-		{"unknown category", "PROJ-4", "Custom", "", "jira: PROJ-4 Custom", colDim},
+		{"no key", "", "", "", "—", colMuted},
+		{"done", "PROJ-1", "Done", string(jira.CategoryDone), "PROJ-1 Done", colGreen},
+		{"in progress", "PROJ-2", "In Review", string(jira.CategoryIndeterminate), "PROJ-2 In Review", colCyan},
+		{"to do", "PROJ-3", "To Do", string(jira.CategoryNew), "PROJ-3 To Do", colDim},
+		{"unknown category", "PROJ-4", "Custom", "", "PROJ-4 Custom", colDim},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -681,7 +681,7 @@ func TestRenderDiff(t *testing.T) {
 		{42, 7, "+42 -7"},
 	}
 	for _, c := range cases {
-		if got := renderDiff(c.add, c.del, styler); got != c.want {
+		if got := renderDiff(c.add, c.del, 0, styler); got != c.want {
 			t.Errorf("renderDiff(%d, %d) = %q, want %q", c.add, c.del, got, c.want)
 		}
 	}
@@ -693,10 +693,10 @@ func TestCIFragment(t *testing.T) {
 		state    gh.CIState
 		wantText string
 	}{
-		{gh.CIStateNone, "ci: —"},
-		{gh.CIStateSuccess, "ci: ✓ passing"},
-		{gh.CIStatePending, "ci: ● pending"},
-		{gh.CIStateFailure, "ci: ✗ failing"},
+		{gh.CIStateNone, "—"},
+		{gh.CIStateSuccess, "✓ passing"},
+		{gh.CIStatePending, "● pending"},
+		{gh.CIStateFailure, "✗ failing"},
 	}
 	for _, c := range cases {
 		got, _ := ciFragment(c.state)
@@ -722,7 +722,10 @@ func TestView_RendersCIStateForEachRow(t *testing.T) {
 	m := NewModel(prs, "viewer", "v0.0.1", 2, false, time.Now(), nil, nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 50})
 	view := updated.(Model).View()
-	for _, want := range []string{"ci: ✓ passing", "ci: ● pending", "ci: ✗ failing", "ci: —"} {
+	// The "ci:" prefix is dropped now that CI is a fixed aligned column; the
+	// none/"—" state isn't asserted here because the diff column also renders
+	// "—" (covered distinctly by TestCIFragment).
+	for _, want := range []string{"✓ passing", "● pending", "✗ failing"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("view missing %q\nview=\n%s", want, view)
 		}
