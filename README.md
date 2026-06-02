@@ -9,12 +9,28 @@ available for pipes, CI, and any non-TTY context.
 
 ## Install
 
+### Homebrew (macOS)
+
+```bash
+brew install ajardin/tap/kiroshi
+```
+
+The tap auto-installs, so no separate `brew tap` step is needed. Upgrades
+come through `brew upgrade` like any other formula.
+
+### Go
+
 ```bash
 go install github.com/ajardin/kiroshi/cmd/kiroshi@latest
 ```
 
-Requires Go 1.25 or newer. Pre-built binaries for Linux, macOS, and
-Windows ship with each tagged release on GitHub.
+Requires Go 1.25 or newer.
+
+### Pre-built binaries
+
+Archives for Linux, macOS, and Windows (amd64/arm64) ship with every tagged
+release on the [releases page](https://github.com/ajardin/kiroshi/releases).
+Download, extract, and put the `kiroshi` binary on your `PATH`.
 
 ## Configure
 
@@ -83,14 +99,17 @@ automatically — TTY detection lives in `cli.isTerminal`.
 
 ### Keybindings (TUI)
 
-| Key  | Action                  |
-| ---- | ----------------------- |
-| j/k  | navigate up / down      |
-| o    | open selected PR in browser |
-| r    | rescan from GitHub      |
-| f    | filter the visible list |
-| s    | cycle sort order        |
-| q    | quit                    |
+| Key       | Action                          |
+| --------- | ------------------------------- |
+| j/k ↓/↑   | navigate up / down              |
+| g/G       | jump to top / bottom            |
+| enter / o | open selected PR in browser     |
+| r         | rescan from GitHub              |
+| f         | filter the visible list         |
+| s         | cycle sort order                |
+| a         | cycle approval filter           |
+| ?         | toggle the keybindings overlay  |
+| q / esc   | quit                            |
 
 ## Development
 
