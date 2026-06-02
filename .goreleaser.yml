@@ -86,15 +86,23 @@ release:
     ---
     Built with [goreleaser](https://goreleaser.com/).
 
-# Homebrew tap — enable once the ajardin/homebrew-tap repository exists.
-# brews:
-#   - name: kiroshi
-#     repository:
-#       owner: ajardin
-#       name: homebrew-tap
-#     directory: Formula
-#     homepage: https://github.com/ajardin/kiroshi
-#     description: GitHub pull request dashboard for the terminal
-#     license: MIT
-#     test: |
-#       system "#{bin}/kiroshi", "-version"
+homebrew_casks:
+  - name: kiroshi
+    binaries:
+      - kiroshi
+    directory: Casks
+    repository:
+      owner: ajardin
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: https://github.com/ajardin/kiroshi
+    description: GitHub pull request dashboard for the terminal
+    # The binary is unsigned: strip the Gatekeeper quarantine so macOS doesn't
+    # refuse it as "damaged". Proper Apple code signing would remove this need.
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/kiroshi"]
+          end
