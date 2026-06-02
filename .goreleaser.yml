@@ -54,6 +54,7 @@ snapshot:
 changelog:
   use: github
   sort: asc
+  format: "[{{ slice .SHA 0 7 }}](https://github.com/ajardin/kiroshi/commit/{{ .SHA }}) · {{ .Message }}{{ if .Logins }} ({{ .Logins | englishJoin }}){{ end }}"
   filters:
     exclude:
       - "^docs:"
@@ -80,9 +81,7 @@ release:
   mode: replace
   header: |
     ## kiroshi {{ .Tag }}
-
-    See [CHANGELOG.md](https://github.com/ajardin/kiroshi/blob/main/CHANGELOG.md)
-    for a curated summary.
+    See [CHANGELOG.md](https://github.com/ajardin/kiroshi/blob/main/CHANGELOG.md) for a curated summary.
   footer: |
     ---
     Built with [goreleaser](https://goreleaser.com/).

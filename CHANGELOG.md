@@ -7,48 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-06-02
+
+First stable release. kiroshi surfaces your GitHub pull requests as an
+interactive terminal dashboard, classified by what's waiting on whom.
+
 ### Added
-- README, LICENSE (MIT), CHANGELOG.
-- `make bench` target and a `BenchmarkSearchPullRequests_Enrichment`
-  baseline (50 PRs, simulated 5ms-per-call latency) so future enrichers
-  can be compared against a known number.
-- `internal/version` test coverage for both the `-ldflags` override and
-  the default-vars fallback shape.
-- `.pre-commit-config.yaml` mirroring the CI checks (golangci-lint,
-  gofmt, `go mod tidy`).
-- CI: matrix the `test` job across Linux, macOS, and Windows so every PR
-  validates all three target platforms.
-
-### Changed
-- CI: pin `golangci-lint-action` to a specific version (v2.12.2) instead
-  of `latest`, keeping local and CI linter behavior in sync.
-
-### Refactored
-- Centralised the GitHub 401 → `ErrInvalidToken` translation in a single
-  `wrapAPIError` helper, removing six duplicated handler blocks in
-  `internal/gh/client.go`.
-
-## Released
-
-Pre-release work shipped on `main` before the changelog existed:
-
-- **Parallelised enrichment** — per-PR enrichment runs through an
-  `errgroup` worker pool capped at 8, with fail-fast cancellation.
-- **Diff stats** — `+N -M` rendered per row, sourced from
-  `PullRequests.Get` (folded into the same call that fetches the head
-  SHA needed for CI).
-- **CI status** — head-SHA check runs are aggregated into a single
-  `CIState` via `aggregateCheckRuns` (failure > pending > success >
-  none precedence).
-- **Review-state classification** — pull requests are bucketed into
-  Waiting On You / Waiting On Others / Ready To Ship / In Flight based
-  on requested reviewers and submitted reviews; the `min_reviews`
-  threshold is configurable.
+- **Pull request dashboard** — Bubble Tea TUI with a locked design system
+  (see `CLAUDE.md`); plain-text fallback when stdout is not a TTY.
+- **Review-state classification** — PRs bucketed into Waiting On You /
+  Waiting On Others / Ready To Ship / In Flight from requested reviewers and
+  submitted reviews; configurable `min_reviews` threshold.
+- **Enriched rows** — per-PR diff stats (`+N -M`), aggregated CI status
+  (failure > pending > success > none precedence), and an approval marker
+  for PRs you've approved, laid out in scannable aligned columns.
+- **Optional Jira integration** — resolves the issue key from a PR's branch,
+  title, or body and shows the ticket status, colored by status category
+  (Jira Cloud, REST v3). Degrades to an omitted cell when unconfigured or
+  unreachable.
+- **Setup wizard** — `kiroshi -init` (and the auto-fallback on a TTY with no
+  config) walks through GitHub token, search query, min-reviews, and the
+  optional Jira credentials, validating them live.
+- **Interactive controls** — navigate (`j`/`k`), jump (`g`/`G`), open in
+  browser (`o`/`enter`), rescan (`r`), text filter (`f`), sort toggle (`s`),
+  approval filter (`a`), and a `?` keybindings overlay.
 - **Pull request listing** — issues/search backed by the
   `advanced_search=true` flag so boolean expressions in the query work.
-- **GitHub authentication** — PAT loaded from `GITHUB_TOKEN` or the
-  TOML config, with a dedicated `ErrInvalidToken` for 401 responses.
-- **Config loader** — TOML at the XDG default path, with token
-  redaction in structured logs.
-- **Visual shell** — Bubble Tea TUI with a locked design system (see
-  `CLAUDE.md`), plain-text fallback when stdout is not a TTY.
+- **GitHub authentication** — PAT loaded from `GITHUB_TOKEN` or the TOML
+  config, with a dedicated `ErrInvalidToken` for 401 responses.
+- **Config loader** — TOML at the XDG default path, written at mode `0600`,
+  with token redaction in structured logs.
+- **Parallelised enrichment** — per-PR enrichment runs through an `errgroup`
+  worker pool capped at 8, with fail-fast cancellation (Jira excepted: it
+  degrades gracefully rather than failing the scan).
+
+### Tooling
+- goreleaser release pipeline (Linux/macOS/Windows × amd64/arm64 archives,
+  checksums, GitHub changelog) triggered on `v*` tags.
+- CI matrix across Linux, macOS, and Windows; `golangci-lint-action` pinned
+  to v2.12.2 for local/CI parity; `.pre-commit-config.yaml` mirroring CI.
+- README, LICENSE (MIT), CHANGELOG; `make bench` baseline
+  (`BenchmarkSearchPullRequests_Enrichment`) and `internal/version` test
+  coverage.
+
+[Unreleased]: https://github.com/ajardin/kiroshi/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/ajardin/kiroshi/releases/tag/v1.0.0
