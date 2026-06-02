@@ -750,3 +750,67 @@ func TestTruncate(t *testing.T) {
 		t.Errorf("truncate wide = %q, want 日本…", got)
 	}
 }
+
+func TestModel_QuestionMarkTogglesHelp(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(t, nil, nil)
+	if m.showHelp {
+		t.Fatal("help should be closed initially")
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
+	got := updated.(Model)
+	if !got.showHelp {
+		t.Fatal("? should open the help overlay")
+	}
+	if !strings.Contains(got.View(), "KEYBINDINGS") {
+		t.Errorf("help view missing title\n%s", got.View())
+	}
+	// The overlay replaces the dashboard, so the section header is gone.
+	if strings.Contains(got.View(), "ALL PULL REQUESTS") {
+		t.Error("dashboard should be hidden while help is open")
+	}
+}
+
+func TestModel_HelpDismissedByAnyKey(t *testing.T) {
+	t.Parallel()
+
+	open := func(string) error { t.Fatal("dismiss key must not act on the dashboard"); return nil }
+	m := newTestModel(t, open, nil)
+	m.showHelp = true
+
+	// A key that would otherwise open a PR ("o") just closes help instead.
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	got := updated.(Model)
+	if got.showHelp {
+		t.Error("any key should dismiss the help overlay")
+	}
+	if cmd != nil {
+		t.Errorf("dismiss key should produce no cmd, got %T", cmd())
+	}
+}
+
+func TestModel_CtrlCQuitsFromHelp(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(t, nil, nil)
+	m.showHelp = true
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("ctrl+c from help should return a quit cmd")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Errorf("ctrl+c cmd produced %T, want tea.QuitMsg", cmd())
+	}
+}
+
+func TestModel_FooterAdvertisesHelp(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(t, nil, nil)
+	if !strings.Contains(m.View(), "help") {
+		t.Errorf("footer should advertise the ? help hint\n%s", m.footerView())
+	}
+}

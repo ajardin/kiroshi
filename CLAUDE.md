@@ -353,8 +353,15 @@ exactly one that survives `approvalMine`.
   exception:** it's an optional decoration, so `enrichJiraStatus` swallows
   all its errors (auth, network, 404) and degrades to an omitted Jira cell
   (the flowing tail simply drops it) rather than failing the whole scan.
-- **Phase 4**: `?` help overlay. Not started. The footer used to
-  advertise `?` as a key hint with a no-op handler; both were removed
-  to avoid promising a shortcut that does nothing. When Phase 4 lands,
-  add the hint back to `footerView` and wire the handler in
-  `handleListKey`.
+- **Phase 4**: `?` help overlay. ✅ shipped. The `?` key sets
+  `Model.showHelp`; `handleKey` short-circuits to `handleHelpKey` while it's
+  set, which dismisses on *any* key (ctrl+c still quits). `View` returns
+  `helpView` — a centered modal (`lipgloss.Place`) listing every binding —
+  instead of the dashboard while help is open; it **replaces** rather than
+  composites (lipgloss v1 can't back-fill a box over rendered content, the
+  same constraint behind `st()`). The footer advertises the hint again via
+  `keyHint("?", "help")`. Help-row keys are deliberately **ASCII** (no ↑/↓
+  glyphs): arrow glyphs are ambiguous-width, so lipgloss and the terminal
+  disagree on their cell count and the modal's right border would drift —
+  unlike the left-anchored row columns (▶/✓/●), a box must align all four
+  sides.

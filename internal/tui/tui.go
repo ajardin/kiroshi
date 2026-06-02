@@ -208,6 +208,7 @@ type Model struct {
 	filter      string
 	sort        sortMode
 	approval    approvalFilter
+	showHelp    bool
 }
 
 // NewModel builds a Model populated with the given pull requests. Pass
@@ -297,9 +298,16 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	if m.filterMode {
 		return m.handleFilterKey(msg)
 	}
+	if m.showHelp {
+		return m.handleHelpKey(msg)
+	}
 	switch msg.String() {
 	case "q", "esc", "ctrl+c":
 		return m, tea.Quit
+	case "?":
+		m.showHelp = true
+		m.status = ""
+		return m, nil
 	case "j", "down":
 		return m.moveDown(), nil
 	case "k", "up":
@@ -373,6 +381,16 @@ func (m Model) cycleApproval() Model {
 	}
 	m.cursor = 0
 	return m.clampCursor()
+}
+
+// handleHelpKey dismisses the keybindings overlay on any key. ctrl+c still
+// quits — it's the one chord users expect to escape the program from anywhere.
+func (m Model) handleHelpKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	if msg.String() == "ctrl+c" {
+		return m, tea.Quit
+	}
+	m.showHelp = false
+	return m, nil
 }
 
 func (m Model) handleFilterKey(msg tea.KeyMsg) (Model, tea.Cmd) {
@@ -527,6 +545,9 @@ func (m Model) View() string {
 	if m.width == 0 || m.height == 0 {
 		return ""
 	}
+	if m.showHelp {
+		return m.helpView()
+	}
 	// The four cards (each at least minCardW chars including border) plus 3
 	// gaps of 2 plus the 1-char left margin set the minimum width.
 	minW := 1 + minCardW*4 + 3*2
@@ -556,6 +577,60 @@ func (m Model) View() string {
 	}
 
 	return body + "\n" + footer
+}
+
+// --- Help overlay --------------------------------------------------------
+
+// helpView renders the keybindings overlay as a centered modal box (Phase 4).
+// The `?` key toggles it; any key dismisses it. It replaces the dashboard for
+// the duration rather than compositing over it — lipgloss v1 can't cleanly
+// back-fill a box on top of already-rendered content (the same constraint that
+// shapes st() in renderRow). The unstyled spaces lipgloss.Place fills the
+// screen with read as a blank backdrop on a dark terminal.
+func (m Model) helpView() string {
+	// Keys stay ASCII on purpose: arrow glyphs (↑/↓) are ambiguous-width, so
+	// lipgloss and the terminal disagree on their cell count and the modal
+	// box's right border would drift. Arrow / Home / End all work too; the
+	// words carry that without the layout risk.
+	bindings := []struct{ keys, desc string }{
+		{"j / k", "move selection (arrows too)"},
+		{"g / G", "jump to top / bottom"},
+		{"enter / o", "open PR in browser"},
+		{"r", "rescan pull requests"},
+		{"f / /", "filter by repo, title, author"},
+		{"s", "cycle sort (updated / oldest / newest)"},
+		{"a", "cycle approval filter"},
+		{"?", "toggle this help"},
+		{"q / esc", "quit"},
+	}
+
+	keyW := 0
+	for _, b := range bindings {
+		if w := lipgloss.Width(b.keys); w > keyW {
+			keyW = w
+		}
+	}
+
+	keyStyle := lipgloss.NewStyle().Foreground(colYellow).Bold(true)
+	descStyle := lipgloss.NewStyle().Foreground(colDim)
+	rows := make([]string, len(bindings))
+	for i, b := range bindings {
+		pad := strings.Repeat(" ", keyW-lipgloss.Width(b.keys))
+		rows[i] = keyStyle.Render(b.keys) + pad + "   " + descStyle.Render(b.desc)
+	}
+
+	title := lipgloss.NewStyle().Foreground(colYellow).Bold(true).Render("KEYBINDINGS")
+	hint := lipgloss.NewStyle().Foreground(colMuted).Italic(true).Render("press any key to dismiss")
+	content := lipgloss.JoinVertical(lipgloss.Left,
+		title, "", strings.Join(rows, "\n"), "", hint)
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(colCyan).
+		Padding(1, 3).
+		Render(content)
+
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
 }
 
 // --- Header --------------------------------------------------------------
@@ -843,6 +918,7 @@ func (m Model) footerView() string {
 		keyHint("f", "filter"),
 		keyHint("s", "sort"),
 		keyHint("a", "approved"),
+		keyHint("?", "help"),
 		keyHint("q", "quit"),
 	}
 	sepStyle := lipgloss.NewStyle().Foreground(colMuted).Render(" · ")
