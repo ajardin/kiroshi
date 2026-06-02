@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -256,8 +257,13 @@ func TestSaveRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat written config: %v", err)
 	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Errorf("config perm = %o, want 600", perm)
+	// Windows has no Unix permission bits — Go reports 0666 regardless of the
+	// 0600 we pass to WriteFile, so the secret-file mode is only enforceable
+	// (and assertable) on Unix.
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Errorf("config perm = %o, want 600", perm)
+		}
 	}
 
 	got, err := Load(path)
