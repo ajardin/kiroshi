@@ -13,7 +13,7 @@ available for pipes, CI, and any non-TTY context.
 go install github.com/ajardin/kiroshi/cmd/kiroshi@latest
 ```
 
-Requires Go 1.24 or newer. Pre-built binaries for Linux, macOS, and
+Requires Go 1.25 or newer. Pre-built binaries for Linux, macOS, and
 Windows ship with each tagged release on GitHub.
 
 ## Configure
