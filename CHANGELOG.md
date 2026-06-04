@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-06-04
+
+### Added
+- **Merge-state column** — surfaces GitHub's `mergeable_state` on the row's
+  second line: `conflict` in red when a PR is `dirty` (blocks merge like a
+  failing build), a muted `behind` when the head branch trails its base.
+  Every other state renders blank and the column collapses to zero width
+  when no visible PR is flagged, so it costs nothing on an all-clean set.
+- **Optional auto-refresh** — `refresh_interval` config (Go duration; `0` or
+  absent disables) arms a `tea.Tick` that rescans through the same path as
+  the `r` key, skipping when a scan is already in flight. The footer shows a
+  cyan `● auto <interval>`; the setup wizard gained a matching optional step.
+
+## [1.1.0] - 2026-06-02
+
+### Added
+- **Homebrew distribution** — goreleaser now publishes a cask to
+  `ajardin/homebrew-tap`, so `brew install ajardin/tap/kiroshi` works. The
+  post-install hook strips the macOS quarantine attribute from the binary.
+
 ## [1.0.0] - 2026-06-02
 
 First stable release. kiroshi surfaces your GitHub pull requests as an
@@ -50,5 +70,7 @@ interactive terminal dashboard, classified by what's waiting on whom.
   (`BenchmarkSearchPullRequests_Enrichment`) and `internal/version` test
   coverage.
 
-[Unreleased]: https://github.com/ajardin/kiroshi/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/ajardin/kiroshi/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/ajardin/kiroshi/compare/v1.1.0...v1.2.0
+[1.1.0]: https://github.com/ajardin/kiroshi/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/ajardin/kiroshi/releases/tag/v1.0.0
