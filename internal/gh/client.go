@@ -48,6 +48,36 @@ const (
 	CIStateFailure CIState = "failure"
 )
 
+// MergeState is the mergeability signal kiroshi surfaces for a pull request,
+// distilled from GitHub's mergeable_state. We only distinguish the two states
+// worth acting on — a merge conflict and a branch behind its base — and collapse
+// everything else (clean, blocked, unstable, draft, has_hooks) into
+// MergeStateClear. GitHub computes mergeable_state lazily on a background job, so
+// a freshly-opened PR commonly reports "unknown"; we map that to clear rather
+// than guess, to avoid flashing a false conflict.
+type MergeState string
+
+// Merge state values. MergeStateClear is the zero value and means "nothing to
+// flag" — it also absorbs GitHub's "unknown" (not-yet-computed) state.
+const (
+	MergeStateClear    MergeState = ""
+	MergeStateBehind   MergeState = "behind"
+	MergeStateConflict MergeState = "conflict"
+)
+
+// normalizeMergeState maps GitHub's mergeable_state string onto the two states
+// kiroshi surfaces; anything else (including "unknown") becomes MergeStateClear.
+func normalizeMergeState(s string) MergeState {
+	switch s {
+	case "dirty":
+		return MergeStateConflict
+	case "behind":
+		return MergeStateBehind
+	default:
+		return MergeStateClear
+	}
+}
+
 // PullRequest is the subset of a GitHub pull request kiroshi cares about when
 // listing search results.
 //
@@ -64,9 +94,10 @@ const (
 // state entirely.
 //
 // HeadSHA is the SHA of the pull request's head commit; CIState is the
-// aggregated outcome of the check runs reported against it. Additions and
-// Deletions are the line counts reported by GitHub on PullRequests.Get
-// (the issues/search response doesn't include them).
+// aggregated outcome of the check runs reported against it. MergeState,
+// Additions and Deletions are likewise read from PullRequests.Get (the
+// issues/search response doesn't include them); MergeState flags only a merge
+// conflict or a behind-base branch, see normalizeMergeState.
 //
 // HeadRef and Body are captured for Jira issue-key extraction. JiraKey is the
 // issue key referenced by the PR (from branch, title or body), empty when none
@@ -92,6 +123,7 @@ type PullRequest struct {
 	HeadRef            string
 	Body               string
 	CIState            CIState
+	MergeState         MergeState
 	Additions          int
 	Deletions          int
 	JiraKey            string
@@ -394,7 +426,7 @@ func summarizeReviews(reviews []*github.PullRequestReview, author string) (appro
 
 // enrichDetail fetches the per-PR detail (PullRequests.Get) and populates
 // the fields that the issues/search response doesn't carry: head SHA, head
-// ref (branch), body, line additions, line deletions. enrichCIState relies on
+// ref (branch), body, merge state, line additions, line deletions. enrichCIState relies on
 // pr.HeadSHA and enrichJiraStatus on pr.HeadRef/pr.Body, so this must run
 // before both. Skipped silently when the PR coordinates are incomplete.
 func (c *Client) enrichDetail(ctx context.Context, pr *PullRequest) error {
@@ -414,6 +446,7 @@ func (c *Client) enrichDetail(ctx context.Context, pr *PullRequest) error {
 		pr.HeadRef = head.GetRef()
 	}
 	pr.Body = detail.GetBody()
+	pr.MergeState = normalizeMergeState(detail.GetMergeableState())
 	pr.Additions = detail.GetAdditions()
 	pr.Deletions = detail.GetDeletions()
 	return nil

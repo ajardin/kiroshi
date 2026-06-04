@@ -52,7 +52,7 @@ addition — accepted because "approved/ready" reads as green by universal
 convention (CI, GitHub merge button). Do not introduce a fourth chromatic
 accent without a discussion.
 
-Two documented exceptions where colRed leaves its reserved-for-errors
+Three documented exceptions where colRed leaves its reserved-for-errors
 bucket and shows up on a non-error row:
 
 1. **CI cell** — green for passing, red for failing, **cyan for pending**
@@ -66,8 +66,19 @@ bucket and shows up on a non-error row:
    real aligned column: `renderDiff` left-pads the `+N` sub-field to the
    widest `+N` in the visible set so the `-M` parts line up under each other
    across rows (see "Row line-2 layout"). See `renderDiff`.
+3. **Merge cell** — the word `conflict` in red when GitHub reports the PR's
+   `mergeable_state` as `dirty`. A merge conflict blocks merge exactly like a
+   failing build, so it earns the same "action required" accent. The only
+   other surfaced state, `behind` (head branch behind its base), is a soft
+   nudge and stays `colDim` — no new accent. Every other state (clean,
+   blocked, unstable, draft, and GitHub's not-yet-computed `unknown`) renders
+   blank, so most rows show nothing here. It's a fixed aligned column carrying
+   a self-describing word (no glyph — avoids width ambiguity — and no prefix),
+   and the whole column collapses to zero width when no visible PR is flagged.
+   See `mergeFragment` in `internal/tui/tui.go` and `MergeState` /
+   `normalizeMergeState` in `internal/gh/client.go`.
 
-Both exceptions are deliberate concessions to universal conventions; do
+All three exceptions are deliberate concessions to universal conventions; do
 not extend the list without discussion.
 
 A third, green-side concession: the **approval marker** (`approvalFragment`,
@@ -99,14 +110,20 @@ tail**, so the high-signal status cells line up vertically and the eye can
 scan one column ("which PRs are failing CI?"):
 
 ```
-@author    ✓ +N   -M   <ci>    · <jira KEY Status> · <age>
-└ author ─┘↑ └─ diff ─┘ └ ci ─┘   └─────── flowing tail ───────┘
+@author    ✓ +N   -M   <ci>    <merge> · <jira KEY Status> · <age>
+└ author ─┘↑ └─ diff ─┘ └ ci ─┘ └merge┘   └─────── flowing tail ───────┘
           approval slot
 ```
 
 - **Fixed columns** (always present, aligned across rows): author, the
   one-col approval slot, diff, ci. Absent diff/ci render a muted `—`
   *in the column* (the placeholder is justified — the column is real).
+- **Merge column** (after ci): a self-describing word (`conflict`/`behind`)
+  for the two action-worthy `mergeable_state`s, blank otherwise. Unlike
+  diff/ci it has **no `—` placeholder** — a healthy PR shows nothing — and the
+  whole column **collapses to zero width** (no leading separator either) when
+  no visible PR is flagged, so it costs nothing on the common all-clean set.
+  See `mergeFragment`.
 - **Flowing tail** (` · `-separated, present items only): the Jira cell
   (dropped when there's no key) then the age (`humanAgo`, no `updated`
   prefix). Empty cells are dropped, not shown as `jira: —`/`ci: —` noise.
@@ -115,10 +132,11 @@ Column widths are computed **once per render over the full visible set**
 (not just the on-screen page, so columns don't jump while scrolling) by
 `computeRowCols` → `rowCols`: max `@author` width (capped at `maxAuthorW`,
 longer names truncated), the widest `+N` (drives the diff sub-alignment),
-total diff width, and ci width. `renderRow` pads each styled cell to its
-column width with `padCell`, which appends **bg-aware** spaces — the
-selected-row background must reach the column boundary (same lipgloss
-back-fill constraint as `st()`; see "Selected row treatment").
+total diff width, ci width, and merge width (0 when no PR is flagged).
+`renderRow` pads each styled cell to its column width with `padCell`, which
+appends **bg-aware** spaces — the selected-row background must reach the
+column boundary (same lipgloss back-fill constraint as `st()`; see "Selected
+row treatment").
 
 ### CI state aggregation (locked)
 
@@ -320,13 +338,14 @@ exactly one that survives `approvalMine`.
   `PullRequests.ListReviews` (review history) for every PR in the search
   result, then summarizes per-reviewer state via `summarizeReviews`. Two
   extra REST calls per PR.
-- **Phase 3 (current)**: enrich placeholder fields (CI, diff stats, Jira).
+- **Phase 3**: enrich placeholder fields (CI, diff stats, Jira). ✅ shipped.
   - CI ✅ shipped. `enrichCIState` reads `Checks.ListCheckRunsForRef`
     against `pr.HeadSHA` and folds the runs through `aggregateCheckRuns`.
   - Diff stats ✅ shipped. `enrichDetail` calls `PullRequests.Get` once and
-    fills `HeadSHA`, `Additions`, `Deletions` together — the head SHA is a
-    prerequisite for the Checks call, so this was the natural seam. No new
-    REST cost on top of CI; the row renders `+N -M` via `renderDiff`.
+    fills `HeadSHA`, `MergeState`, `Additions`, `Deletions` together — the
+    head SHA is a prerequisite for the Checks call, so this was the natural
+    seam. No new REST cost on top of CI; the row renders `+N -M` via
+    `renderDiff`.
   - Jira ticket ✅ shipped (optional). `enrichJiraStatus` extracts the
     issue key from the PR's branch, title, then body (`jira.ExtractKey`,
     regex `[A-Z][A-Z0-9]+-\d+`, first match wins) and resolves it through
@@ -365,3 +384,10 @@ exactly one that survives `approvalMine`.
   disagree on their cell count and the modal's right border would drift —
   unlike the left-anchored row columns (▶/✓/●), a box must align all four
   sides.
+- **Phase 5**: merge-state column. ✅ shipped (read-only, by design — no
+  approve/merge from the TUI). `enrichDetail` reads GitHub's `mergeable_state`
+  (free — same `PullRequests.Get` already called) into `MergeState` via
+  `normalizeMergeState`, surfacing only `conflict` (`dirty`) and `behind`;
+  everything else (including the lazily-computed `unknown`) is "clear".
+  Rendered by `mergeFragment` as a collapsing fixed column (see "Row line-2
+  layout" and the colRed concession in "Color palette").

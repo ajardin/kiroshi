@@ -663,6 +663,39 @@ func TestBucketFor(t *testing.T) {
 	}
 }
 
+func TestMergeFragment(t *testing.T) {
+	t.Parallel()
+
+	if text, color := mergeFragment(gh.MergeStateConflict); text != "conflict" || color != colRed {
+		t.Errorf("conflict fragment = %q/%v, want \"conflict\"/red", text, color)
+	}
+	if text, color := mergeFragment(gh.MergeStateBehind); text != "behind" || color != colDim {
+		t.Errorf("behind fragment = %q/%v, want \"behind\"/dim", text, color)
+	}
+	if text, _ := mergeFragment(gh.MergeStateClear); text != "" {
+		t.Errorf("clear fragment = %q, want empty (column collapses)", text)
+	}
+}
+
+func TestView_RendersMergeConflict(t *testing.T) {
+	t.Parallel()
+
+	prs := []gh.PullRequest{{
+		Owner:      "ajardin",
+		Repo:       "repo",
+		Number:     1,
+		Title:      "Conflicted PR",
+		Author:     "alice",
+		URL:        "https://github.com/ajardin/repo/pull/1",
+		MergeState: gh.MergeStateConflict,
+	}}
+	m := NewModel(prs, "ajardin", "v", 2, false, time.Now(), nil, nil)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	if view := updated.(Model).View(); !strings.Contains(view, "conflict") {
+		t.Errorf("view missing the merge-conflict cell\n%s", view)
+	}
+}
+
 func TestRenderDiff(t *testing.T) {
 	t.Parallel()
 	// Bare-bones styler: no background, no bold — we only care about the text
