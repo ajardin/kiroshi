@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -47,9 +48,13 @@ type Config struct {
 	GitHubToken string
 	Search      string
 	MinReviews  int
-	JiraBaseURL string
-	JiraEmail   string
-	JiraToken   string
+	// RefreshInterval, when > 0, makes the TUI rescan automatically on that
+	// cadence; zero (the default) disables auto-refresh and leaves rescanning to
+	// the manual "r" key. Stored in the file as a Go duration string ("5m").
+	RefreshInterval time.Duration
+	JiraBaseURL     string
+	JiraEmail       string
+	JiraToken       string
 }
 
 // LogValue implements slog.LogValuer to prevent the tokens from leaking into
@@ -58,6 +63,7 @@ func (c *Config) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.String("search", c.Search),
 		slog.Int("min_reviews", c.MinReviews),
+		slog.Duration("refresh_interval", c.RefreshInterval),
 		slog.String("github_token", "<redacted>"),
 		slog.String("jira_base_url", c.JiraBaseURL),
 		slog.String("jira_email", c.JiraEmail),
@@ -68,12 +74,13 @@ func (c *Config) LogValue() slog.Value {
 // fileConfig mirrors the TOML schema. MinReviews is a pointer so we can tell
 // "absent" (apply DefaultMinReviews) from "explicitly set to 0".
 type fileConfig struct {
-	GitHubToken string `toml:"github_token"`
-	Search      string `toml:"search"`
-	MinReviews  *int   `toml:"min_reviews"`
-	JiraBaseURL string `toml:"jira_base_url"`
-	JiraEmail   string `toml:"jira_email"`
-	JiraToken   string `toml:"jira_token"`
+	GitHubToken     string `toml:"github_token"`
+	Search          string `toml:"search"`
+	MinReviews      *int   `toml:"min_reviews"`
+	RefreshInterval string `toml:"refresh_interval"`
+	JiraBaseURL     string `toml:"jira_base_url"`
+	JiraEmail       string `toml:"jira_email"`
+	JiraToken       string `toml:"jira_token"`
 }
 
 // Load reads the TOML configuration at path. When path is empty, the default
@@ -116,13 +123,23 @@ func Load(path string) (*Config, error) {
 		minReviews = *fc.MinReviews
 	}
 
+	var refreshInterval time.Duration
+	if s := strings.TrimSpace(fc.RefreshInterval); s != "" {
+		d, perr := time.ParseDuration(s)
+		if perr != nil {
+			return nil, fmt.Errorf("invalid config %s: refresh_interval %q: %w", path, s, perr)
+		}
+		refreshInterval = d
+	}
+
 	cfg := &Config{
-		GitHubToken: token,
-		Search:      strings.TrimSpace(fc.Search),
-		MinReviews:  minReviews,
-		JiraBaseURL: strings.TrimSpace(fc.JiraBaseURL),
-		JiraEmail:   strings.TrimSpace(fc.JiraEmail),
-		JiraToken:   jiraToken,
+		GitHubToken:     token,
+		Search:          strings.TrimSpace(fc.Search),
+		MinReviews:      minReviews,
+		RefreshInterval: refreshInterval,
+		JiraBaseURL:     strings.TrimSpace(fc.JiraBaseURL),
+		JiraEmail:       strings.TrimSpace(fc.JiraEmail),
+		JiraToken:       jiraToken,
 	}
 	if err := cfg.validate(); err != nil {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
@@ -159,13 +176,18 @@ func Save(path string, c *Config) error {
 	}
 
 	mr := c.MinReviews
+	var refresh string
+	if c.RefreshInterval > 0 {
+		refresh = c.RefreshInterval.String()
+	}
 	fc := fileConfig{
-		GitHubToken: c.GitHubToken,
-		Search:      c.Search,
-		MinReviews:  &mr,
-		JiraBaseURL: c.JiraBaseURL,
-		JiraEmail:   c.JiraEmail,
-		JiraToken:   c.JiraToken,
+		GitHubToken:     c.GitHubToken,
+		Search:          c.Search,
+		MinReviews:      &mr,
+		RefreshInterval: refresh,
+		JiraBaseURL:     c.JiraBaseURL,
+		JiraEmail:       c.JiraEmail,
+		JiraToken:       c.JiraToken,
 	}
 	if err := toml.NewEncoder(f).Encode(fc); err != nil {
 		_ = f.Close()
@@ -192,6 +214,9 @@ func (c *Config) validate() error {
 	}
 	if c.MinReviews < 0 {
 		return fmt.Errorf("min_reviews must be >= 0, got %d", c.MinReviews)
+	}
+	if c.RefreshInterval < 0 {
+		return fmt.Errorf("refresh_interval must be >= 0, got %s", c.RefreshInterval)
 	}
 	if err := c.validateJira(); err != nil {
 		return err

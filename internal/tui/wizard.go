@@ -5,6 +5,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -18,14 +19,16 @@ import (
 const defaultSearch = "is:pr is:open author:@me archived:false"
 
 // wizardStep enumerates the wizard's linear flow. The order is the field
-// order: token, then search, then min reviews, then a validating spinner-less
-// wait, ending in either an error (recoverable) or done (quit + save).
+// order: token, search, min reviews, refresh interval, then the three optional
+// Jira steps, then a validating spinner-less wait, ending in either an error
+// (recoverable) or done (quit + save).
 type wizardStep int
 
 const (
 	stepToken wizardStep = iota
 	stepSearch
 	stepMinReviews
+	stepRefresh
 	stepJiraURL
 	stepJiraEmail
 	stepJiraToken
@@ -38,13 +41,14 @@ const (
 // by RunWizard. Completed is false when the user aborted (esc / ctrl+c); in
 // that case the other fields are meaningless and nothing should be written.
 type WizardResult struct {
-	Completed   bool
-	Token       string
-	Search      string
-	MinReviews  int
-	JiraBaseURL string
-	JiraEmail   string
-	JiraToken   string
+	Completed       bool
+	Token           string
+	Search          string
+	MinReviews      int
+	RefreshInterval time.Duration
+	JiraBaseURL     string
+	JiraEmail       string
+	JiraToken       string
 }
 
 // wizardValidateMsg carries the result of the live token check back into the
@@ -64,6 +68,8 @@ type WizardModel struct {
 	// the placeholder default".
 	search        string
 	minReviewsStr string
+	// refreshStr is the raw typed auto-refresh interval ("5m"); blank = disabled.
+	refreshStr string
 	// jira* hold the optional Jira config buffers. A blank jiraURL skips Jira
 	// setup entirely (the email/token steps are not shown).
 	jiraURL   string
@@ -140,6 +146,8 @@ func (m WizardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case stepMinReviews:
 		return m.handleMinReviewsKey(msg)
+	case stepRefresh:
+		return m.handleRefreshKey(msg)
 	case stepJiraURL:
 		if msg.Type == tea.KeyEnter {
 			if strings.TrimSpace(m.jiraURL) == "" {
@@ -202,7 +210,7 @@ func (m WizardModel) handleMinReviewsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.errMsg = ""
-		m.step = stepJiraURL
+		m.step = stepRefresh
 		return m, nil
 	case tea.KeyBackspace, tea.KeyDelete:
 		if len(m.minReviewsStr) > 0 {
@@ -217,6 +225,48 @@ func (m WizardModel) handleMinReviewsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	default:
 		return m, nil
 	}
+}
+
+func (m WizardModel) handleRefreshKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEnter:
+		if _, err := m.parsedRefreshInterval(); err != nil {
+			m.errMsg = err.Error()
+			return m, nil
+		}
+		m.errMsg = ""
+		m.step = stepJiraURL
+		return m, nil
+	case tea.KeyBackspace, tea.KeyDelete:
+		if len(m.refreshStr) > 0 {
+			m.refreshStr = m.refreshStr[:len(m.refreshStr)-1]
+			m.errMsg = ""
+		}
+		return m, nil
+	case tea.KeyRunes:
+		m.refreshStr += string(msg.Runes)
+		m.errMsg = ""
+		return m, nil
+	default:
+		return m, nil
+	}
+}
+
+// parsedRefreshInterval resolves the typed buffer: blank disables auto-refresh
+// (zero), otherwise it must parse as a non-negative Go duration ("5m", "1h").
+func (m WizardModel) parsedRefreshInterval() (time.Duration, error) {
+	s := strings.TrimSpace(m.refreshStr)
+	if s == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("interval must be a duration like 5m or 1h")
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("interval must be >= 0")
+	}
+	return d, nil
 }
 
 // parsedMinReviews resolves the typed buffer: empty falls back to the package
@@ -266,15 +316,17 @@ func (m WizardModel) result() WizardResult {
 	if m.step != stepDone {
 		return WizardResult{Completed: false}
 	}
-	mr, _ := m.parsedMinReviews() // already validated before leaving stepMinReviews
+	mr, _ := m.parsedMinReviews()      // already validated before leaving stepMinReviews
+	ri, _ := m.parsedRefreshInterval() // already validated before leaving stepRefresh
 	return WizardResult{
-		Completed:   true,
-		Token:       strings.TrimSpace(m.token),
-		Search:      m.resolvedSearch(),
-		MinReviews:  mr,
-		JiraBaseURL: strings.TrimSpace(m.jiraURL),
-		JiraEmail:   strings.TrimSpace(m.jiraEmail),
-		JiraToken:   strings.TrimSpace(m.jiraToken),
+		Completed:       true,
+		Token:           strings.TrimSpace(m.token),
+		Search:          m.resolvedSearch(),
+		MinReviews:      mr,
+		RefreshInterval: ri,
+		JiraBaseURL:     strings.TrimSpace(m.jiraURL),
+		JiraEmail:       strings.TrimSpace(m.jiraEmail),
+		JiraToken:       strings.TrimSpace(m.jiraToken),
 	}
 }
 
@@ -286,17 +338,19 @@ func (m WizardModel) View() string {
 	var body string
 	switch m.step {
 	case stepToken:
-		body = m.fieldView("1/6", "GitHub token", maskValue(m.token), "scopes: repo, read:org", "")
+		body = m.fieldView("1/7", "GitHub token", maskValue(m.token), "scopes: repo, read:org", "")
 	case stepSearch:
-		body = m.fieldView("2/6", "Search query", m.search, defaultSearch, "")
+		body = m.fieldView("2/7", "Search query", m.search, defaultSearch, "")
 	case stepMinReviews:
-		body = m.fieldView("3/6", "Minimum approvals to ship", m.minReviewsStr, strconv.Itoa(config.DefaultMinReviews), m.errMsg)
+		body = m.fieldView("3/7", "Minimum approvals to ship", m.minReviewsStr, strconv.Itoa(config.DefaultMinReviews), m.errMsg)
+	case stepRefresh:
+		body = m.fieldView("4/7", "Auto-refresh interval (optional)", m.refreshStr, "e.g. 5m · blank to disable", m.errMsg)
 	case stepJiraURL:
-		body = m.fieldView("4/6", "Jira base URL (optional)", m.jiraURL, "https://acme.atlassian.net · blank to skip", "")
+		body = m.fieldView("5/7", "Jira base URL (optional)", m.jiraURL, "https://acme.atlassian.net · blank to skip", "")
 	case stepJiraEmail:
-		body = m.fieldView("5/6", "Jira account email", m.jiraEmail, "you@acme.com", "")
+		body = m.fieldView("6/7", "Jira account email", m.jiraEmail, "you@acme.com", "")
 	case stepJiraToken:
-		body = m.fieldView("6/6", "Jira API token", maskValue(m.jiraToken), "id.atlassian.com/manage-profile/security/api-tokens", "")
+		body = m.fieldView("7/7", "Jira API token", maskValue(m.jiraToken), "id.atlassian.com/manage-profile/security/api-tokens", "")
 	case stepValidating:
 		body = lipgloss.NewStyle().Foreground(colCyan).Render("Validating token with GitHub…")
 	case stepError:
