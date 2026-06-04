@@ -192,47 +192,51 @@ type Model struct {
 	login   string
 	version string
 
-	prs         []gh.PullRequest
-	minReviews  int
-	jiraEnabled bool
-	lastScan    time.Time
-	now         time.Time
-	cursor      int
-	offset      int
-	width       int
-	height      int
-	status      string
-	statusErr   bool
-	refreshing  bool
-	filterMode  bool
-	filter      string
-	sort        sortMode
-	approval    approvalFilter
-	showHelp    bool
+	prs             []gh.PullRequest
+	minReviews      int
+	jiraEnabled     bool
+	refreshInterval time.Duration
+	lastScan        time.Time
+	now             time.Time
+	cursor          int
+	offset          int
+	width           int
+	height          int
+	status          string
+	statusErr       bool
+	refreshing      bool
+	filterMode      bool
+	filter          string
+	sort            sortMode
+	approval        approvalFilter
+	showHelp        bool
 }
 
 // NewModel builds a Model populated with the given pull requests. Pass
 // time.Now() for lastScan; the header displays "last scan Xm ago" relative
 // to the live clock. minReviews is the team-wide threshold of non-author
 // approvals required to classify a PR as ReadyToShip. jiraEnabled toggles the
-// footer's Jira indicator between active and inactive. open and refresh may
-// be nil in tests.
-func NewModel(prs []gh.PullRequest, login, version string, minReviews int, jiraEnabled bool, lastScan time.Time, open Opener, refresh Refresher) Model {
+// footer's Jira indicator between active and inactive. refreshInterval, when
+// > 0, drives an automatic rescan on that cadence (0 disables it). open and
+// refresh may be nil in tests.
+func NewModel(prs []gh.PullRequest, login, version string, minReviews int, jiraEnabled bool, refreshInterval time.Duration, lastScan time.Time, open Opener, refresh Refresher) Model {
 	return Model{
-		prs:         prs,
-		login:       login,
-		version:     version,
-		minReviews:  minReviews,
-		jiraEnabled: jiraEnabled,
-		lastScan:    lastScan,
-		now:         time.Now(),
-		open:        open,
-		refresh:     refresh,
+		prs:             prs,
+		login:           login,
+		version:         version,
+		minReviews:      minReviews,
+		jiraEnabled:     jiraEnabled,
+		refreshInterval: refreshInterval,
+		lastScan:        lastScan,
+		now:             time.Now(),
+		open:            open,
+		refresh:         refresh,
 	}
 }
 
-// Init kicks off the per-second clock tick.
-func (m Model) Init() tea.Cmd { return tickCmd() }
+// Init kicks off the per-second clock tick and, when configured, the
+// auto-refresh tick.
+func (m Model) Init() tea.Cmd { return tea.Batch(tickCmd(), autoRefreshCmd(m.refreshInterval)) }
 
 type (
 	tickMsg   time.Time
@@ -245,10 +249,22 @@ type (
 		err error
 		at  time.Time
 	}
+	// autoRefreshMsg fires on the refresh_interval cadence; the handler
+	// triggers a rescan (unless one is already running) and re-arms the tick.
+	autoRefreshMsg time.Time
 )
 
 func tickCmd() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
+}
+
+// autoRefreshCmd schedules the next auto-refresh tick, or nil when auto-refresh
+// is disabled (tea.Batch ignores nil commands).
+func autoRefreshCmd(d time.Duration) tea.Cmd {
+	if d <= 0 {
+		return nil
+	}
+	return tea.Tick(d, func(t time.Time) tea.Msg { return autoRefreshMsg(t) })
 }
 
 func info(s string) tea.Cmd { return func() tea.Msg { return statusMsg{text: s} } }
@@ -281,6 +297,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = fmt.Sprintf("rescanned · %d PR(s)", len(msg.prs))
 		m.statusErr = false
 		return m, nil
+
+	case autoRefreshMsg:
+		// Always re-arm so the cadence continues; only kick off a rescan when one
+		// isn't already in flight (a slow scan that outlasts the interval simply
+		// skips a beat rather than stacking). Mirrors the manual "r" path.
+		next := autoRefreshCmd(m.refreshInterval)
+		if m.refresh == nil || m.refreshing {
+			return m, next
+		}
+		m.refreshing = true
+		m.statusErr = false
+		return m, tea.Batch(m.rescanCmd(), next)
 
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -942,6 +970,12 @@ func (m Model) footerView() string {
 	indicators := lipgloss.NewStyle().Foreground(colGreen).Render("● github") +
 		sepStyle +
 		jiraDot
+	if m.refreshInterval > 0 {
+		// Cyan, the project's chrome/background-activity hue (same as the clock),
+		// signals the dashboard refreshes itself on a cadence.
+		auto := lipgloss.NewStyle().Foreground(colCyan).Render("● auto " + shortDuration(m.refreshInterval))
+		indicators = auto + sepStyle + indicators
+	}
 
 	pad := m.width - lipgloss.Width(keyLine) - lipgloss.Width(indicators) - 2
 	if pad < 1 {
@@ -1070,6 +1104,22 @@ func jiraFragment(key, status, category string) (string, lipgloss.Color) {
 		return label, colCyan
 	default: // CategoryNew, CategoryUnknown
 		return label, colDim
+	}
+}
+
+// shortDuration formats a refresh interval for the footer, collapsing the exact
+// whole-unit cases time.Duration.String() spells out in full ("5m0s" → "5m",
+// "1h0m0s" → "1h") and falling back to the standard form otherwise.
+func shortDuration(d time.Duration) string {
+	switch {
+	case d%time.Hour == 0:
+		return fmt.Sprintf("%dh", d/time.Hour)
+	case d%time.Minute == 0:
+		return fmt.Sprintf("%dm", d/time.Minute)
+	case d%time.Second == 0:
+		return fmt.Sprintf("%ds", d/time.Second)
+	default:
+		return d.String()
 	}
 }
 

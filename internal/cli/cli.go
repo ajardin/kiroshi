@@ -201,12 +201,13 @@ func runWizard(ctx context.Context, configPath string, stdout io.Writer, ro runO
 	}
 
 	cfg := &config.Config{
-		GitHubToken: res.Token,
-		Search:      res.Search,
-		MinReviews:  res.MinReviews,
-		JiraBaseURL: res.JiraBaseURL,
-		JiraEmail:   res.JiraEmail,
-		JiraToken:   res.JiraToken,
+		GitHubToken:     res.Token,
+		Search:          res.Search,
+		MinReviews:      res.MinReviews,
+		RefreshInterval: res.RefreshInterval,
+		JiraBaseURL:     res.JiraBaseURL,
+		JiraEmail:       res.JiraEmail,
+		JiraToken:       res.JiraToken,
 	}
 	if err := config.Save(path, cfg); err != nil {
 		return fmt.Errorf("save config: %w", err)
@@ -235,7 +236,7 @@ func run(ctx context.Context, logger *slog.Logger, client gh.API, cfg *config.Co
 		refresh := func(ctx context.Context) ([]gh.PullRequest, error) {
 			return client.SearchPullRequests(ctx, cfg.Search)
 		}
-		model := tui.NewModel(prs, user.Login, version.String(), cfg.MinReviews, cfg.JiraBaseURL != "", time.Now(), tui.OpenURL, refresh)
+		model := tui.NewModel(prs, user.Login, version.String(), cfg.MinReviews, cfg.JiraBaseURL != "", cfg.RefreshInterval, time.Now(), tui.OpenURL, refresh)
 		if err := runTUI(model); err != nil {
 			return fmt.Errorf("run tui: %w", err)
 		}

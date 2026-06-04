@@ -304,8 +304,11 @@ exactly one that survives `approvalMine`.
   exists on a TTY) runs `tui.WizardModel`, a second Bubble Tea program with
   its own `RunWizard`. It reuses the dashboard palette and the filter's
   hand-rolled text-input pattern (no `bubbles/textinput`); the token step is
-  masked. The steps are token → search → min-reviews → **3 optional Jira
-  steps** (base URL → email → token) → validating. The Jira steps are
+  masked. The steps are token → search → min-reviews → **refresh-interval
+  (optional)** → **3 optional Jira steps** (base URL → email → token) →
+  validating. The refresh-interval step takes a Go duration (`5m`); blank
+  disables auto-refresh, a non-duration string keeps you on the step with an
+  inline error (mirroring min-reviews validation). The Jira steps are
   skippable: a blank base URL jumps straight to validating, so users
   without Jira never touch email/token. The Jira token step is masked like
   the GitHub one. When Jira *is* configured, the validating step checks the
@@ -391,3 +394,12 @@ exactly one that survives `approvalMine`.
   everything else (including the lazily-computed `unknown`) is "clear".
   Rendered by `mergeFragment` as a collapsing fixed column (see "Row line-2
   layout" and the colRed concession in "Color palette").
+- **Phase 6**: auto-refresh. ✅ shipped. Optional `refresh_interval` config (Go
+  duration string, `0`/absent = disabled; no env override). When > 0, `Init`
+  arms an `autoRefreshCmd` `tea.Tick`; the `autoRefreshMsg` handler re-arms the
+  tick and triggers a rescan **through the same path as the `r` key**, skipping
+  when a scan is already in flight (no stacking). The footer shows a cyan
+  `● auto <interval>` indicator (`shortDuration` formats it). Wired into
+  `NewModel` (extra `refreshInterval` arg) and the wizard (a new optional
+  step). The cadence is *not* surfaced in `helpView` — it's config-driven, not
+  a key binding.

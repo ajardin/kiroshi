@@ -55,7 +55,7 @@ func TestPreview(t *testing.T) {
 			CIState: gh.CIStateNone,
 		},
 	}
-	m := NewModel(prs, "ajardin", "v0.0.1", 2, true, time.Now().Add(-2*time.Minute), nil, nil)
+	m := NewModel(prs, "ajardin", "v0.0.1", 2, true, 5*time.Minute, time.Now().Add(-2*time.Minute), nil, nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 36})
 	fmt.Println()
 	fmt.Println(updated.(Model).View())

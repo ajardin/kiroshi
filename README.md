@@ -40,8 +40,9 @@ The fastest way to create the config is the interactive wizard:
 kiroshi -init
 ```
 
-It prompts for the token, search query, `min_reviews`, and optional Jira
-credentials, validates the token against GitHub live, and writes the file
+It prompts for the token, search query, `min_reviews`, an optional
+auto-refresh interval, and optional Jira credentials, validates the token
+against GitHub live, and writes the file
 (mode `0600`). kiroshi also launches the wizard automatically the first time
 you run it on a terminal with no config present. To write the file by hand
 instead:
@@ -67,6 +68,12 @@ search = "is:pr is:open author:@me archived:false"
 # Minimum number of non-author APPROVED reviews required before kiroshi
 # classifies a pull request as Ready To Ship. Defaults to 2.
 min_reviews = 2
+
+# Optional auto-refresh cadence for the TUI, as a Go duration ("30s", "5m",
+# "1h"). When set, the dashboard rescans on its own and the footer shows an
+# "auto <interval>" indicator. Omit it (or set 0) to refresh only on demand
+# with the "r" key.
+refresh_interval = "5m"
 
 # Optional Jira Cloud integration. When set, kiroshi extracts the issue key
 # from each PR's branch, title, or body (e.g. PROJ-1234) and shows the ticket

@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func writeConfig(t *testing.T, content string) string {
@@ -242,12 +243,13 @@ func TestSaveRoundTrip(t *testing.T) {
 	path := filepath.Join(dir, "nested", "config.toml")
 
 	want := &Config{
-		GitHubToken: "tok",
-		Search:      "is:pr author:@me",
-		MinReviews:  0,
-		JiraBaseURL: "https://acme.atlassian.net",
-		JiraEmail:   "me@acme.com",
-		JiraToken:   "jira-tok",
+		GitHubToken:     "tok",
+		Search:          "is:pr author:@me",
+		MinReviews:      0,
+		RefreshInterval: 5 * time.Minute,
+		JiraBaseURL:     "https://acme.atlassian.net",
+		JiraEmail:       "me@acme.com",
+		JiraToken:       "jira-tok",
 	}
 	if err := Save(path, want); err != nil {
 		t.Fatalf("Save() err = %v", err)
@@ -277,6 +279,62 @@ func TestSaveRoundTrip(t *testing.T) {
 	if got.JiraBaseURL != want.JiraBaseURL || got.JiraEmail != want.JiraEmail || got.JiraToken != want.JiraToken {
 		t.Errorf("jira round-trip mismatch: got %+v, want %+v", got, want)
 	}
+	if got.RefreshInterval != want.RefreshInterval {
+		t.Errorf("refresh_interval round-trip = %v, want %v", got.RefreshInterval, want.RefreshInterval)
+	}
+}
+
+func TestLoadRefreshInterval(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+
+	t.Run("parses duration string", func(t *testing.T) {
+		p := writeConfig(t, `github_token = "t"
+search = "s"
+refresh_interval = "10m"`)
+
+		cfg, err := Load(p)
+		if err != nil {
+			t.Fatalf("Load() err = %v", err)
+		}
+		if cfg.RefreshInterval != 10*time.Minute {
+			t.Errorf("refresh_interval = %v, want 10m", cfg.RefreshInterval)
+		}
+	})
+
+	t.Run("absent disables (zero)", func(t *testing.T) {
+		p := writeConfig(t, `github_token = "t"
+search = "s"`)
+
+		cfg, err := Load(p)
+		if err != nil {
+			t.Fatalf("Load() err = %v", err)
+		}
+		if cfg.RefreshInterval != 0 {
+			t.Errorf("refresh_interval = %v, want 0", cfg.RefreshInterval)
+		}
+	})
+
+	t.Run("malformed duration is rejected", func(t *testing.T) {
+		p := writeConfig(t, `github_token = "t"
+search = "s"
+refresh_interval = "soon"`)
+
+		_, err := Load(p)
+		if err == nil || !strings.Contains(err.Error(), "refresh_interval") {
+			t.Fatalf("expected refresh_interval error, got %v", err)
+		}
+	})
+
+	t.Run("negative duration is rejected", func(t *testing.T) {
+		p := writeConfig(t, `github_token = "t"
+search = "s"
+refresh_interval = "-5m"`)
+
+		_, err := Load(p)
+		if err == nil || !strings.Contains(err.Error(), "refresh_interval") {
+			t.Fatalf("expected refresh_interval error, got %v", err)
+		}
+	})
 }
 
 func TestConfigLogValue(t *testing.T) {

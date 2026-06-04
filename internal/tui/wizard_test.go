@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -47,7 +48,9 @@ func TestWizard_HappyPath(t *testing.T) {
 	m, _ = enter(t, m) // -> min reviews
 
 	m = typeRunes(t, m, "3")
-	m, _ = enter(t, m) // -> jira url
+	m, _ = enter(t, m) // -> refresh interval
+
+	m, _ = enter(t, m) // refresh left blank -> jira url
 
 	m, cmd := enter(t, m) // jira url left blank -> validating, fires validateCmd
 	if m.step != stepValidating {
@@ -82,7 +85,8 @@ func TestWizard_JiraConfigured(t *testing.T) {
 	m = typeRunes(t, m, "ghp_token")
 	m, _ = enter(t, m) // -> search
 	m, _ = enter(t, m) // search blank -> min reviews
-	m, _ = enter(t, m) // min reviews blank -> jira url
+	m, _ = enter(t, m) // min reviews blank -> refresh interval
+	m, _ = enter(t, m) // refresh blank -> jira url
 
 	m = typeRunes(t, m, "https://acme.atlassian.net")
 	m, _ = enter(t, m) // -> jira email
@@ -114,6 +118,7 @@ func TestWizard_JiraValidationFails(t *testing.T) {
 	m = typeRunes(t, m, "ghp_token")
 	m, _ = enter(t, m) // -> search
 	m, _ = enter(t, m) // -> min reviews
+	m, _ = enter(t, m) // -> refresh interval
 	m, _ = enter(t, m) // -> jira url
 
 	m = typeRunes(t, m, "https://acme.atlassian.net")
@@ -149,10 +154,11 @@ func TestWizard_BlankFieldsUseDefaults(t *testing.T) {
 
 	m := NewWizardModel(okValidator, okJiraValidator)
 	m = typeRunes(t, m, "tok")
-	m, _ = enter(t, m) // search left blank
-	m, _ = enter(t, m) // min reviews left blank
-	m, _ = enter(t, m) // jira url left blank -> skip Jira
-	m, cmd := enter(t, m)
+	m, _ = enter(t, m)    // token -> search
+	m, _ = enter(t, m)    // search left blank -> min reviews
+	m, _ = enter(t, m)    // min reviews left blank -> refresh
+	m, _ = enter(t, m)    // refresh left blank -> jira url
+	m, cmd := enter(t, m) // jira url left blank -> validating
 	m, _ = send(t, m, cmd())
 
 	res := m.result()
@@ -161,6 +167,49 @@ func TestWizard_BlankFieldsUseDefaults(t *testing.T) {
 	}
 	if res.MinReviews != 2 {
 		t.Errorf("min reviews = %d, want default 2", res.MinReviews)
+	}
+	if res.RefreshInterval != 0 {
+		t.Errorf("refresh interval = %v, want default 0 (disabled)", res.RefreshInterval)
+	}
+}
+
+func TestWizard_RefreshIntervalParsed(t *testing.T) {
+	t.Parallel()
+
+	m := NewWizardModel(okValidator, okJiraValidator)
+	m = typeRunes(t, m, "tok")
+	m, _ = enter(t, m) // -> search
+	m, _ = enter(t, m) // -> min reviews
+	m, _ = enter(t, m) // -> refresh
+	m = typeRunes(t, m, "5m")
+	m, _ = enter(t, m)    // -> jira url
+	m, cmd := enter(t, m) // jira url blank -> validating
+	m, _ = send(t, m, cmd())
+
+	if res := m.result(); res.RefreshInterval != 5*time.Minute {
+		t.Errorf("refresh interval = %v, want 5m", res.RefreshInterval)
+	}
+}
+
+func TestWizard_InvalidRefreshStays(t *testing.T) {
+	t.Parallel()
+
+	m := NewWizardModel(okValidator, okJiraValidator)
+	m = typeRunes(t, m, "tok")
+	m, _ = enter(t, m) // -> search
+	m, _ = enter(t, m) // -> min reviews
+	m, _ = enter(t, m) // -> refresh
+	m = typeRunes(t, m, "abc")
+	m, cmd := enter(t, m)
+
+	if m.step != stepRefresh {
+		t.Errorf("step = %v, want to stay on stepRefresh", m.step)
+	}
+	if cmd != nil {
+		t.Error("no validation command should fire on invalid input")
+	}
+	if m.errMsg == "" {
+		t.Error("expected an inline error message")
 	}
 }
 
@@ -193,6 +242,7 @@ func TestWizard_TokenRejectedRecovers(t *testing.T) {
 	m = typeRunes(t, m, "nope")
 	m, _ = enter(t, m)       // -> search
 	m, _ = enter(t, m)       // -> min reviews
+	m, _ = enter(t, m)       // -> refresh
 	m, _ = enter(t, m)       // -> jira url
 	m, cmd := enter(t, m)    // jira url blank -> validating
 	m, _ = send(t, m, cmd()) // validation fails

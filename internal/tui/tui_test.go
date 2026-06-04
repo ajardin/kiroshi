@@ -36,7 +36,7 @@ func samplePRs() []gh.PullRequest {
 
 func newTestModel(t *testing.T, open Opener, refresh Refresher) Model {
 	t.Helper()
-	m := NewModel(samplePRs(), "ajardin", "v0.0.1", 2, false, time.Now(), open, refresh)
+	m := NewModel(samplePRs(), "ajardin", "v0.0.1", 2, false, 0, time.Now(), open, refresh)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	return updated.(Model)
 }
@@ -285,7 +285,7 @@ func approvalPRs() []gh.PullRequest {
 
 func approvalModel(t *testing.T) Model {
 	t.Helper()
-	m := NewModel(approvalPRs(), "ajardin", "v0.0.1", 2, false, time.Now(), nil, nil)
+	m := NewModel(approvalPRs(), "ajardin", "v0.0.1", 2, false, 0, time.Now(), nil, nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	return updated.(Model)
 }
@@ -368,7 +368,7 @@ func TestView_RendersApprovalMarker(t *testing.T) {
 	}
 	// The marker rides next to the approved PR's title (#42), so it must not
 	// appear when the viewer approved nothing.
-	none := NewModel(samplePRs(), "nobody", "v", 2, false, time.Now(), nil, nil)
+	none := NewModel(samplePRs(), "nobody", "v", 2, false, 0, time.Now(), nil, nil)
 	upd, _ := none.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	if strings.Contains(upd.(Model).View(), approvalFragment()) {
 		t.Error("approval marker shown when viewer approved nothing")
@@ -456,6 +456,85 @@ func TestModel_TickAdvancesClock(t *testing.T) {
 	}
 }
 
+func TestModel_AutoRefreshTriggersRescan(t *testing.T) {
+	t.Parallel()
+
+	refresh := func(_ context.Context) ([]gh.PullRequest, error) {
+		return samplePRs(), nil
+	}
+	m := NewModel(samplePRs(), "ajardin", "v", 2, false, time.Minute, time.Now(), nil, refresh)
+
+	updated, cmd := m.Update(autoRefreshMsg(m.now))
+	if !updated.(Model).refreshing {
+		t.Error("auto-refresh should set the refreshing flag")
+	}
+	if cmd == nil {
+		t.Fatal("auto-refresh should return a command (rescan batched with the re-armed tick)")
+	}
+}
+
+func TestModel_AutoRefreshSkipsWhenAlreadyRefreshing(t *testing.T) {
+	t.Parallel()
+
+	var calls int
+	refresh := func(_ context.Context) ([]gh.PullRequest, error) {
+		calls++
+		return samplePRs(), nil
+	}
+	m := NewModel(samplePRs(), "ajardin", "v", 2, false, time.Minute, time.Now(), nil, refresh)
+	m.refreshing = true // a scan is already in flight
+
+	_, cmd := m.Update(autoRefreshMsg(m.now))
+	if cmd == nil {
+		t.Fatal("auto-refresh should still re-arm the tick while a scan is in flight")
+	}
+	// The lone command must be the re-armed tick, not a rescan: running it yields
+	// another autoRefreshMsg and never invokes the refresh callback.
+	if _, ok := cmd().(autoRefreshMsg); !ok {
+		t.Error("expected the re-armed auto-refresh tick, not a rescan")
+	}
+	if calls != 0 {
+		t.Errorf("refresh ran %d times; it must be skipped while a scan is in flight", calls)
+	}
+}
+
+func TestAutoRefreshCmd_DisabledWhenZero(t *testing.T) {
+	t.Parallel()
+
+	if autoRefreshCmd(0) != nil {
+		t.Error("auto-refresh must be disabled (nil cmd) when the interval is 0")
+	}
+	if autoRefreshCmd(time.Minute) == nil {
+		t.Error("a positive interval must schedule a tick")
+	}
+}
+
+func TestShortDuration(t *testing.T) {
+	t.Parallel()
+
+	cases := map[time.Duration]string{
+		5 * time.Minute:              "5m",
+		time.Hour:                    "1h",
+		90 * time.Second:             "90s",
+		2*time.Hour + 30*time.Minute: "150m",
+	}
+	for d, want := range cases {
+		if got := shortDuration(d); got != want {
+			t.Errorf("shortDuration(%v) = %q, want %q", d, got, want)
+		}
+	}
+}
+
+func TestFooter_ShowsAutoRefreshIndicator(t *testing.T) {
+	t.Parallel()
+
+	m := NewModel(samplePRs(), "ajardin", "v", 2, false, 5*time.Minute, time.Now(), nil, nil)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	if view := updated.(Model).View(); !strings.Contains(view, "auto 5m") {
+		t.Errorf("footer missing auto-refresh indicator\n%s", view)
+	}
+}
+
 func TestView_RendersHeaderCardsAndKeys(t *testing.T) {
 	t.Parallel()
 
@@ -516,7 +595,7 @@ func TestView_JiraEnabledIndicator(t *testing.T) {
 	prs[0].JiraStatus = "In Review"
 	prs[0].JiraCategory = string(jira.CategoryIndeterminate)
 
-	m := NewModel(prs, "ajardin", "v0.0.1", 2, true, time.Now(), nil, nil)
+	m := NewModel(prs, "ajardin", "v0.0.1", 2, true, 0, time.Now(), nil, nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	view := updated.(Model).View()
 
@@ -531,7 +610,7 @@ func TestView_JiraEnabledIndicator(t *testing.T) {
 func TestView_TerminalTooSmall(t *testing.T) {
 	t.Parallel()
 
-	m := NewModel(samplePRs(), "u", "v", 2, false, time.Now(), nil, nil)
+	m := NewModel(samplePRs(), "u", "v", 2, false, 0, time.Now(), nil, nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 40, Height: 10})
 	if !strings.Contains(updated.(Model).View(), "Terminal too small") {
 		t.Errorf("expected too-small message, got\n%s", updated.(Model).View())
@@ -689,7 +768,7 @@ func TestView_RendersMergeConflict(t *testing.T) {
 		URL:        "https://github.com/ajardin/repo/pull/1",
 		MergeState: gh.MergeStateConflict,
 	}}
-	m := NewModel(prs, "ajardin", "v", 2, false, time.Now(), nil, nil)
+	m := NewModel(prs, "ajardin", "v", 2, false, 0, time.Now(), nil, nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	if view := updated.(Model).View(); !strings.Contains(view, "conflict") {
 		t.Errorf("view missing the merge-conflict cell\n%s", view)
@@ -752,7 +831,7 @@ func TestView_RendersCIStateForEachRow(t *testing.T) {
 		{Owner: "ajardin", Repo: "kiroshi", Number: 4, Title: "No CI", Author: "dave",
 			URL: "u4", UpdatedAt: time.Date(2026, 4, 23, 0, 0, 0, 0, time.UTC), CIState: gh.CIStateNone},
 	}
-	m := NewModel(prs, "viewer", "v0.0.1", 2, false, time.Now(), nil, nil)
+	m := NewModel(prs, "viewer", "v0.0.1", 2, false, 0, time.Now(), nil, nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 50})
 	view := updated.(Model).View()
 	// The "ci:" prefix is dropped now that CI is a fixed aligned column; the
