@@ -1,7 +1,7 @@
 # kiroshi — Claude working notes
 
 CLI + TUI that surfaces GitHub pull requests.
-Go 1.x, Bubble Tea v1, lipgloss, golangci-lint v2.
+Go 1.25, Bubble Tea v1, lipgloss, golangci-lint v2.
 
 This file captures decisions that aren't obvious from the code. For *what*
 the code does, read the code; for *why* it looks the way it does, read here.
@@ -28,6 +28,52 @@ the code does, read the code; for *why* it looks the way it does, read here.
 TTY detection lives in `cli.isTerminal` and uses `os.ModeCharDevice`. Any
 non-`*os.File` writer (tests, pipes, CI) falls back to plain text. The
 `-no-tui` flag forces text mode regardless.
+
+### Enrichment & feature constraints
+
+**Per-PR enrichment order is load-bearing.** `enrichPullRequest` chains four
+GitHub REST calls — `enrichReviewState` → `enrichDetail` → `enrichCIState` →
+`enrichJiraStatus` — plus an optional fifth Jira call. `enrichDetail` (one
+`PullRequests.Get`) publishes `HeadSHA`, `HeadRef`, `Body`, `MergeState`,
+`Additions`, `Deletions` in a single shot; `enrichCIState` needs the head SHA
+and `enrichJiraStatus` needs the branch/body, so they must run after it. Net
+effect: CI, diff stats, and merge state all ride that one Get at no extra REST
+cost. Review state is two extra calls (`ListReviewers` + `ListReviews`).
+
+**Concurrency.** Across PRs, enrichment runs through an `errgroup` worker pool
+capped at `enrichConcurrency` (8) — a comfortable margin under GitHub's
+secondary rate limit (~100 concurrent requests per token). Raise it if you ever
+scan hundreds of PRs at once.
+
+**Error semantics.** Fail-fast for the GitHub enrichers — the first error
+cancels the rest and surfaces on the rescan status line. **Jira is the
+exception:** it's an optional decoration, so `enrichJiraStatus` swallows every
+error (auth, network, 404) and degrades to an omitted cell rather than failing
+the scan; it's also a full no-op under `gh.New` (vs `gh.NewWithJira`). Key
+extraction is `jira.ExtractKey` (branch → title → body, regex
+`[A-Z][A-Z0-9]+-\d+`, first match wins). Config is the
+`jira_base_url`/`jira_email`/`jira_token` trio (env override `JIRA_API_TOKEN`);
+all three or none.
+
+**Help overlay.** The `?` key sets `Model.showHelp`; `handleKey` short-circuits
+to `handleHelpKey`, which dismisses on *any* key (ctrl+c still quits). `View`
+returns `helpView` (a centered `lipgloss.Place` modal) **instead of** the
+dashboard — it replaces rather than composites, because lipgloss v1 can't
+back-fill a box over already-rendered content (same constraint behind `st()`).
+Help-row keys are deliberately **ASCII** (no ↑/↓): arrow glyphs are
+ambiguous-width, so lipgloss and the terminal disagree on cell count and the
+modal's right border drifts — a box must align all four sides, unlike the
+left-anchored row columns (▶/✓/●).
+
+**Auto-refresh.** Optional `refresh_interval` config (Go duration; `0`/absent
+disables; no env override). When > 0, `Init` arms an `autoRefreshCmd`
+`tea.Tick`; the `autoRefreshMsg` handler re-arms the tick and rescans **through
+the same path as the `r` key**, skipping when a scan is already in flight (no
+stacking). Footer shows a cyan `● auto <interval>` (`shortDuration`). Not
+surfaced in `helpView` — it's config-driven, not a key binding.
+
+**Merge state is read-only by design** — no approve/merge from the TUI. Render
+details live in "Color palette" / "Row line-2 layout".
 
 ## TUI design system
 
@@ -325,6 +371,16 @@ exactly one that survives `approvalMine`.
 
 ## Workflow
 
+Common commands (`make help` lists all targets):
+
+- `make build` — compile to `./bin/kiroshi` (ldflags inject version/commit/date).
+- `make test` — `go test -race -count=1 ./...` (the canonical test command).
+- `make cover` / `make bench` — coverage report / benchmarks.
+- `make fmt` / `make tidy` — `golangci-lint fmt` / `go mod tidy && verify`.
+- `make all` — lint + test + build (the pre-push gate).
+
+CLI flags: `-version`, `-verbose`, `-no-tui`, `-init`, `-config <path>`.
+
 - `make lint` runs golangci-lint v2. The repo enables revive's `exported`,
   `var-naming`, and `package-comments` rules — every exported symbol and
   package needs a doc comment.
@@ -332,74 +388,3 @@ exactly one that survives `approvalMine`.
 - To eyeball the TUI: `rtk proxy go test -v -run TestPreview ./internal/tui`
   (rtk filters by default; `proxy` bypasses it so the rendered output
   reaches the terminal).
-
-## Phase roadmap
-
-- **Phase 1**: visual shell. ✅ shipped.
-- **Phase 2**: review-state classification. ✅ shipped. `bucketFor` queries
-  `PullRequests.ListReviewers` (pending requested reviewers) and
-  `PullRequests.ListReviews` (review history) for every PR in the search
-  result, then summarizes per-reviewer state via `summarizeReviews`. Two
-  extra REST calls per PR.
-- **Phase 3**: enrich placeholder fields (CI, diff stats, Jira). ✅ shipped.
-  - CI ✅ shipped. `enrichCIState` reads `Checks.ListCheckRunsForRef`
-    against `pr.HeadSHA` and folds the runs through `aggregateCheckRuns`.
-  - Diff stats ✅ shipped. `enrichDetail` calls `PullRequests.Get` once and
-    fills `HeadSHA`, `MergeState`, `Additions`, `Deletions` together — the
-    head SHA is a prerequisite for the Checks call, so this was the natural
-    seam. No new REST cost on top of CI; the row renders `+N -M` via
-    `renderDiff`.
-  - Jira ticket ✅ shipped (optional). `enrichJiraStatus` extracts the
-    issue key from the PR's branch, title, then body (`jira.ExtractKey`,
-    regex `[A-Z][A-Z0-9]+-\d+`, first match wins) and resolves it through
-    the `internal/jira` Cloud client (`GET /rest/api/3/issue/{key}
-    ?fields=status`, HTTP Basic with email + API token). `enrichDetail`
-    captures `HeadRef` and `Body` for this — same `PullRequests.Get` call,
-    no new GitHub cost. One Jira REST call per PR that has a key. It's a
-    no-op when the client was built with `gh.New` (no Jira) rather than
-    `gh.NewWithJira`. Config is the optional `jira_base_url`/`jira_email`/
-    `jira_token` trio (env override `JIRA_API_TOKEN`); validation requires
-    all three or none.
-
-  Per-PR enrichment runs in this order via `enrichPullRequest`:
-  `enrichReviewState` → `enrichDetail` → `enrichCIState` →
-  `enrichJiraStatus` (the dependencies are real — CI needs the head SHA,
-  Jira needs the branch/body, both published by detail). Four GitHub REST
-  calls per PR plus an optional fifth Jira call. **Across PRs, enrichment
-  is parallelized** through an `errgroup` worker pool capped at
-  `enrichConcurrency` (8). Eight is a comfortable margin under GitHub's
-  secondary rate limit (~100 concurrent requests per token); raise it if
-  you ever need to handle hundreds of PRs in one rescan. Error semantics
-  are fail-fast for the GitHub enrichers — the first error cancels the
-  others and surfaces through the rescan status line. **Jira is the
-  exception:** it's an optional decoration, so `enrichJiraStatus` swallows
-  all its errors (auth, network, 404) and degrades to an omitted Jira cell
-  (the flowing tail simply drops it) rather than failing the whole scan.
-- **Phase 4**: `?` help overlay. ✅ shipped. The `?` key sets
-  `Model.showHelp`; `handleKey` short-circuits to `handleHelpKey` while it's
-  set, which dismisses on *any* key (ctrl+c still quits). `View` returns
-  `helpView` — a centered modal (`lipgloss.Place`) listing every binding —
-  instead of the dashboard while help is open; it **replaces** rather than
-  composites (lipgloss v1 can't back-fill a box over rendered content, the
-  same constraint behind `st()`). The footer advertises the hint again via
-  `keyHint("?", "help")`. Help-row keys are deliberately **ASCII** (no ↑/↓
-  glyphs): arrow glyphs are ambiguous-width, so lipgloss and the terminal
-  disagree on their cell count and the modal's right border would drift —
-  unlike the left-anchored row columns (▶/✓/●), a box must align all four
-  sides.
-- **Phase 5**: merge-state column. ✅ shipped (read-only, by design — no
-  approve/merge from the TUI). `enrichDetail` reads GitHub's `mergeable_state`
-  (free — same `PullRequests.Get` already called) into `MergeState` via
-  `normalizeMergeState`, surfacing only `conflict` (`dirty`) and `behind`;
-  everything else (including the lazily-computed `unknown`) is "clear".
-  Rendered by `mergeFragment` as a collapsing fixed column (see "Row line-2
-  layout" and the colRed concession in "Color palette").
-- **Phase 6**: auto-refresh. ✅ shipped. Optional `refresh_interval` config (Go
-  duration string, `0`/absent = disabled; no env override). When > 0, `Init`
-  arms an `autoRefreshCmd` `tea.Tick`; the `autoRefreshMsg` handler re-arms the
-  tick and triggers a rescan **through the same path as the `r` key**, skipping
-  when a scan is already in flight (no stacking). The footer shows a cyan
-  `● auto <interval>` indicator (`shortDuration` formats it). Wired into
-  `NewModel` (extra `refreshInterval` arg) and the wizard (a new optional
-  step). The cadence is *not* surfaced in `helpView` — it's config-driven, not
-  a key binding.
