@@ -777,6 +777,7 @@ type rowCols struct {
 	plus   int // width of the "+N" sub-field, so "-M" aligns across rows
 	diff   int // total width of the "+N -M" diff column
 	ci     int // width of the ci status column
+	merge  int // width of the merge-state column (0 when no visible PR is flagged)
 }
 
 const maxAuthorW = 18
@@ -798,6 +799,9 @@ func computeRowCols(prs []gh.PullRequest) rowCols {
 		}
 		if t, _ := ciFragment(pr.CIState); lipgloss.Width(t) > c.ci {
 			c.ci = lipgloss.Width(t)
+		}
+		if t, _ := mergeFragment(pr.MergeState); lipgloss.Width(t) > c.merge {
+			c.merge = lipgloss.Width(t)
 		}
 	}
 	if c.author > maxAuthorW {
@@ -881,6 +885,13 @@ func (m Model) renderRow(pr gh.PullRequest, selected bool, cols rowCols) string 
 	ciCell := padCell(st(ciColor, false).Render(ciText), cols.ci)
 
 	line2Body := authorCell + sp + approval + sp + diffCell + sp + ciCell
+	// The merge column is omitted entirely when no visible PR is flagged
+	// (cols.merge == 0); flagged sets reserve a fixed column so "conflict"
+	// lines up for scanning, blank on clear rows.
+	if cols.merge > 0 {
+		mergeText, mergeColor := mergeFragment(pr.MergeState)
+		line2Body += sp + padCell(st(mergeColor, false).Render(mergeText), cols.merge)
+	}
 	if jiraText, jiraColor := jiraFragment(pr.JiraKey, pr.JiraStatus, pr.JiraCategory); pr.JiraKey != "" {
 		line2Body += sp + dot + sp + st(jiraColor, false).Render(jiraText)
 	}
@@ -1012,6 +1023,28 @@ func ciFragment(s gh.CIState) (string, lipgloss.Color) {
 		return "✗ failing", colRed
 	default:
 		return "—", colMuted
+	}
+}
+
+// mergeFragment returns the label and accent color for the merge-state cell of
+// a row. Like the ci cell it's a fixed aligned column, but it carries a
+// self-describing word ("conflict"/"behind") instead of a glyph, so no prefix —
+// and no width-ambiguous symbol — is needed. Only the two action-requiring
+// states are surfaced; a healthy or not-yet-computed PR (MergeStateClear)
+// renders blank, and the whole column collapses when no visible PR is flagged.
+// Conflict is rendered in colRed: a merge conflict blocks merge exactly like a
+// failing build, so it earns the same "action required" accent — a documented
+// extension of the otherwise reserved-for-errors palette rule (see CLAUDE.md).
+// Behind stays colDim (no new accent): a soft nudge to update the branch, not a
+// hard block.
+func mergeFragment(s gh.MergeState) (string, lipgloss.Color) {
+	switch s {
+	case gh.MergeStateConflict:
+		return "conflict", colRed
+	case gh.MergeStateBehind:
+		return "behind", colDim
+	default:
+		return "", colMuted
 	}
 }
 

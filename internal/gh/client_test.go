@@ -615,6 +615,33 @@ func TestAggregateCheckRuns(t *testing.T) {
 	}
 }
 
+func TestNormalizeMergeState(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		in   string
+		want MergeState
+	}{
+		{"dirty", MergeStateConflict},
+		{"behind", MergeStateBehind},
+		{"clean", MergeStateClear},
+		{"blocked", MergeStateClear},
+		{"unstable", MergeStateClear},
+		{"draft", MergeStateClear},
+		{"unknown", MergeStateClear}, // GitHub hasn't computed it yet
+		{"", MergeStateClear},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			t.Parallel()
+			if got := normalizeMergeState(tc.in); got != tc.want {
+				t.Errorf("normalizeMergeState(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
