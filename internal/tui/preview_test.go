@@ -54,9 +54,26 @@ func TestPreview(t *testing.T) {
 			Author: "ajardin", URL: "x", UpdatedAt: time.Now().Add(-2 * time.Hour),
 			CIState: gh.CIStateNone,
 		},
+		{
+			Owner: "ajardin", Repo: "crm-core", Number: 31, Title: "fix: guard against nil pipeline stage",
+			Author: "ajardin", URL: "x", UpdatedAt: time.Now().Add(-40 * time.Minute),
+			CIState: gh.CIStateFailure, ChangesRequested: []string{"lucas-be"},
+			Additions: 22, Deletions: 9,
+		},
+		{
+			Owner: "ajardin", Repo: "agent-portal", Number: 58, Title: "wip: dashboard split",
+			Author: "ajardin", URL: "x", UpdatedAt: time.Now().Add(-5 * time.Hour),
+			IsDraft: true, Additions: 77, Deletions: 3,
+		},
 	}
 	m := NewModel(prs, "ajardin", "v0.0.1", 2, true, 5*time.Minute, time.Now().Add(-2*time.Minute), nil, nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 36})
+	incoming := updated.(Model)
 	fmt.Println()
-	fmt.Println(updated.(Model).View())
+	fmt.Println(incoming.View())
+
+	// Toggle to the Mine pane (author == viewer) and render that too.
+	mine, _ := incoming.Update(tea.KeyMsg{Type: tea.KeyTab})
+	fmt.Println()
+	fmt.Println(mine.(Model).View())
 }
