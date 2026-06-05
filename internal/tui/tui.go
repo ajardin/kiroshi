@@ -50,6 +50,11 @@ type Bucket int
 // "unclassified" default for PRs that don't fit any other (e.g. drafts, PRs
 // the viewer authored). Phase 1 puts every PR in BucketInFlight; Phase 2 will
 // populate the others based on the viewer's review state.
+// The comments below describe the incoming pane's review-state semantics
+// (bucketFor). The Mine pane reuses the same four values — and so the same
+// palette slots — with author-side meanings via mineBucketFor: WaitingOnYou =
+// "needs you" (changes requested / CI red), WaitingOnOthers = "in review",
+// ReadyToShip = "ready", InFlight = "draft".
 const (
 	BucketInFlight        Bucket = iota // default / unclassified
 	BucketWaitingOnYou                  // viewer is a requested reviewer who hasn't reviewed yet
@@ -71,9 +76,10 @@ func (b Bucket) Color() lipgloss.Color {
 	}
 }
 
-// Stats holds the four counters rendered above the list. WaitingOnYou,
-// WaitingOnOthers and ReadyToShip are subset counts; InFlight is the grand
-// total of all pull requests in the search.
+// Stats holds the four counters rendered above the list. All four are subset
+// counts as filled by computeStats; the incoming pane substitutes the pane
+// total for its "IN FLIGHT" card at the render site, while the mine pane shows
+// InFlight as the literal draft subset.
 type Stats struct {
 	WaitingOnYou    int
 	WaitingOnOthers int
@@ -139,6 +145,36 @@ func othersStillPending(pr gh.PullRequest, viewer string) bool {
 	return false
 }
 
+// mineBucketFor classifies a PR the viewer authored, reusing the four Bucket
+// values (and so the locked palette) with author-side semantics: the yellow
+// "needs you" slot means changes were requested or CI is red, cyan means it's
+// still out for review, green means it's ready to merge, muted means draft.
+//
+// Order matters: drafts park first; a changes-requested/CI-failure PR is on you
+// even if it has enough approvals (you must push a fix), so that beats the
+// ready check; ready wins over the plain "in review" default.
+func mineBucketFor(pr gh.PullRequest, _ string, minReviews int) Bucket {
+	if pr.IsDraft {
+		return BucketInFlight // DRAFT
+	}
+	if len(pr.ChangesRequested) > 0 || pr.CIState == gh.CIStateFailure {
+		return BucketWaitingOnYou // NEEDS YOU
+	}
+	if len(pr.Approvals) >= minReviews { // changes-requested already returned above
+		return BucketReadyToShip // READY
+	}
+	return BucketWaitingOnOthers // IN REVIEW
+}
+
+// classify buckets pr from the active pane's perspective: review-state semantics
+// for the incoming queue, author-state semantics for the viewer's own PRs.
+func (m Model) classify(pr gh.PullRequest) Bucket {
+	if m.pane == viewMine {
+		return mineBucketFor(pr, m.login, m.minReviews)
+	}
+	return bucketFor(pr, m.login, m.minReviews)
+}
+
 func containsLogin(logins []string, target string) bool {
 	for _, l := range logins {
 		if l == target {
@@ -148,16 +184,22 @@ func containsLogin(logins []string, target string) bool {
 	return false
 }
 
-func computeStats(prs []gh.PullRequest, viewer string, minReviews int) Stats {
-	s := Stats{InFlight: len(prs)}
+// computeStats counts each bucket as a real subset, using the given classifier
+// (bucketFor for the incoming pane, mineBucketFor for mine). The incoming pane
+// overrides its fourth card with the pane total at the call site; the mine pane
+// shows InFlight as the genuine draft subset.
+func computeStats(prs []gh.PullRequest, classify func(gh.PullRequest) Bucket) Stats {
+	var s Stats
 	for _, pr := range prs {
-		switch bucketFor(pr, viewer, minReviews) {
+		switch classify(pr) {
 		case BucketWaitingOnYou:
 			s.WaitingOnYou++
 		case BucketWaitingOnOthers:
 			s.WaitingOnOthers++
 		case BucketReadyToShip:
 			s.ReadyToShip++
+		case BucketInFlight:
+			s.InFlight++
 		}
 	}
 	return s
@@ -185,6 +227,17 @@ const (
 	approvalNotMine                       // only PRs the viewer has not approved
 )
 
+// paneView selects which slice of the search results the dashboard shows. The
+// two panes split the same fetched set by authorship — they are NOT two
+// queries. `viewIncoming` is PRs the viewer is reviewing (Author != login);
+// `viewMine` is PRs the viewer authored. The `tab` key toggles between them.
+type paneView int
+
+const (
+	viewIncoming paneView = iota // PRs authored by someone else (review queue)
+	viewMine                     // PRs the viewer authored
+)
+
 // Model is the Bubble Tea model backing the dashboard.
 type Model struct {
 	open    Opener
@@ -209,6 +262,7 @@ type Model struct {
 	filter          string
 	sort            sortMode
 	approval        approvalFilter
+	pane            paneView
 	showHelp        bool
 }
 
@@ -365,8 +419,20 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m.cycleSort(), nil
 	case "a":
 		return m.cycleApproval(), nil
+	case "tab":
+		return m.cyclePane(), nil
 	}
 	return m, nil
+}
+
+// cyclePane toggles between the incoming and mine panes. The visible set swaps
+// out entirely, so the cursor resets to the top (the `f` filter's behaviour, not
+// cycleSort's cursor-follow — there's no shared PR to track onto).
+func (m Model) cyclePane() Model {
+	m.pane = (m.pane + 1) % 2
+	m.cursor, m.offset = 0, 0
+	m.status = ""
+	return m.clampCursor()
 }
 
 // cycleSort advances sort to the next mode (with wrap-around) and repositions
@@ -468,17 +534,33 @@ func (m Model) rescanCmd() tea.Cmd {
 	}
 }
 
+// panePRs partitions the fetched set by authorship for the active pane: the
+// viewer's own PRs in viewMine, everyone else's in viewIncoming. It is the
+// scoping step that visiblePRs and cardsView both build on, before the text /
+// approval filters and the sort stack on top.
+func (m Model) panePRs() []gh.PullRequest {
+	mine := m.pane == viewMine
+	var out []gh.PullRequest
+	for _, pr := range m.prs {
+		if (pr.Author == m.login) == mine {
+			out = append(out, pr)
+		}
+	}
+	return out
+}
+
 func (m Model) visiblePRs() []gh.PullRequest {
-	out := m.prs
+	out := m.panePRs()
 	if m.filter != "" {
 		needle := strings.ToLower(m.filter)
-		out = nil
-		for _, pr := range m.prs {
+		var filtered []gh.PullRequest
+		for _, pr := range out {
 			hay := strings.ToLower(fmt.Sprintf("%s/%s %s %s", pr.Owner, pr.Repo, pr.Title, pr.Author))
 			if strings.Contains(hay, needle) {
-				out = append(out, pr)
+				filtered = append(filtered, pr)
 			}
 		}
+		out = filtered
 	}
 	if m.approval != approvalAll {
 		mine := m.approval == approvalMine
@@ -490,10 +572,9 @@ func (m Model) visiblePRs() []gh.PullRequest {
 		}
 		out = filtered
 	}
-	// Copy before sorting: sort.SliceStable mutates in place, and when no
-	// filter is active `out` aliases m.prs — sorting it would silently
-	// reorder the underlying fixture and confuse anything that reads m.prs
-	// directly.
+	// Copy before sorting: sort.SliceStable mutates in place. panePRs already
+	// hands back a fresh slice, but the copy keeps visiblePRs total about never
+	// reordering anything its callers might hold.
 	sorted := append([]gh.PullRequest(nil), out...)
 	sort.SliceStable(sorted, func(i, j int) bool {
 		switch m.sort {
@@ -622,6 +703,7 @@ func (m Model) helpView() string {
 	// words carry that without the layout risk.
 	bindings := []struct{ keys, desc string }{
 		{"j / k", "move selection (arrows too)"},
+		{"tab", "switch incoming / mine view"},
 		{"g / G", "jump to top / bottom"},
 		{"enter / o", "open PR in browser"},
 		{"r", "rescan pull requests"},
@@ -696,7 +778,7 @@ func (m Model) ruleView() string {
 const minCardW = 21
 
 func (m Model) cardsView() string {
-	stats := computeStats(m.prs, m.login, m.minReviews)
+	prs := m.panePRs()
 	gap := 2
 
 	// Each card's rendered width INCLUDING its 2 border chars. Lipgloss
@@ -707,11 +789,26 @@ func (m Model) cardsView() string {
 		cardW = minCardW
 	}
 
-	cards := []string{
-		renderCard("WAITING ON YOU", stats.WaitingOnYou, colYellow, cardW),
-		renderCard("WAITING ON OTHERS", stats.WaitingOnOthers, colCyan, cardW),
-		renderCard("READY TO MERGE", stats.ReadyToShip, colGreen, cardW),
-		renderCard("IN FLIGHT", stats.InFlight, colMuted, cardW),
+	// Same four palette slots in both panes; only the labels and the fourth
+	// card's count differ. Mine's fourth card is the real DRAFT subset; the
+	// incoming pane keeps "IN FLIGHT" as the pane total (len), per its locked
+	// semantics.
+	stats := computeStats(prs, m.classify)
+	var cards []string
+	if m.pane == viewMine {
+		cards = []string{
+			renderCard("NEEDS YOU", stats.WaitingOnYou, colYellow, cardW),
+			renderCard("IN REVIEW", stats.WaitingOnOthers, colCyan, cardW),
+			renderCard("READY", stats.ReadyToShip, colGreen, cardW),
+			renderCard("DRAFT", stats.InFlight, colMuted, cardW),
+		}
+	} else {
+		cards = []string{
+			renderCard("WAITING ON YOU", stats.WaitingOnYou, colYellow, cardW),
+			renderCard("WAITING ON OTHERS", stats.WaitingOnOthers, colCyan, cardW),
+			renderCard("READY TO MERGE", stats.ReadyToShip, colGreen, cardW),
+			renderCard("IN FLIGHT", len(prs), colMuted, cardW),
+		}
 	}
 	spacer := strings.Repeat(" ", gap)
 	row := cards[0]
@@ -752,9 +849,24 @@ func renderCard(label string, count int, color lipgloss.Color, totalWidth int) s
 
 func (m Model) sectionHeaderView() string {
 	visible := m.visiblePRs()
-	text := fmt.Sprintf("ALL PULL REQUESTS — %d ITEM(S)", len(visible))
+
+	// Tab strip: the active pane is bright+bold, the other dim. It lives here
+	// (rather than the header's crowded right edge) so it reuses an existing
+	// row and leaves listAreaHeight untouched.
+	active := lipgloss.NewStyle().Foreground(colBright).Bold(true)
+	idle := lipgloss.NewStyle().Foreground(colDim).Bold(true)
+	incoming, mine := idle, idle
+	if m.pane == viewMine {
+		mine = active
+	} else {
+		incoming = active
+	}
+	sep := lipgloss.NewStyle().Foreground(colMuted).Render(" · ")
+	tabs := incoming.Render("INCOMING") + sep + mine.Render("MINE")
+
+	text := fmt.Sprintf("%d ITEM(S)", len(visible))
 	if m.filter != "" {
-		text = fmt.Sprintf("FILTERED %q — %d / %d ITEM(S)", m.filter, len(visible), len(m.prs))
+		text = fmt.Sprintf("FILTERED %q — %d / %d ITEM(S)", m.filter, len(visible), len(m.panePRs()))
 	}
 	switch m.sort {
 	case sortOldestFirst:
@@ -769,8 +881,8 @@ func (m Model) sectionHeaderView() string {
 		text += " · not approved by you"
 	}
 	arrow := lipgloss.NewStyle().Foreground(colMuted).Bold(true).Render("▶")
-	label := lipgloss.NewStyle().Foreground(colDim).Bold(true).Render(text)
-	return " " + arrow + " " + label
+	dash := lipgloss.NewStyle().Foreground(colDim).Bold(true).Render(" — " + text)
+	return " " + arrow + " " + tabs + dash
 }
 
 // --- List ----------------------------------------------------------------
@@ -778,8 +890,16 @@ func (m Model) sectionHeaderView() string {
 func (m Model) listView() string {
 	visible := m.visiblePRs()
 	if len(visible) == 0 {
-		empty := lipgloss.NewStyle().Foreground(colMuted).Italic(true).
-			Render("No pull requests match the search.")
+		msg := "No pull requests match the search."
+		if m.filter == "" && m.approval == approvalAll {
+			switch m.pane {
+			case viewMine:
+				msg = "No pull requests authored by you."
+			default:
+				msg = "No pull requests waiting on review."
+			}
+		}
+		empty := lipgloss.NewStyle().Foreground(colMuted).Italic(true).Render(msg)
 		return "   " + empty
 	}
 
@@ -843,7 +963,7 @@ func computeRowCols(prs []gh.PullRequest) rowCols {
 }
 
 func (m Model) renderRow(pr gh.PullRequest, selected bool, cols rowCols) string {
-	bucket := bucketFor(pr, m.login, m.minReviews)
+	bucket := m.classify(pr)
 	accent := bucket.Color()
 
 	var bg lipgloss.Color
@@ -952,6 +1072,7 @@ func padRowToWidth(s string, width int, padStyle lipgloss.Style) string {
 func (m Model) footerView() string {
 	keys := []string{
 		keyHint("j/k", "navigate"),
+		keyHint("tab", "switch view"),
 		keyHint("o", "open"),
 		keyHint("r", "rescan"),
 		keyHint("f", "filter"),

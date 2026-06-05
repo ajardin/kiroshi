@@ -14,9 +14,10 @@ import (
 )
 
 // defaultSearch is the suggested query offered when the user leaves the search
-// step blank. It mirrors the example in the README and matches the most common
-// "my own open PRs" case.
-const defaultSearch = "is:pr is:open author:@me archived:false"
+// step blank. It mirrors the example in the README. `involves:@me` casts the
+// widest useful net — PRs you authored AND ones you're asked to review — which
+// is what feeds both dashboard panes (the `tab` toggle splits them by author).
+const defaultSearch = "is:pr is:open involves:@me archived:false"
 
 // wizardStep enumerates the wizard's linear flow. The order is the field
 // order: token, search, min reviews, refresh interval, then the three optional

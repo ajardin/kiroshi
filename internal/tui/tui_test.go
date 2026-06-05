@@ -544,8 +544,8 @@ func TestView_RendersHeaderCardsAndKeys(t *testing.T) {
 	for _, want := range []string{
 		"KIROSHI", "v0.0.1", "@ajardin",
 		"WAITING ON YOU", "WAITING ON OTHERS", "READY TO MERGE", "IN FLIGHT",
-		"ALL PULL REQUESTS",
-		"[j/k]", "[o]", "[r]", "[f]", "[q]",
+		"INCOMING", "MINE",
+		"[j/k]", "[tab]", "[o]", "[r]", "[f]", "[q]",
 		"github", "jira",
 		"Add PR search", "Add TUI",
 		"+120", "-30", // diff stats for PR #42
@@ -880,7 +880,7 @@ func TestModel_QuestionMarkTogglesHelp(t *testing.T) {
 		t.Errorf("help view missing title\n%s", got.View())
 	}
 	// The overlay replaces the dashboard, so the section header is gone.
-	if strings.Contains(got.View(), "ALL PULL REQUESTS") {
+	if strings.Contains(got.View(), "ITEM(S)") {
 		t.Error("dashboard should be hidden while help is open")
 	}
 }
@@ -924,5 +924,121 @@ func TestModel_FooterAdvertisesHelp(t *testing.T) {
 	m := newTestModel(t, nil, nil)
 	if !strings.Contains(m.View(), "help") {
 		t.Errorf("footer should advertise the ? help hint\n%s", m.footerView())
+	}
+}
+
+// --- Panes (incoming / mine) ---------------------------------------------
+
+func pressTab(t *testing.T, m Model) Model {
+	t.Helper()
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	return updated.(Model)
+}
+
+// paneModel returns a dashboard whose fixtures span both panes: #42 authored by
+// the viewer ("ajardin"), #43 authored by someone else.
+func paneModel(t *testing.T) Model {
+	t.Helper()
+	prs := samplePRs()
+	prs[0].Author = "ajardin" // #42 → mine
+	prs[1].Author = "bob"     // #43 → incoming
+	m := NewModel(prs, "ajardin", "v0.0.1", 2, false, 0, time.Now(), nil, nil)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	return updated.(Model)
+}
+
+func TestMineBucketFor(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		pr   gh.PullRequest
+		want Bucket
+	}{
+		{"draft", gh.PullRequest{IsDraft: true}, BucketInFlight},
+		{"changes requested", gh.PullRequest{ChangesRequested: []string{"bob"}}, BucketWaitingOnYou},
+		{"ci failure", gh.PullRequest{CIState: gh.CIStateFailure}, BucketWaitingOnYou},
+		{"ready", gh.PullRequest{Approvals: []string{"a", "b"}}, BucketReadyToShip},
+		{"in review", gh.PullRequest{Approvals: []string{"a"}}, BucketWaitingOnOthers},
+		// Changes-requested outranks enough approvals: you still must push a fix.
+		{"changes beats ready", gh.PullRequest{Approvals: []string{"a", "b"}, ChangesRequested: []string{"c"}}, BucketWaitingOnYou},
+	}
+	for _, tc := range cases {
+		if got := mineBucketFor(tc.pr, "ajardin", 2); got != tc.want {
+			t.Errorf("%s: mineBucketFor = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestModel_TabPartitionsByAuthor(t *testing.T) {
+	t.Parallel()
+
+	m := paneModel(t)
+	if m.pane != viewIncoming {
+		t.Fatalf("initial pane = %d, want viewIncoming", m.pane)
+	}
+	if v := m.visiblePRs(); len(v) != 1 || v[0].Number != 43 {
+		t.Errorf("incoming pane = %+v, want only PR #43 (author bob)", v)
+	}
+
+	m = pressTab(t, m)
+	if m.pane != viewMine {
+		t.Fatalf("after tab pane = %d, want viewMine", m.pane)
+	}
+	if v := m.visiblePRs(); len(v) != 1 || v[0].Number != 42 {
+		t.Errorf("mine pane = %+v, want only PR #42 (author ajardin)", v)
+	}
+
+	// Toggle wraps back to incoming.
+	if m = pressTab(t, m); m.pane != viewIncoming {
+		t.Errorf("after 2nd tab pane = %d, want viewIncoming (wrap)", m.pane)
+	}
+}
+
+func TestModel_TabResetsCursor(t *testing.T) {
+	t.Parallel()
+
+	// Two incoming PRs so the cursor can sit on a non-zero row before toggling.
+	prs := samplePRs() // both authored by alice/bob → incoming for viewer "carol"
+	m := NewModel(prs, "carol", "v", 2, false, 0, time.Now(), nil, nil)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+	m = pressKey(t, m, 'j')
+	if m.cursor == 0 {
+		t.Fatal("setup: cursor should be off row 0 before toggling")
+	}
+	m = pressTab(t, m)
+	if m.cursor != 0 || m.offset != 0 {
+		t.Errorf("after tab: cursor=%d offset=%d, want 0/0", m.cursor, m.offset)
+	}
+}
+
+func TestView_MinePaneRelabelsCards(t *testing.T) {
+	t.Parallel()
+
+	m := pressTab(t, paneModel(t)) // switch to mine
+	view := m.View()
+	for _, want := range []string{"NEEDS YOU", "IN REVIEW", "READY", "DRAFT"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("mine pane view missing card %q\nview=\n%s", want, view)
+		}
+	}
+	// The incoming-only label must be gone in this pane.
+	if strings.Contains(view, "WAITING ON OTHERS") {
+		t.Error("mine pane should not show the incoming card labels")
+	}
+}
+
+func TestView_PaneEmptyStateIsPaneAware(t *testing.T) {
+	t.Parallel()
+
+	// All fixtures authored by others → the mine pane is empty.
+	prs := samplePRs()
+	prs[0].Author, prs[1].Author = "alice", "bob"
+	m := NewModel(prs, "ajardin", "v", 2, false, 0, time.Now(), nil, nil)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = pressTab(t, updated.(Model))
+	if !strings.Contains(m.View(), "authored by you") {
+		t.Errorf("empty mine pane should explain it has no authored PRs\n%s", m.View())
 	}
 }

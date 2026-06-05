@@ -4,6 +4,11 @@ A terminal dashboard that classifies your GitHub pull requests by who is
 expected to act next: **Waiting On You**, **Waiting On Others**,
 **Ready To Ship**, or **In Flight**.
 
+Two panes, toggled with `tab`: **Incoming** (PRs you're reviewing) and
+**Mine** (PRs you authored). The Mine pane reuses the same four cards with
+author-side labels — **Needs You**, **In Review**, **Ready**, **Draft** —
+splitting whatever your search returns by author, with no extra API calls.
+
 Built as a CLI with an optional Bubble Tea TUI. Plain-text output is
 available for pipes, CI, and any non-TTY context.
 
@@ -63,7 +68,9 @@ github_token = "ghp_xxxxxxxxxxxxxxxxxxxx"
 
 # Any valid GitHub issues/search query. The advanced_search backend is
 # forced on automatically so boolean expressions work as expected.
-search = "is:pr is:open author:@me archived:false"
+# `involves:@me` returns both the PRs you authored and the ones you're asked
+# to review; the TUI splits them into two panes (toggle with `tab`).
+search = "is:pr is:open involves:@me archived:false"
 
 # Minimum number of non-author APPROVED reviews required before kiroshi
 # classifies a pull request as Ready To Ship. Defaults to 2.
@@ -109,6 +116,7 @@ automatically — TTY detection lives in `cli.isTerminal`.
 | Key       | Action                          |
 | --------- | ------------------------------- |
 | j/k ↓/↑   | navigate up / down              |
+| tab       | switch incoming / mine view     |
 | g/G       | jump to top / bottom            |
 | enter / o | open selected PR in browser     |
 | r         | rescan from GitHub              |
