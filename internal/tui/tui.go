@@ -642,10 +642,9 @@ func (m Model) rowsVisible() int {
 // listAreaHeight is the vertical room left for the PR rows after the fixed
 // regions (header, cards, section header, footer, status line, separators).
 func (m Model) listAreaHeight() int {
-	fixed := 1 /*header*/ + 1 + 4 /*cards*/ + 1 + 1 /*section*/ + 1 + 1 /*footer keys*/ + 1 /*footer separator*/
-	if m.status != "" || m.filterMode || m.refreshing {
-		fixed++ // status line
-	}
+	// header, rule, 4 cards, blank, section, blank
+	fixed := 1 + 1 + 4 + 1 + 1 + 1
+	fixed += strings.Count(m.footerView(), "\n") + 1 // footer (incl. optional status line)
 	return m.height - fixed
 }
 
@@ -747,14 +746,40 @@ func (m Model) helpView() string {
 
 func (m Model) headerView() string {
 	logo := lipgloss.NewStyle().Foreground(colYellow).Bold(true).Render("▲ KIROSHI")
-	sep := lipgloss.NewStyle().Foreground(colMuted).Render("│")
-	version := lipgloss.NewStyle().Foreground(colCyan).Render(m.version)
-	user := lipgloss.NewStyle().Foreground(colText).Render("@" + m.login)
-	left := strings.Join([]string{logo, sep, version, sep, user}, " ")
+	// The brand mark already names the app; trim the redundant "kiroshi " that
+	// version.String() prefixes. Fold the last-scan age into the build
+	// parenthetical so version/commit/built/scanned read as one "app state" line.
+	build := strings.TrimPrefix(m.version, "kiroshi ")
+	scanned := "scanned " + humanAgo(m.now.Sub(m.lastScan))
+	if strings.HasSuffix(build, ")") {
+		build = build[:len(build)-1] + ", " + scanned + ")"
+	} else {
+		build += " (" + scanned + ")"
+	}
+	left := logo + " " + lipgloss.NewStyle().Foreground(colCyan).Render(build)
 
-	scan := lipgloss.NewStyle().Foreground(colDim).Render("last scan " + humanAgo(m.now.Sub(m.lastScan)))
+	// Wider whitespace between clusters; a uniform " · " everywhere reads cramped.
+	gap := "      "
+
+	// Filled dots (●) mark status badges (github/jira/auto); the clock stays plain.
+	jiraDot := lipgloss.NewStyle().Foreground(colMuted).Render("○ jira")
+	if m.jiraEnabled {
+		jiraDot = lipgloss.NewStyle().Foreground(colGreen).Render("● jira")
+	}
+	// Auto-refresh as an on/off status badge: green when armed, red when off.
+	autoColor, autoLabel := colRed, "auto off"
+	if m.refreshInterval > 0 {
+		autoColor, autoLabel = colGreen, "auto "+shortDuration(m.refreshInterval)
+	}
+	dot := lipgloss.NewStyle().Foreground(colMuted).Render(" · ")
+	status := []string{
+		lipgloss.NewStyle().Foreground(colGreen).Render("● github"),
+		jiraDot,
+		lipgloss.NewStyle().Foreground(autoColor).Render("● " + autoLabel),
+	}
+	user := lipgloss.NewStyle().Foreground(colText).Render("@" + m.login)
 	clock := lipgloss.NewStyle().Foreground(colCyan).Render(m.now.Format("15:04:05"))
-	right := strings.Join([]string{scan, sep, clock}, " ")
+	right := user + gap + strings.Join(status, dot) + gap + clock
 
 	pad := m.width - lipgloss.Width(left) - lipgloss.Width(right) - 2
 	if pad < 1 {
@@ -1081,34 +1106,63 @@ func (m Model) footerView() string {
 		keyHint("?", "help"),
 		keyHint("q", "quit"),
 	}
-	sepStyle := lipgloss.NewStyle().Foreground(colMuted).Render(" · ")
-	keyLine := strings.Join(keys, sepStyle)
+	sep := lipgloss.NewStyle().Foreground(colMuted).Render(" · ")
 
-	jiraDot := lipgloss.NewStyle().Foreground(colMuted).Render("○ jira")
-	if m.jiraEnabled {
-		jiraDot = lipgloss.NewStyle().Foreground(colGreen).Render("● jira")
+	var b strings.Builder
+	for i, line := range packSegments(keys, sep, m.width-2) {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(centerLine(line, m.width))
 	}
-	indicators := lipgloss.NewStyle().Foreground(colGreen).Render("● github") +
-		sepStyle +
-		jiraDot
-	if m.refreshInterval > 0 {
-		// Cyan, the project's chrome/background-activity hue (same as the clock),
-		// signals the dashboard refreshes itself on a cadence.
-		auto := lipgloss.NewStyle().Foreground(colCyan).Render("● auto " + shortDuration(m.refreshInterval))
-		indicators = auto + sepStyle + indicators
-	}
-
-	pad := m.width - lipgloss.Width(keyLine) - lipgloss.Width(indicators) - 2
-	if pad < 1 {
-		pad = 1
-	}
-	bottom := " " + keyLine + strings.Repeat(" ", pad) + indicators + " "
+	bottom := b.String()
 
 	statusLine := m.statusLineView()
 	if statusLine == "" {
 		return bottom
 	}
 	return statusLine + "\n" + bottom
+}
+
+// centerLine left-pads a styled line so it sits centered in width columns.
+// Width is measured with lipgloss.Width (the line carries ANSI styling).
+func centerLine(s string, width int) string {
+	gap := width - lipgloss.Width(s)
+	if gap <= 0 {
+		return s
+	}
+	return strings.Repeat(" ", gap/2) + s
+}
+
+// packSegments greedily fills lines with atomic segments joined by sep, each
+// line within width display columns. Segments carry ANSI styling, so width is
+// measured with lipgloss.Width, never len. An over-wide segment takes its own
+// line (it can't be split).
+func packSegments(segs []string, sep string, width int) []string {
+	sepW := lipgloss.Width(sep)
+	var lines []string
+	var cur strings.Builder
+	curW := 0
+	for _, s := range segs {
+		w := lipgloss.Width(s)
+		switch {
+		case curW == 0:
+			cur.WriteString(s)
+			curW = w
+		case curW+sepW+w > width:
+			lines = append(lines, cur.String())
+			cur.Reset()
+			cur.WriteString(s)
+			curW = w
+		default:
+			cur.WriteString(sep + s)
+			curW += sepW + w
+		}
+	}
+	if curW > 0 {
+		lines = append(lines, cur.String())
+	}
+	return lines
 }
 
 func (m Model) statusLineView() string {
