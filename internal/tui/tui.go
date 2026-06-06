@@ -1004,12 +1004,20 @@ func (m Model) detailView() string {
 	if mg, col := mergeFragment(pr.MergeState); mg != "" {
 		meta = append(meta, lipgloss.NewStyle().Foreground(col).Render(mg))
 	}
-	if jr, col := jiraFragment(pr.JiraKey, pr.JiraStatus, pr.JiraCategory); pr.JiraKey != "" {
-		meta = append(meta, lipgloss.NewStyle().Foreground(col).Render(jr))
-	}
 	age := m.now.Sub(pr.CreatedAt)
 	meta = append(meta, lipgloss.NewStyle().Foreground(ageColor(age)).Render(humanAgo(age)))
 	metaLine := strings.Join(meta, dot)
+
+	// Jira line: pulled out of the packed meta line onto its own labelled row
+	// (inline label + value, like the reviewers block) so the key + status read
+	// at a glance. Present only when a key resolved.
+	var jiraLine string
+	if pr.JiraKey != "" {
+		label := lipgloss.NewStyle().Foreground(colDim).Bold(true).Render("JIRA")
+		val := lipgloss.NewStyle().Foreground(colText).Render(pr.JiraKey) +
+			dot + lipgloss.NewStyle().Foreground(jiraColor(pr.JiraCategory)).Render(pr.JiraStatus)
+		jiraLine = label + "   " + val
+	}
 
 	// Reviewers block.
 	reviewers := renderReviewers(pr, m.login)
@@ -1032,6 +1040,9 @@ func (m Model) detailView() string {
 		if branchLine != "" {
 			reserve++ // the branch line is one extra fixed row
 		}
+		if jiraLine != "" {
+			reserve += 2 // the Jira line plus its blank spacer row
+		}
 		budget := min(max(m.height-reserve-strings.Count(reviewers, "\n"), 3), maxBodyLines)
 		if len(lines) > budget {
 			hidden := len(lines) - budget
@@ -1045,6 +1056,9 @@ func (m Model) detailView() string {
 	parts := []string{repoLine, titleLine}
 	if branchLine != "" {
 		parts = append(parts, branchLine)
+	}
+	if jiraLine != "" {
+		parts = append(parts, "", jiraLine)
 	}
 	parts = append(parts, "", metaLine, "", reviewers, "", bodyHeader, bodyBlock, "", hint)
 	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
@@ -1479,8 +1493,10 @@ func (m Model) renderRow(pr gh.PullRequest, selected bool, cols rowCols) string 
 	if mergeText, mergeColor := mergeFragment(pr.MergeState); mergeText != "" {
 		line2Body += sep + st(mergeColor, false).Render(mergeText)
 	}
-	if jiraText, jiraColor := jiraFragment(pr.JiraKey, pr.JiraStatus, pr.JiraCategory); pr.JiraKey != "" {
-		line2Body += sep + st(jiraColor, false).Render(jiraText)
+	// Jira cell: the status word alone (the key is dropped to cut noise on an
+	// already-dense line), colored by category. Present only when a key resolved.
+	if pr.JiraKey != "" {
+		line2Body += sep + st(jiraColor(pr.JiraCategory), false).Render(pr.JiraStatus)
 	}
 	age := m.now.Sub(pr.CreatedAt)
 	line2Body += sep + st(ageColor(age), false).Render(humanAgo(age))
@@ -1689,28 +1705,21 @@ func mergeFragment(s gh.MergeState) (string, lipgloss.Color) {
 	}
 }
 
-// jiraFragment returns the label and accent color for the Jira cell of a row.
-// Unlike CI/diff this is a flowing tail item (not a fixed column): it renders as
-// "KEY Status" — the KEY's "ABC-123" shape identifies it, so the "jira:" prefix
-// is dropped — and is omitted entirely by the caller when there is no key.
-// Coloring keys off the issue's statusCategory and reuses the existing palette
-// semantics rather than introducing a new accent: done = green (ships, like CI
-// passing), in-progress = cyan (the project's "in progress elsewhere" hue, like
-// CI pending), to-do/unknown = dim. There is deliberately no red state — a Jira
-// ticket is never an "error". The "—" fallback is returned for an empty key but
-// is not rendered; the caller drops the cell instead.
-func jiraFragment(key, status, category string) (string, lipgloss.Color) {
-	if key == "" {
-		return "—", colMuted
-	}
-	label := key + " " + status
+// jiraColor maps a Jira statusCategory to the palette, reusing the CI semantics
+// rather than introducing a new accent: done = green (ships, like CI passing),
+// indeterminate (in progress) = cyan (the project's "in progress elsewhere" hue,
+// like CI pending), new/unknown = dim. There is deliberately no red state — a
+// Jira ticket is never an "error". The listing renders the status word alone in
+// this color (the key is dropped to cut noise); detailView pairs it with the key
+// on a dedicated line.
+func jiraColor(category string) lipgloss.Color {
 	switch jira.Category(category) {
 	case jira.CategoryDone:
-		return label, colGreen
+		return colGreen
 	case jira.CategoryIndeterminate:
-		return label, colCyan
+		return colCyan
 	default: // CategoryNew, CategoryUnknown
-		return label, colDim
+		return colDim
 	}
 }
 
