@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-06-06
+
 ### Added
 - **Loading screen** — the dashboard now launches straight into a cyberpunk
   "decrypt" splash while the first scan runs in the background, so the terminal
@@ -121,7 +123,8 @@ interactive terminal dashboard, classified by what's waiting on whom.
   (`BenchmarkSearchPullRequests_Enrichment`) and `internal/version` test
   coverage.
 
-[Unreleased]: https://github.com/ajardin/kiroshi/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/ajardin/kiroshi/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/ajardin/kiroshi/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/ajardin/kiroshi/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/ajardin/kiroshi/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/ajardin/kiroshi/compare/v1.0.0...v1.1.0
