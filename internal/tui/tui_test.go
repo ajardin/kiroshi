@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/ajardin/kiroshi/internal/gh"
 	"github.com/ajardin/kiroshi/internal/jira"
@@ -440,8 +441,8 @@ func TestModel_RescanReportsError(t *testing.T) {
 	if !got.statusErr {
 		t.Error("statusErr should be true on rescan failure")
 	}
-	if !strings.Contains(got.View(), "rescan failed") {
-		t.Errorf("view missing rescan failure\n%s", got.View())
+	if !strings.Contains(got.View(), "scan failed") {
+		t.Errorf("view missing scan failure\n%s", got.View())
 	}
 }
 
@@ -452,6 +453,127 @@ func TestModel_RescanIgnoredWhenNoRefresh(t *testing.T) {
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
 	if cmd != nil {
 		t.Errorf("expected no cmd when refresh is nil, got %v", cmd)
+	}
+}
+
+func newLoadingModel(t *testing.T, refresh Refresher, interval time.Duration) Model {
+	t.Helper()
+	m := NewLoadingModel("ajardin", "v0.0.1", 2, false, interval, nil, refresh)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	return updated.(Model)
+}
+
+func TestModel_LoadingViewShowsDecryptSplash(t *testing.T) {
+	t.Parallel()
+
+	m := newLoadingModel(t, nil, 0)
+	if !m.loading {
+		t.Fatal("NewLoadingModel should start in the loading state")
+	}
+	plain := ansi.Strip(m.View())
+	if !strings.Contains(plain, "SYNCING OPTICS") {
+		t.Errorf("loading view should show the decrypt splash\n%s", plain)
+	}
+	if strings.Contains(plain, "scanned") {
+		t.Errorf("loading view must replace the dashboard, not composite it\n%s", plain)
+	}
+}
+
+func TestModel_LoadingDecryptResolvesWithFrames(t *testing.T) {
+	t.Parallel()
+
+	m := newLoadingModel(t, nil, 0)
+
+	// Frame 0: nothing resolved yet — the brand word is still scrambled. The
+	// noise pool excludes I and O, so the exact word cannot appear by chance.
+	if got := ansi.Strip(m.View()); strings.Contains(got, "KIROSHI") {
+		t.Errorf("frame 0 should not have resolved the word yet\n%s", got)
+	}
+
+	// Past the full reveal, the word locks into KIROSHI under the brand mark.
+	m.spinFrame = len(loadingTarget)*decryptFramesPerChar + 1
+	if got := ansi.Strip(m.View()); !strings.Contains(got, "▲ KIROSHI") {
+		t.Errorf("a late frame should resolve to the brand word\n%s", got)
+	}
+}
+
+func TestModel_InitialScanPopulatesDashboard(t *testing.T) {
+	t.Parallel()
+
+	var called bool
+	refresh := func(_ context.Context) ([]gh.PullRequest, error) {
+		called = true
+		return samplePRs(), nil
+	}
+	m := newLoadingModel(t, refresh, 0)
+
+	// rescanCmd is exactly what Init batches to drive the initial load.
+	got := applyCmd(t, m, m.rescanCmd())
+	if !called {
+		t.Error("initial scan did not invoke refresh")
+	}
+	if got.loading {
+		t.Error("loading flag should clear once the first batch lands")
+	}
+	if len(got.prs) != len(samplePRs()) {
+		t.Errorf("prs after initial load = %d, want %d", len(got.prs), len(samplePRs()))
+	}
+	if !strings.Contains(got.View(), "Add PR search") {
+		t.Errorf("dashboard should render after the load completes\n%s", got.View())
+	}
+}
+
+func TestModel_InitialScanErrorLeavesLoadingWithStatus(t *testing.T) {
+	t.Parallel()
+
+	refresh := func(_ context.Context) ([]gh.PullRequest, error) {
+		return nil, errors.New("boom")
+	}
+	m := newLoadingModel(t, refresh, 0)
+	got := applyCmd(t, m, m.rescanCmd())
+	if got.loading {
+		t.Error("loading should clear even when the initial scan fails")
+	}
+	if !got.statusErr || !strings.Contains(got.View(), "scan failed") {
+		t.Errorf("a failed initial scan should surface a red status line\n%s", got.View())
+	}
+}
+
+func TestModel_KeysSuppressedWhileLoading(t *testing.T) {
+	t.Parallel()
+
+	var calls int
+	refresh := func(_ context.Context) ([]gh.PullRequest, error) {
+		calls++
+		return samplePRs(), nil
+	}
+
+	// 'r' must not launch a second scan while the initial load is in flight.
+	m := newLoadingModel(t, refresh, 0)
+	if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")}); cmd != nil {
+		t.Errorf("'r' during loading should be a no-op, got %v", cmd)
+	}
+
+	// 'q' still quits.
+	_, qcmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	if qcmd == nil {
+		t.Fatal("'q' during loading should still quit")
+	}
+	if _, ok := qcmd().(tea.QuitMsg); !ok {
+		t.Errorf("'q' produced %T, want tea.QuitMsg", qcmd())
+	}
+
+	// An auto-refresh tick re-arms but skips the scan while loading.
+	am := newLoadingModel(t, refresh, time.Millisecond)
+	_, acmd := am.Update(autoRefreshMsg(am.now))
+	if acmd == nil {
+		t.Fatal("auto-refresh should re-arm its tick while loading")
+	}
+	if _, ok := acmd().(autoRefreshMsg); !ok {
+		t.Errorf("expected the re-armed tick, not a rescan, got %T", acmd())
+	}
+	if calls != 0 {
+		t.Errorf("refresh ran %d times; it must be skipped while loading", calls)
 	}
 }
 

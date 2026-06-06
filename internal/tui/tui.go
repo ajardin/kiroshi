@@ -259,7 +259,11 @@ type Model struct {
 	status          string
 	statusErr       bool
 	refreshing      bool
-	spinFrame       int
+	// loading marks the initial fetch (before any data has arrived). Unlike
+	// refreshing — which keeps the dashboard visible with a status-line spinner —
+	// loading replaces the whole screen with loadingView's decrypt animation.
+	loading   bool
+	spinFrame int
 	// Connection health for the header dots. githubHealthy flips false on a
 	// failed rescan; jiraHealthy flips false when any PR's Jira lookup failed.
 	// Both default true (a fatal initial GitHub auth error exits in the CLI
@@ -299,6 +303,28 @@ func NewModel(prs []gh.PullRequest, login, version string, minReviews int, jiraE
 	}
 }
 
+// NewLoadingModel builds a Model that launches straight into the loading
+// animation and fetches its first batch of pull requests from inside the TUI
+// (via refresh, kicked off by Init). It exists so the initial scan — search
+// plus per-PR enrichment, a multi-second wait — runs while the decrypt splash
+// animates, instead of blocking before the program starts. lastScan is left
+// zero (never rendered: loadingView replaces the dashboard until data arrives).
+func NewLoadingModel(login, version string, minReviews int, jiraEnabled bool, refreshInterval time.Duration, open Opener, refresh Refresher) Model {
+	return Model{
+		login:           login,
+		version:         version,
+		minReviews:      minReviews,
+		jiraEnabled:     jiraEnabled,
+		refreshInterval: refreshInterval,
+		now:             time.Now(),
+		open:            open,
+		refresh:         refresh,
+		loading:         true,
+		githubHealthy:   true,
+		jiraHealthy:     true,
+	}
+}
+
 // anyJiraFailure reports whether any PR's Jira lookup failed during enrichment
 // (a key was found but the call errored). Drives the header's jira health dot.
 func anyJiraFailure(prs []gh.PullRequest) bool {
@@ -311,8 +337,16 @@ func anyJiraFailure(prs []gh.PullRequest) bool {
 }
 
 // Init kicks off the per-second clock tick and, when configured, the
-// auto-refresh tick.
-func (m Model) Init() tea.Cmd { return tea.Batch(tickCmd(), autoRefreshCmd(m.refreshInterval)) }
+// auto-refresh tick. When the model launched in the loading state, it also
+// fires the initial scan and arms the decrypt-animation frame ticker so the
+// fetch runs behind the loading splash.
+func (m Model) Init() tea.Cmd {
+	cmds := []tea.Cmd{tickCmd(), autoRefreshCmd(m.refreshInterval)}
+	if m.loading && m.refresh != nil {
+		cmds = append(cmds, m.rescanCmd(), spinnerCmd())
+	}
+	return tea.Batch(cmds...)
+}
 
 type (
 	tickMsg   time.Time
@@ -369,8 +403,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tickCmd()
 
 	case spinMsg:
-		// Self-terminating: stop re-arming once the rescan finishes.
-		if !m.refreshing {
+		// Self-terminating: stop re-arming once the rescan / initial load finishes.
+		if !m.refreshing && !m.loading {
 			return m, nil
 		}
 		m.spinFrame++
@@ -383,8 +417,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case rescanMsg:
 		m.refreshing = false
+		m.loading = false
 		if msg.err != nil {
-			m.status = "rescan failed: " + msg.err.Error()
+			m.status = "scan failed: " + msg.err.Error()
 			m.statusErr = true
 			m.githubHealthy = false
 			return m, nil
@@ -407,7 +442,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// isn't already in flight (a slow scan that outlasts the interval simply
 		// skips a beat rather than stacking). Mirrors the manual "r" path.
 		next := autoRefreshCmd(m.refreshInterval)
-		if m.refresh == nil || m.refreshing {
+		if m.refresh == nil || m.refreshing || m.loading {
 			return m, next
 		}
 		m.refreshing = true
@@ -428,6 +463,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	if m.loading {
+		// Nothing to act on until the first batch lands; only let the user bail.
+		if k := msg.String(); k == "q" || k == "esc" || k == "ctrl+c" {
+			return m, tea.Quit
+		}
+		return m, nil
+	}
 	if m.filterMode {
 		return m.handleFilterKey(msg)
 	}
@@ -464,7 +506,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	case "enter", "o":
 		return m.openSelected()
 	case "r":
-		if m.refresh == nil || m.refreshing {
+		if m.refresh == nil || m.refreshing || m.loading {
 			return m, nil
 		}
 		m.refreshing = true
@@ -733,6 +775,9 @@ func (m Model) View() string {
 	if m.width == 0 || m.height == 0 {
 		return ""
 	}
+	if m.loading {
+		return m.loadingView()
+	}
 	if m.showHelp {
 		return m.helpView()
 	}
@@ -773,6 +818,59 @@ func (m Model) View() string {
 // two-line gap — a deliberate breathing space that sets the footer apart from
 // the row rhythm (each row is itself followed by one blank line).
 const footerGap = "\n\n"
+
+// --- Loading splash ------------------------------------------------------
+
+// loadingTarget is the brand word the decrypt animation resolves into.
+const loadingTarget = "KIROSHI"
+
+// decryptFramesPerChar is how many spinner frames pass before the next
+// character of loadingTarget locks in. spinInterval is 120ms, so each lock is
+// ~240ms and the whole word resolves in roughly 1.7s; past that the title holds
+// while the subtitle keeps blinking (so a slow load doesn't run out of animation).
+const decryptFramesPerChar = 2
+
+// decryptNoise is the 1-cell ASCII pool the unresolved characters cycle
+// through. Glyphs stay ASCII so their cell width never drifts — the same
+// width-stability constraint that keeps the help rows ASCII.
+const decryptNoise = `ABCDEFGHJKLMNPQRSTUVWXYZ0123456789#%@&!?/\<>$*`
+
+// loadingView renders the full-screen cyberpunk decrypt splash shown while the
+// initial scan runs. The brand word resolves left-to-right out of scrambled
+// glyphs; unresolved positions churn deterministically off spinFrame (no
+// math/rand, so View stays pure and testable).
+func (m Model) loadingView() string {
+	revealed := min(len(loadingTarget), m.spinFrame/decryptFramesPerChar)
+
+	real := lipgloss.NewStyle().Foreground(colYellow).Bold(true)
+	noise := lipgloss.NewStyle().Foreground(colDim)
+	var word strings.Builder
+	for i := range len(loadingTarget) {
+		if i < revealed {
+			word.WriteString(real.Render(string(loadingTarget[i])))
+			continue
+		}
+		// Deterministic per (frame, position) so each cell churns independently.
+		g := decryptNoise[(m.spinFrame*7+i*13)%len(decryptNoise)]
+		word.WriteString(noise.Render(string(g)))
+	}
+
+	mark := lipgloss.NewStyle().Foreground(colYellow).Bold(true).Render("▲ ")
+	title := mark + word.String()
+
+	prompt := lipgloss.NewStyle().Foreground(colCyan).Render("> ")
+	label := lipgloss.NewStyle().Foreground(colDim).Render("SYNCING OPTICS… ")
+	// Block cursor blinks on frame parity (both glyphs are one cell, so the
+	// centered subtitle doesn't jitter as it toggles).
+	cursor := " "
+	if m.spinFrame%2 == 0 {
+		cursor = "█"
+	}
+	subtitle := prompt + label + lipgloss.NewStyle().Foreground(colCyan).Render(cursor)
+
+	content := lipgloss.JoinVertical(lipgloss.Center, title, "", subtitle)
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
+}
 
 // --- Help overlay --------------------------------------------------------
 

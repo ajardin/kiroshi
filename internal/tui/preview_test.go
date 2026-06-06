@@ -89,4 +89,15 @@ func TestPreview(t *testing.T) {
 	detail, _ := incoming.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
 	fmt.Println()
 	fmt.Println(detail.(Model).View())
+
+	// Loading splash at three frames so the decrypt reveal is visible: scrambled
+	// → mid-reveal → fully resolved.
+	loading := NewLoadingModel("ajardin", "v0.0.1", 2, true, 5*time.Minute, nil, nil)
+	lup, _ := loading.Update(tea.WindowSizeMsg{Width: 120, Height: 16})
+	lm := lup.(Model)
+	for _, frame := range []int{0, len(loadingTarget), len(loadingTarget) * decryptFramesPerChar} {
+		lm.spinFrame = frame
+		fmt.Println()
+		fmt.Println(lm.View())
+	}
 }

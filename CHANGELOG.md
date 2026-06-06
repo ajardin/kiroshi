@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Loading screen** — the dashboard now launches straight into a cyberpunk
+  "decrypt" splash while the first scan runs in the background, so the terminal
+  no longer looks frozen during the multi-second search and enrichment. The
+  brand word resolves left-to-right out of scrambled glyphs and the dashboard
+  replaces the splash the moment data lands. The TUI now also opens even when
+  the search returns nothing (an empty dashboard) and surfaces a failed initial
+  scan as a status line you can retry with `r`, instead of blocking before
+  launch.
+- **Age anti-forgetting nudge** — each row shows how long a PR has been open
+  (time since it was created, not last updated), with the color escalating from
+  muted to dim past 7 days and to yellow past 21 days, so PRs that have sat
+  untouched draw the eye. The detail overlay shows the same age.
 - **PR detail overlay** — the `d` key opens a centered panel on the selected
   PR showing its full description, the complete reviewer breakdown (approved /
   changes / commented / requested) and its CI · merge · Jira status. It's
@@ -15,6 +27,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   GitHub calls — and any key dismisses it. The description is wrapped and
   capped with a `… (N more lines)` indicator so a long body never dominates
   the panel.
+
+### Changed
+- **Row layout polish** — the merge cell moved from a fixed column into the
+  flowing tail, so a healthy PR no longer leaves a reserved gap on every clear
+  row; indicator blocks are now joined by a uniform ` · ` separator and the
+  author is set off from them by a wider gap, making the second line easier to
+  scan.
+
+## [1.3.0] - 2026-06-05
+
+### Added
+- **"Mine" pane** — the `tab` key toggles between incoming PRs (those waiting
+  on others) and the PRs you authored, so you can check on your own work
+  without leaving the dashboard.
+
+### Changed
+- **Narrow-terminal layout** — below the full four-card width the status cards
+  fall back to a 2×2 grid and the header drops its status badges and clock to
+  stay on one line, so the dashboard stays usable on slim terminals (with a
+  "terminal too small" guard below the minimum).
 
 ## [1.2.0] - 2026-06-04
 
@@ -79,7 +111,8 @@ interactive terminal dashboard, classified by what's waiting on whom.
   (`BenchmarkSearchPullRequests_Enrichment`) and `internal/version` test
   coverage.
 
-[Unreleased]: https://github.com/ajardin/kiroshi/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/ajardin/kiroshi/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/ajardin/kiroshi/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/ajardin/kiroshi/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/ajardin/kiroshi/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/ajardin/kiroshi/releases/tag/v1.0.0
