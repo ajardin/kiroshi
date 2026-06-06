@@ -636,6 +636,27 @@ func TestHumanAgo(t *testing.T) {
 	}
 }
 
+func TestAgeColor(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		age  time.Duration
+		want lipgloss.Color
+	}{
+		{"fresh", 2 * time.Hour, colMuted},
+		{"just under a week", ageStaleAfter - time.Hour, colMuted},
+		{"one week", ageStaleAfter, colDim},
+		{"just under three weeks", ageForgottenAfter - time.Hour, colDim},
+		{"three weeks", ageForgottenAfter, colYellow},
+		{"ancient", 90 * 24 * time.Hour, colYellow},
+	}
+	for _, c := range cases {
+		if got := ageColor(c.age); got != c.want {
+			t.Errorf("ageColor(%v) = %v, want %v", c.age, got, c.want)
+		}
+	}
+}
+
 func TestBucketFor(t *testing.T) {
 	t.Parallel()
 

@@ -21,14 +21,14 @@ func TestPreview(t *testing.T) {
 	prs := []gh.PullRequest{
 		{
 			Owner: "ajardin", Repo: "crm-core", Number: 2847, Title: "Refactor lead qualification pipeline",
-			Author: "sarah-dev", URL: "x", UpdatedAt: time.Now().Add(-14 * time.Minute),
+			Author: "sarah-dev", URL: "x", CreatedAt: time.Now().Add(-3 * 24 * time.Hour), UpdatedAt: time.Now().Add(-14 * time.Minute),
 			RequestedReviewers: []string{"ajardin"}, CIState: gh.CIStatePending,
 			Additions: 348, Deletions: 127,
 			JiraKey: "CRM-2847", JiraStatus: "In Review", JiraCategory: string(jira.CategoryIndeterminate),
 		},
 		{
 			Owner: "ajardin", Repo: "agent-portal", Number: 1203, Title: "Add commission simulator widget",
-			Author: "mike-fr", URL: "x", UpdatedAt: time.Now().Add(-3 * time.Hour),
+			Author: "mike-fr", URL: "x", CreatedAt: time.Now().Add(-10 * 24 * time.Hour), UpdatedAt: time.Now().Add(-3 * time.Hour),
 			Approvals: []string{"ajardin"}, RequestedReviewers: []string{"lucas-be"},
 			CIState:   gh.CIStateSuccess,
 			Additions: 612, Deletions: 14,
@@ -36,7 +36,7 @@ func TestPreview(t *testing.T) {
 		},
 		{
 			Owner: "ajardin", Repo: "listing-api", Number: 589, Title: "Migrate search to Meilisearch v1.8",
-			Author: "lucas-be", URL: "x", UpdatedAt: time.Now().Add(-26 * time.Hour),
+			Author: "lucas-be", URL: "x", CreatedAt: time.Now().Add(-25 * 24 * time.Hour), UpdatedAt: time.Now().Add(-26 * time.Hour),
 			Approvals: []string{"ajardin", "sarah-dev"}, CIState: gh.CIStateSuccess,
 			MergeState: gh.MergeStateBehind,
 			Additions:  1842, Deletions: 980,
@@ -44,25 +44,25 @@ func TestPreview(t *testing.T) {
 		},
 		{
 			Owner: "ajardin", Repo: "infra-terraform", Number: 144, Title: "Add staging replica for crm-core",
-			Author: "ops-team", URL: "x", UpdatedAt: time.Now().Add(-50 * time.Hour),
+			Author: "ops-team", URL: "x", CreatedAt: time.Now().Add(-32 * 24 * time.Hour), UpdatedAt: time.Now().Add(-50 * time.Hour),
 			CIState:    gh.CIStateFailure,
 			MergeState: gh.MergeStateConflict,
 			Additions:  89, Deletions: 0,
 		},
 		{
 			Owner: "ajardin", Repo: "kiroshi", Number: 12, Title: "feat: add SQLite cache layer",
-			Author: "ajardin", URL: "x", UpdatedAt: time.Now().Add(-2 * time.Hour),
+			Author: "ajardin", URL: "x", CreatedAt: time.Now().Add(-1 * 24 * time.Hour), UpdatedAt: time.Now().Add(-2 * time.Hour),
 			CIState: gh.CIStateNone,
 		},
 		{
 			Owner: "ajardin", Repo: "crm-core", Number: 31, Title: "fix: guard against nil pipeline stage",
-			Author: "ajardin", URL: "x", UpdatedAt: time.Now().Add(-40 * time.Minute),
+			Author: "ajardin", URL: "x", CreatedAt: time.Now().Add(-2 * 24 * time.Hour), UpdatedAt: time.Now().Add(-40 * time.Minute),
 			CIState: gh.CIStateFailure, ChangesRequested: []string{"lucas-be"},
 			Additions: 22, Deletions: 9,
 		},
 		{
 			Owner: "ajardin", Repo: "agent-portal", Number: 58, Title: "wip: dashboard split",
-			Author: "ajardin", URL: "x", UpdatedAt: time.Now().Add(-5 * time.Hour),
+			Author: "ajardin", URL: "x", CreatedAt: time.Now().Add(-8 * 24 * time.Hour), UpdatedAt: time.Now().Add(-5 * time.Hour),
 			IsDraft: true, Additions: 77, Deletions: 3,
 		},
 	}
