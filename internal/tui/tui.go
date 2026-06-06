@@ -264,6 +264,7 @@ type Model struct {
 	approval        approvalFilter
 	pane            paneView
 	showHelp        bool
+	showDetail      bool
 }
 
 // NewModel builds a Model populated with the given pull requests. Pass
@@ -383,12 +384,21 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	if m.showHelp {
 		return m.handleHelpKey(msg)
 	}
+	if m.showDetail {
+		return m.handleDetailKey(msg)
+	}
 	switch msg.String() {
 	case "q", "esc", "ctrl+c":
 		return m, tea.Quit
 	case "?":
 		m.showHelp = true
 		m.status = ""
+		return m, nil
+	case "d":
+		if m.cursor < len(m.visiblePRs()) {
+			m.showDetail = true
+			m.status = ""
+		}
 		return m, nil
 	case "j", "down":
 		return m.moveDown(), nil
@@ -484,6 +494,16 @@ func (m Model) handleHelpKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	m.showHelp = false
+	return m, nil
+}
+
+// handleDetailKey dismisses the PR detail overlay on any key, mirroring
+// handleHelpKey. ctrl+c still quits from anywhere.
+func (m Model) handleDetailKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	if msg.String() == "ctrl+c" {
+		return m, tea.Quit
+	}
+	m.showDetail = false
 	return m, nil
 }
 
@@ -656,6 +676,9 @@ func (m Model) View() string {
 	if m.showHelp {
 		return m.helpView()
 	}
+	if m.showDetail {
+		return m.detailView()
+	}
 	// The four cards (each at least minCardW chars including border) plus 3
 	// gaps of 2 plus the 1-char left margin set the minimum width.
 	minW := 1 + minCardW*4 + 3*2
@@ -705,6 +728,7 @@ func (m Model) helpView() string {
 		{"tab", "switch incoming / mine view"},
 		{"g / G", "jump to top / bottom"},
 		{"enter / o", "open PR in browser"},
+		{"d", "show PR detail"},
 		{"r", "rescan pull requests"},
 		{"f / /", "filter by repo, title, author"},
 		{"s", "cycle sort (updated / oldest / newest)"},
@@ -733,13 +757,158 @@ func (m Model) helpView() string {
 	content := lipgloss.JoinVertical(lipgloss.Left,
 		title, "", strings.Join(rows, "\n"), "", hint)
 
+	return m.modalBox(content)
+}
+
+// modalBox wraps content in the shared overlay chrome — a cyan rounded border
+// centered on the screen — and is the single home for it. Both helpView and
+// detailView render through it; the overlay replaces the dashboard rather than
+// compositing over it (see helpView for the lipgloss v1 back-fill constraint).
+func (m Model) modalBox(content string) string {
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(colCyan).
 		Padding(1, 3).
 		Render(content)
-
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
+}
+
+// --- Detail overlay ------------------------------------------------------
+
+// detailView renders the selected PR's full detail as a centered modal box,
+// following helpView's pattern (it replaces the dashboard rather than
+// compositing — see helpView for the lipgloss v1 back-fill constraint). It is
+// purely presentational: every field shown is already enriched on the
+// PullRequest, so opening it issues no GitHub calls. The `d` key arms it only
+// when a PR is selected (handleKey guards the empty-list case), so the cursor
+// index is safe here.
+func (m Model) detailView() string {
+	visible := m.visiblePRs()
+	pr := visible[m.cursor]
+
+	// Inner content width: wide enough to read a PR body, capped so the box
+	// stays centered and never overflows narrow terminals. The Padding(1,3) and
+	// border eat 8 columns, so leave a margin beyond that.
+	bodyW := min(max(m.width-12, 20), 76)
+
+	muted := lipgloss.NewStyle().Foreground(colMuted)
+	dot := muted.Render(" · ")
+
+	// Title block: "owner/repo #number" in the bucket accent, then the PR title.
+	accent := m.classify(pr).Color()
+	repoLine := lipgloss.NewStyle().Foreground(accent).Bold(true).
+		Render(fmt.Sprintf("%s/%s #%d", pr.Owner, pr.Repo, pr.Number))
+	titleLine := lipgloss.NewStyle().Foreground(colBright).Bold(true).
+		Render(truncate(pr.Title, bodyW))
+
+	// Meta line: reuse the row fragments, ` · `-joined, present items only.
+	styler := func(fg lipgloss.Color, bold bool) lipgloss.Style {
+		s := lipgloss.NewStyle().Foreground(fg)
+		if bold {
+			s = s.Bold(true)
+		}
+		return s
+	}
+	meta := []string{
+		lipgloss.NewStyle().Foreground(colDim).Render("@" + pr.Author),
+		renderDiff(pr.Additions, pr.Deletions, 0, styler),
+	}
+	if ci, col := ciFragment(pr.CIState); ci != "" {
+		meta = append(meta, lipgloss.NewStyle().Foreground(col).Render(ci))
+	}
+	if mg, col := mergeFragment(pr.MergeState); mg != "" {
+		meta = append(meta, lipgloss.NewStyle().Foreground(col).Render(mg))
+	}
+	if jr, col := jiraFragment(pr.JiraKey, pr.JiraStatus, pr.JiraCategory); pr.JiraKey != "" {
+		meta = append(meta, lipgloss.NewStyle().Foreground(col).Render(jr))
+	}
+	meta = append(meta, muted.Render(humanAgo(m.now.Sub(pr.UpdatedAt))))
+	metaLine := strings.Join(meta, dot)
+
+	// Reviewers block.
+	reviewers := renderReviewers(pr, m.login)
+
+	// Body block: wrapped to bodyW, truncated by height with a "more" indicator.
+	bodyHeader := lipgloss.NewStyle().Foreground(colDim).Bold(true).Render("DESCRIPTION")
+	var bodyBlock string
+	if strings.TrimSpace(pr.Body) == "" {
+		bodyBlock = muted.Italic(true).Render("(no description)")
+	} else {
+		wrapped := lipgloss.NewStyle().Width(bodyW).Render(strings.ReplaceAll(pr.Body, "\r\n", "\n"))
+		lines := strings.Split(wrapped, "\n")
+		// Budget: reserve rows for border (2), padding (2), title (2), meta (1),
+		// reviewers, headers and hint, then cap hard at maxBodyLines so the
+		// description never dominates the panel on tall terminals — the
+		// indicator covers the rest. The floor keeps a few lines on short
+		// terminals.
+		const maxBodyLines = 10
+		budget := min(max(m.height-14-strings.Count(reviewers, "\n"), 3), maxBodyLines)
+		if len(lines) > budget {
+			hidden := len(lines) - budget
+			lines = lines[:budget]
+			lines = append(lines, muted.Render(fmt.Sprintf("… (%d more lines)", hidden)))
+		}
+		bodyBlock = strings.Join(lines, "\n")
+	}
+
+	hint := muted.Italic(true).Render("press any key to dismiss")
+	content := lipgloss.JoinVertical(lipgloss.Left,
+		repoLine, titleLine, "", metaLine, "", reviewers, "", bodyHeader, bodyBlock, "", hint)
+
+	return m.modalBox(content)
+}
+
+// renderReviewers formats a PR's four reviewer lists into labelled, aligned
+// rows for the detail overlay. Empty lists are dropped; when every list is
+// empty it returns a single muted "no reviewers yet" line. The viewer's own
+// login is bolded so they can spot themselves. State is carried by the label
+// word and its palette color (approved = green, changes = red, commented /
+// still-requested = dim) — deliberately glyph-free: this block lives inside a
+// bordered box, and ambiguous-width glyphs would drift the right border (the
+// same constraint that keeps helpView's rows ASCII; see CLAUDE.md).
+func renderReviewers(pr gh.PullRequest, viewer string) string {
+	type group struct {
+		label  string
+		color  lipgloss.Color
+		logins []string
+	}
+	groups := []group{
+		{"Approved", colGreen, pr.Approvals},
+		{"Changes", colRed, pr.ChangesRequested},
+		{"Commented", colDim, pr.Commented},
+		{"Requested", colDim, pr.RequestedReviewers},
+	}
+
+	labelW := 0
+	for _, g := range groups {
+		if len(g.logins) > 0 {
+			if w := lipgloss.Width(g.label); w > labelW {
+				labelW = w
+			}
+		}
+	}
+	if labelW == 0 {
+		return lipgloss.NewStyle().Foreground(colMuted).Render("no reviewers yet")
+	}
+
+	var rows []string
+	for _, g := range groups {
+		if len(g.logins) == 0 {
+			continue
+		}
+		names := make([]string, len(g.logins))
+		for i, login := range g.logins {
+			ns := lipgloss.NewStyle().Foreground(colText)
+			if login == viewer {
+				ns = ns.Bold(true)
+			}
+			names[i] = ns.Render(login)
+		}
+		head := lipgloss.NewStyle().Foreground(g.color).
+			Render(fmt.Sprintf("%-*s", labelW, g.label))
+		rows = append(rows, head+"   "+strings.Join(names, ", "))
+	}
+	return strings.Join(rows, "\n")
 }
 
 // --- Header --------------------------------------------------------------
@@ -1099,6 +1268,7 @@ func (m Model) footerView() string {
 		keyHint("j/k", "navigate"),
 		keyHint("tab", "switch view"),
 		keyHint("o", "open"),
+		keyHint("d", "detail"),
 		keyHint("r", "rescan"),
 		keyHint("f", "filter"),
 		keyHint("s", "sort"),

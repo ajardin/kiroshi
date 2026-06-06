@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **PR detail overlay** — the `d` key opens a centered panel on the selected
+  PR showing its full description, the complete reviewer breakdown (approved /
+  changes / commented / requested) and its CI · merge · Jira status. It's
+  purely presentational — it reuses already-enriched data, so it issues no
+  GitHub calls — and any key dismisses it. The description is wrapped and
+  capped with a `… (N more lines)` indicator so a long body never dominates
+  the panel.
+
 ## [1.2.0] - 2026-06-04
 
 ### Added
