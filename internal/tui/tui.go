@@ -18,6 +18,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/ajardin/kiroshi/internal/gh"
 	"github.com/ajardin/kiroshi/internal/jira"
@@ -258,13 +259,20 @@ type Model struct {
 	status          string
 	statusErr       bool
 	refreshing      bool
-	filterMode      bool
-	filter          string
-	sort            sortMode
-	approval        approvalFilter
-	pane            paneView
-	showHelp        bool
-	showDetail      bool
+	spinFrame       int
+	// Connection health for the header dots. githubHealthy flips false on a
+	// failed rescan; jiraHealthy flips false when any PR's Jira lookup failed.
+	// Both default true (a fatal initial GitHub auth error exits in the CLI
+	// before the TUI launches, so the dot is meaningful only after a rescan).
+	githubHealthy bool
+	jiraHealthy   bool
+	filterMode    bool
+	filter        string
+	sort          sortMode
+	approval      approvalFilter
+	pane          paneView
+	showHelp      bool
+	showDetail    bool
 }
 
 // NewModel builds a Model populated with the given pull requests. Pass
@@ -286,7 +294,20 @@ func NewModel(prs []gh.PullRequest, login, version string, minReviews int, jiraE
 		now:             time.Now(),
 		open:            open,
 		refresh:         refresh,
+		githubHealthy:   true,
+		jiraHealthy:     !anyJiraFailure(prs),
 	}
+}
+
+// anyJiraFailure reports whether any PR's Jira lookup failed during enrichment
+// (a key was found but the call errored). Drives the header's jira health dot.
+func anyJiraFailure(prs []gh.PullRequest) bool {
+	for _, pr := range prs {
+		if pr.JiraLookupFailed {
+			return true
+		}
+	}
+	return false
 }
 
 // Init kicks off the per-second clock tick and, when configured, the
@@ -307,10 +328,25 @@ type (
 	// autoRefreshMsg fires on the refresh_interval cadence; the handler
 	// triggers a rescan (unless one is already running) and re-arms the tick.
 	autoRefreshMsg time.Time
+	// spinMsg advances the rescan spinner. The ticker is armed only while a
+	// rescan is in flight and lets itself die once it stops (see Update).
+	spinMsg time.Time
 )
+
+// spinFrames is the braille spinner cycle. Each glyph is exactly one cell wide,
+// so it never disturbs the status line's width.
+var spinFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+const spinInterval = 120 * time.Millisecond
 
 func tickCmd() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
+}
+
+// spinnerCmd schedules the next spinner frame. Callers arm it when a wait
+// begins; the spinMsg handler re-arms it until the wait ends.
+func spinnerCmd() tea.Cmd {
+	return tea.Tick(spinInterval, func(t time.Time) tea.Msg { return spinMsg(t) })
 }
 
 // autoRefreshCmd schedules the next auto-refresh tick, or nil when auto-refresh
@@ -332,6 +368,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.now = time.Time(msg)
 		return m, tickCmd()
 
+	case spinMsg:
+		// Self-terminating: stop re-arming once the rescan finishes.
+		if !m.refreshing {
+			return m, nil
+		}
+		m.spinFrame++
+		return m, spinnerCmd()
+
 	case statusMsg:
 		m.status = msg.text
 		m.statusErr = msg.err
@@ -342,14 +386,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.status = "rescan failed: " + msg.err.Error()
 			m.statusErr = true
+			m.githubHealthy = false
 			return m, nil
 		}
 		m.prs = msg.prs
 		m.lastScan = msg.at
+		m.githubHealthy = true
+		m.jiraHealthy = !anyJiraFailure(msg.prs)
 		if n := len(m.visiblePRs()); m.cursor >= n {
 			m.cursor = max(0, n-1)
 		}
-		m.status = fmt.Sprintf("rescanned · %d PR(s)", len(msg.prs))
+		// No success status: the header's "scanned Xm ago" carries recency and
+		// the section header carries the count, so a transient line is redundant.
+		m.status = ""
 		m.statusErr = false
 		return m, nil
 
@@ -363,7 +412,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.refreshing = true
 		m.statusErr = false
-		return m, tea.Batch(m.rescanCmd(), next)
+		m.spinFrame = 0
+		return m, tea.Batch(m.rescanCmd(), spinnerCmd(), next)
 
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -420,7 +470,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.refreshing = true
 		m.status = "rescanning..."
 		m.statusErr = false
-		return m, m.rescanCmd()
+		m.spinFrame = 0
+		return m, tea.Batch(m.rescanCmd(), spinnerCmd())
 	case "f", "/":
 		m.filterMode = true
 		m.status = ""
@@ -662,8 +713,17 @@ func (m Model) rowsVisible() int {
 // listAreaHeight is the vertical room left for the PR rows after the fixed
 // regions (header, cards, section header, footer, status line, separators).
 func (m Model) listAreaHeight() int {
-	// header, rule, 4 cards, blank, section, blank
-	fixed := 1 + 1 + 4 + 1 + 1 + 1
+	// header, rule, blank (after cards), blank (after section), + the extra
+	// footerGap line between the list and the footer.
+	fixed := 1 + 1 + 1 + 1 + 1
+	// Cards are one 4-line row, or a 2×2 grid (8 lines) below fullCardsW. Derive
+	// the height from the same width threshold cardsView uses rather than
+	// rendering cardsView a second time per frame just to count its lines.
+	cardLines := 4
+	if m.width < fullCardsW {
+		cardLines = 8
+	}
+	fixed += cardLines
 	fixed += strings.Count(m.footerView(), "\n") + 1 // footer (incl. optional status line)
 	return m.height - fixed
 }
@@ -679,9 +739,9 @@ func (m Model) View() string {
 	if m.showDetail {
 		return m.detailView()
 	}
-	// The four cards (each at least minCardW chars including border) plus 3
-	// gaps of 2 plus the 1-char left margin set the minimum width.
-	minW := 1 + minCardW*4 + 3*2
+	// Below fullCardsW the four cards no longer fit on one row; cardsView falls
+	// back to a 2×2 grid down to minW (two cards wide). Below that we give up.
+	minW := 1 + minCardW*2 + 2
 	if m.width < minW || m.height < 14 {
 		return lipgloss.NewStyle().Width(m.width).Align(lipgloss.Center).
 			Render(fmt.Sprintf("\nTerminal too small.\nResize to at least %d × 14.\n", minW))
@@ -699,16 +759,20 @@ func (m Model) View() string {
 
 	body := strings.Join(parts, "\n")
 
-	// Pad the body so the footer hugs the bottom of the screen.
-	footer := m.footerView()
-	footerH := strings.Count(footer, "\n") + 1
-	bodyH := strings.Count(body, "\n") + 1
-	if pad := m.height - bodyH - footerH; pad > 0 {
-		body += strings.Repeat("\n", pad)
-	}
-
-	return body + "\n" + footer
+	// The footer hugs the content (right under the list) rather than being pinned
+	// to the bottom: on a tall terminal with few rows, pinning left a large empty
+	// gap between the list and the footer. listView renders only real PRs (capped
+	// at rowsVisible), so the footer lands just below the last row, set off by a
+	// blank-line gap (footerGap) — reserved in listAreaHeight so a full list
+	// doesn't lose its last row to it.
+	return body + footerGap + m.footerView()
 }
+
+// footerGap is the separator between the list and the footer. listView already
+// ends with the last row's trailing newline, so these two newlines render a
+// two-line gap — a deliberate breathing space that sets the footer apart from
+// the row rhythm (each row is itself followed by one blank line).
+const footerGap = "\n\n"
 
 // --- Help overlay --------------------------------------------------------
 
@@ -801,6 +865,18 @@ func (m Model) detailView() string {
 	titleLine := lipgloss.NewStyle().Foreground(colBright).Bold(true).
 		Render(truncate(pr.Title, bodyW))
 
+	// Branch line: "head -> base". ASCII "->" (not "→") — an ambiguous-width
+	// glyph would drift the bordered box's right edge (same constraint as the
+	// glyph-free reviewers block). Shown only when the head ref is known.
+	var branchLine string
+	if pr.HeadRef != "" {
+		branch := pr.HeadRef
+		if pr.BaseRef != "" {
+			branch += " -> " + pr.BaseRef
+		}
+		branchLine = lipgloss.NewStyle().Foreground(colDim).Render(truncate(branch, bodyW))
+	}
+
 	// Meta line: reuse the row fragments, ` · `-joined, present items only.
 	styler := func(fg lipgloss.Color, bold bool) lipgloss.Style {
 		s := lipgloss.NewStyle().Foreground(fg)
@@ -812,6 +888,17 @@ func (m Model) detailView() string {
 	meta := []string{
 		lipgloss.NewStyle().Foreground(colDim).Render("@" + pr.Author),
 		renderDiff(pr.Additions, pr.Deletions, 0, styler),
+	}
+	// Neutral activity counters (no new accent), omitted when zero. The comment
+	// count sums conversation + inline review comments.
+	if pr.ChangedFiles > 0 {
+		meta = append(meta, lipgloss.NewStyle().Foreground(colDim).Render(countNoun(pr.ChangedFiles, "file")))
+	}
+	if pr.Commits > 0 {
+		meta = append(meta, lipgloss.NewStyle().Foreground(colDim).Render(countNoun(pr.Commits, "commit")))
+	}
+	if c := pr.Comments + pr.ReviewComments; c > 0 {
+		meta = append(meta, lipgloss.NewStyle().Foreground(colDim).Render(countNoun(c, "comment")))
 	}
 	if ci, col := ciFragment(pr.CIState); ci != "" {
 		meta = append(meta, lipgloss.NewStyle().Foreground(col).Render(ci))
@@ -843,7 +930,11 @@ func (m Model) detailView() string {
 		// indicator covers the rest. The floor keeps a few lines on short
 		// terminals.
 		const maxBodyLines = 10
-		budget := min(max(m.height-14-strings.Count(reviewers, "\n"), 3), maxBodyLines)
+		reserve := 14
+		if branchLine != "" {
+			reserve++ // the branch line is one extra fixed row
+		}
+		budget := min(max(m.height-reserve-strings.Count(reviewers, "\n"), 3), maxBodyLines)
 		if len(lines) > budget {
 			hidden := len(lines) - budget
 			lines = lines[:budget]
@@ -853,8 +944,12 @@ func (m Model) detailView() string {
 	}
 
 	hint := muted.Italic(true).Render("press any key to dismiss")
-	content := lipgloss.JoinVertical(lipgloss.Left,
-		repoLine, titleLine, "", metaLine, "", reviewers, "", bodyHeader, bodyBlock, "", hint)
+	parts := []string{repoLine, titleLine}
+	if branchLine != "" {
+		parts = append(parts, branchLine)
+	}
+	parts = append(parts, "", metaLine, "", reviewers, "", bodyHeader, bodyBlock, "", hint)
+	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
 
 	return m.modalBox(content)
 }
@@ -914,6 +1009,15 @@ func renderReviewers(pr gh.PullRequest, viewer string) string {
 
 // --- Header --------------------------------------------------------------
 
+// healthColor maps a connection-health flag to the palette: green when the last
+// call succeeded, red when it failed.
+func healthColor(ok bool) lipgloss.Color {
+	if ok {
+		return colGreen
+	}
+	return colRed
+}
+
 func (m Model) headerView() string {
 	logo := lipgloss.NewStyle().Foreground(colYellow).Bold(true).Render("▲ KIROSHI")
 	// The brand mark already names the app; trim the redundant "kiroshi " that
@@ -927,14 +1031,22 @@ func (m Model) headerView() string {
 		build += " (" + scanned + ")"
 	}
 	left := logo + " " + lipgloss.NewStyle().Foreground(colCyan).Render(build)
+	// On a narrow terminal the build parenthetical would push the header past one
+	// line (wrapping breaks listAreaHeight's single-line assumption): keep only
+	// the brand mark.
+	if m.width < fullCardsW {
+		left = logo
+	}
 
 	// Wider whitespace between clusters; a uniform " · " everywhere reads cramped.
 	gap := "      "
 
-	// Filled dots (●) mark status badges (github/jira/auto); the clock stays plain.
+	// Filled dots (●) mark status badges (github/jira/auto); the clock stays
+	// plain. github/jira are health-aware: green when the last call succeeded,
+	// red when it failed (jira stays a hollow ○ when unconfigured).
 	jiraDot := lipgloss.NewStyle().Foreground(colMuted).Render("○ jira")
 	if m.jiraEnabled {
-		jiraDot = lipgloss.NewStyle().Foreground(colGreen).Render("● jira")
+		jiraDot = lipgloss.NewStyle().Foreground(healthColor(m.jiraHealthy)).Render("● jira")
 	}
 	// Auto-refresh as an on/off status badge: green when armed, red when off.
 	autoColor, autoLabel := colRed, "auto off"
@@ -943,13 +1055,19 @@ func (m Model) headerView() string {
 	}
 	dot := lipgloss.NewStyle().Foreground(colMuted).Render(" · ")
 	status := []string{
-		lipgloss.NewStyle().Foreground(colGreen).Render("● github"),
+		lipgloss.NewStyle().Foreground(healthColor(m.githubHealthy)).Render("● github"),
 		jiraDot,
 		lipgloss.NewStyle().Foreground(autoColor).Render("● " + autoLabel),
 	}
 	user := lipgloss.NewStyle().Foreground(colText).Render("@" + m.login)
 	clock := lipgloss.NewStyle().Foreground(colCyan).Render(m.now.Format("15:04:05"))
 	right := user + gap + strings.Join(status, dot) + gap + clock
+
+	// On a narrow terminal the status badges + clock overflow and collide with
+	// the left cluster. Drop them to secondary status, keeping only @login.
+	if m.width < fullCardsW {
+		right = user
+	}
 
 	pad := m.width - lipgloss.Width(left) - lipgloss.Width(right) - 2
 	if pad < 1 {
@@ -967,19 +1085,31 @@ func (m Model) ruleView() string {
 
 // --- Status cards --------------------------------------------------------
 
-// minCardW is the smallest card width that still fits the longest label
-// ("WAITING ON OTHERS" = 17 chars) plus 1 padding space on each side and a
-// 1-char border on each side.
+// minCardW is the minimum card width. The labels now fit comfortably (the
+// longest is "IN FLIGHT", 9 chars); 21 is kept as a readability floor that also
+// keeps the responsive thresholds (fullCardsW, the 2×2 fallback) stable.
 const minCardW = 21
+
+// fullCardsW is the smallest terminal width that still fits all four cards on a
+// single row (1-char left margin + four minCardW cards + three 2-char gaps).
+// Below it, cardsView falls back to a 2×2 grid.
+const fullCardsW = 1 + minCardW*4 + 2*3
 
 func (m Model) cardsView() string {
 	prs := m.panePRs()
 	gap := 2
 
+	// Below fullCardsW, lay the cards out two-per-row so they keep a readable
+	// width instead of being crushed (or refusing to render at all).
+	perRow := 4
+	if m.width < fullCardsW {
+		perRow = 2
+	}
+
 	// Each card's rendered width INCLUDING its 2 border chars. Lipgloss
 	// Width() sets the body width and adds the border on top, so we subtract
 	// 2 inside renderCard.
-	cardW := (m.width - 1 - gap*3) / 4
+	cardW := (m.width - 1 - gap*(perRow-1)) / perRow
 	if cardW < minCardW {
 		cardW = minCardW
 	}
@@ -999,18 +1129,23 @@ func (m Model) cardsView() string {
 		}
 	} else {
 		cards = []string{
-			renderCard("WAITING ON YOU", stats.WaitingOnYou, colYellow, cardW),
-			renderCard("WAITING ON OTHERS", stats.WaitingOnOthers, colCyan, cardW),
-			renderCard("READY TO MERGE", stats.ReadyToShip, colGreen, cardW),
+			renderCard("ON YOU", stats.WaitingOnYou, colYellow, cardW),
+			renderCard("ON OTHERS", stats.WaitingOnOthers, colCyan, cardW),
+			renderCard("READY", stats.ReadyToShip, colGreen, cardW),
 			renderCard("IN FLIGHT", len(prs), colMuted, cardW),
 		}
 	}
 	spacer := strings.Repeat(" ", gap)
-	row := cards[0]
-	for _, c := range cards[1:] {
-		row = lipgloss.JoinHorizontal(lipgloss.Top, row, spacer, c)
+	var rows []string
+	for i := 0; i < len(cards); i += perRow {
+		end := min(i+perRow, len(cards))
+		row := cards[i]
+		for _, c := range cards[i+1 : end] {
+			row = lipgloss.JoinHorizontal(lipgloss.Top, row, spacer, c)
+		}
+		rows = append(rows, row)
 	}
-	return indentBlock(row, " ")
+	return indentBlock(lipgloss.JoinVertical(lipgloss.Left, rows...), " ")
 }
 
 // indentBlock prefixes every line of s with prefix. lipgloss.JoinHorizontal
@@ -1028,10 +1163,17 @@ func indentBlock(s, prefix string) string {
 // width INCLUDING the 1-char border on each side.
 func renderCard(label string, count int, color lipgloss.Color, totalWidth int) string {
 	bodyW := totalWidth - 2 // subtract left + right border
+	// A zero count means "nothing in this bucket": mute the number so the eye
+	// jumps to the cards that actually want attention. Label and border keep the
+	// bucket accent so the card's identity stays legible.
+	countColor := colBright
+	if count == 0 {
+		countColor = colMuted
+	}
 	body := lipgloss.NewStyle().Width(bodyW).Padding(0, 1).Render(
 		lipgloss.JoinVertical(lipgloss.Left,
 			lipgloss.NewStyle().Foreground(color).Bold(true).Render(label),
-			lipgloss.NewStyle().Foreground(colBright).Bold(true).Render(fmt.Sprintf("%d", count)),
+			lipgloss.NewStyle().Foreground(countColor).Bold(true).Render(fmt.Sprintf("%d", count)),
 		),
 	)
 	return lipgloss.NewStyle().
@@ -1045,10 +1187,13 @@ func renderCard(label string, count int, color lipgloss.Color, totalWidth int) s
 func (m Model) sectionHeaderView() string {
 	visible := m.visiblePRs()
 
-	// Tab strip: the active pane is bright+bold, the other dim. It lives here
-	// (rather than the header's crowded right edge) so it reuses an existing
-	// row and leaves listAreaHeight untouched.
-	active := lipgloss.NewStyle().Foreground(colBright).Bold(true)
+	// Tab strip: the active pane is bright+bold+underlined, the other dim. The
+	// underline (not a leading glyph) marks the active tab — an earlier ▶ marker
+	// collided with the selected-row cursor glyph. Underline keeps the width
+	// stable across toggles (unlike brackets). It lives here (rather than the
+	// header's crowded right edge) so it reuses an existing row and leaves
+	// listAreaHeight untouched.
+	active := lipgloss.NewStyle().Foreground(colBright).Bold(true).Underline(true)
 	idle := lipgloss.NewStyle().Foreground(colDim).Bold(true)
 	incoming, mine := idle, idle
 	if m.pane == viewMine {
@@ -1075,9 +1220,8 @@ func (m Model) sectionHeaderView() string {
 	case approvalNotMine:
 		text += " · not approved by you"
 	}
-	arrow := lipgloss.NewStyle().Foreground(colMuted).Bold(true).Render("▶")
 	dash := lipgloss.NewStyle().Foreground(colDim).Bold(true).Render(" — " + text)
-	return " " + arrow + " " + tabs + dash
+	return " " + tabs + dash
 }
 
 // --- List ----------------------------------------------------------------
@@ -1120,7 +1264,6 @@ type rowCols struct {
 	plus   int // width of the "+N" sub-field, so "-M" aligns across rows
 	diff   int // total width of the "+N -M" diff column
 	ci     int // width of the ci status column
-	merge  int // width of the merge-state column (0 when no visible PR is flagged)
 }
 
 const maxAuthorW = 18
@@ -1142,9 +1285,6 @@ func computeRowCols(prs []gh.PullRequest) rowCols {
 		}
 		if t, _ := ciFragment(pr.CIState); lipgloss.Width(t) > c.ci {
 			c.ci = lipgloss.Width(t)
-		}
-		if t, _ := mergeFragment(pr.MergeState); lipgloss.Width(t) > c.merge {
-			c.merge = lipgloss.Width(t)
 		}
 	}
 	if c.author > maxAuthorW {
@@ -1227,29 +1367,50 @@ func (m Model) renderRow(pr gh.PullRequest, selected bool, cols rowCols) string 
 	ciText, ciColor := ciFragment(pr.CIState)
 	ciCell := padCell(st(ciColor, false).Render(ciText), cols.ci)
 
-	line2Body := authorCell + sp + approval + sp + diffCell + sp + ciCell
-	// The merge column is omitted entirely when no visible PR is flagged
-	// (cols.merge == 0); flagged sets reserve a fixed column so "conflict"
-	// lines up for scanning, blank on clear rows.
-	if cols.merge > 0 {
-		mergeText, mergeColor := mergeFragment(pr.MergeState)
-		line2Body += sp + padCell(st(mergeColor, false).Render(mergeText), cols.merge)
+	// Every indicator block is joined by a uniform " · " (sep). The author column
+	// is set apart by a wider gap (authorGap) so the eye separates "who" from the
+	// status indicators. The approval marker stays glued to the diff (it annotates
+	// the PR, not a block of its own).
+	sep := sp + dot + sp
+	authorGap := st(colMuted, false).Render("      ")
+	line2Body := authorCell + authorGap + approval + sp + diffCell + sep + ciCell
+	// Merge state ("conflict"/"behind") is a flowing-tail item, not a fixed
+	// column: it's rare, so reserving an aligned column just left a gap on every
+	// clear row. Shown first in the tail (it's the most action-worthy), present
+	// only when flagged.
+	if mergeText, mergeColor := mergeFragment(pr.MergeState); mergeText != "" {
+		line2Body += sep + st(mergeColor, false).Render(mergeText)
 	}
 	if jiraText, jiraColor := jiraFragment(pr.JiraKey, pr.JiraStatus, pr.JiraCategory); pr.JiraKey != "" {
-		line2Body += sp + dot + sp + st(jiraColor, false).Render(jiraText)
+		line2Body += sep + st(jiraColor, false).Render(jiraText)
 	}
 	age := m.now.Sub(pr.CreatedAt)
-	line2Body += sp + dot + sp + st(ageColor(age), false).Render(humanAgo(age))
+	line2Body += sep + st(ageColor(age), false).Render(humanAgo(age))
 
 	// Compose " ┃ <body>" / " ┃   <body>" (line 2 indents to align with title).
 	line1 := sp + bar + sp + line1Body
 	line2 := sp + bar + sp + sp + sp + line2Body
 
 	pad := st(colMuted, false)
-	line1 = padRowToWidth(line1, m.width, pad)
-	line2 = padRowToWidth(line2, m.width, pad)
+	line1 = fitRowToWidth(line1, m.width, pad)
+	line2 = fitRowToWidth(line2, m.width, pad)
 
 	return line1 + "\n" + line2 + "\n"
+}
+
+// fitRowToWidth makes an already-styled row exactly width columns wide: it clips
+// the overflow on a narrow terminal (line 1's title, line 2's jira/age tail) and
+// pads the remainder so the selected-row background still reaches the edge.
+// ansi.Truncate is ANSI-aware (the rune-based truncate would mangle the embedded
+// SGR codes), appending a "…" within the budget when it cuts.
+func fitRowToWidth(s string, width int, padStyle lipgloss.Style) string {
+	if width < 1 {
+		return s
+	}
+	if lipgloss.Width(s) > width {
+		s = ansi.Truncate(s, width, "…")
+	}
+	return padRowToWidth(s, width, padStyle)
 }
 
 // padRowToWidth right-pads s with styled spaces so the row's background fills
@@ -1345,7 +1506,8 @@ func (m Model) statusLineView() string {
 		hint := lipgloss.NewStyle().Foreground(colMuted).Render("(enter to confirm · esc to clear)")
 		return " " + label + " " + value + "  " + hint
 	case m.refreshing:
-		return " " + lipgloss.NewStyle().Foreground(colCyan).Render("rescanning...")
+		frame := spinFrames[m.spinFrame%len(spinFrames)]
+		return " " + lipgloss.NewStyle().Foreground(colCyan).Render(frame+" rescanning…")
 	case m.status != "":
 		col := colGreen
 		if m.statusErr {
@@ -1502,6 +1664,15 @@ func humanAgo(d time.Duration) string {
 	default:
 		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
 	}
+}
+
+// countNoun formats a count with a naively pluralised noun ("1 file" / "3
+// files"). Only used for the detail meta's regular-plural nouns.
+func countNoun(n int, noun string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, noun)
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
 }
 
 func truncate(s string, maxW int) string {

@@ -76,6 +76,9 @@ func TestEnrichJiraStatus(t *testing.T) {
 		if pr.JiraKey != "PROJ-7" || pr.JiraStatus != "In Review" || pr.JiraCategory != "indeterminate" {
 			t.Errorf("unexpected Jira fields: %+v", pr)
 		}
+		if pr.JiraLookupFailed {
+			t.Error("JiraLookupFailed should stay false on a successful lookup")
+		}
 	})
 
 	t.Run("lookup error degrades gracefully", func(t *testing.T) {
@@ -90,6 +93,10 @@ func TestEnrichJiraStatus(t *testing.T) {
 		if pr.JiraKey != "" || pr.JiraStatus != "" || pr.JiraCategory != "" {
 			t.Errorf("expected all Jira fields empty on failed lookup, got %+v", pr)
 		}
+		// ...but the failure is recorded so the header can flag Jira health.
+		if !pr.JiraLookupFailed {
+			t.Error("JiraLookupFailed should be true after a failed lookup")
+		}
 	})
 
 	t.Run("auth error also degrades", func(t *testing.T) {
@@ -102,6 +109,23 @@ func TestEnrichJiraStatus(t *testing.T) {
 		}
 		if pr.JiraKey != "" || pr.JiraStatus != "" {
 			t.Errorf("expected empty Jira fields, got %+v", pr)
+		}
+		if !pr.JiraLookupFailed {
+			t.Error("JiraLookupFailed should be true after an auth failure")
+		}
+	})
+
+	t.Run("no key leaves health untouched", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeJira{err: jira.ErrInvalidToken}
+		c := &Client{jira: fake}
+		pr := &PullRequest{HeadRef: "feature/no-key"}
+		if err := c.enrichJiraStatus(context.Background(), pr); err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		// No key was found, so no lookup happened: not a Jira failure.
+		if pr.JiraLookupFailed {
+			t.Error("JiraLookupFailed should stay false when there is no key to look up")
 		}
 	})
 }
@@ -263,7 +287,7 @@ func TestClient_SearchPullRequests(t *testing.T) {
 					  {"user":{"login":"erin"},"state":"COMMENTED","submitted_at":"2026-04-20T13:00:00Z"}
 					]`)
 				case "/repos/ajardin/repo-a/pulls/123":
-					fmt.Fprint(w, `{"number":123,"head":{"sha":"deadbeefcafe"},"additions":42,"deletions":7}`)
+					fmt.Fprint(w, `{"number":123,"head":{"sha":"deadbeefcafe","ref":"feature/x"},"base":{"ref":"main"},"additions":42,"deletions":7,"changed_files":5,"commits":3,"comments":8,"review_comments":2}`)
 				case "/repos/ajardin/repo-a/commits/deadbeefcafe/check-runs":
 					fmt.Fprint(w, `{
 					  "total_count": 2,
@@ -290,9 +314,15 @@ func TestClient_SearchPullRequests(t *testing.T) {
 				Approvals:          []string{"bob"},
 				Commented:          []string{"dave", "erin"},
 				HeadSHA:            "deadbeefcafe",
+				HeadRef:            "feature/x",
+				BaseRef:            "main",
 				CIState:            CIStateSuccess,
 				Additions:          42,
 				Deletions:          7,
+				ChangedFiles:       5,
+				Commits:            3,
+				Comments:           8,
+				ReviewComments:     2,
 			},
 		},
 		{
@@ -372,6 +402,15 @@ func TestClient_SearchPullRequests(t *testing.T) {
 					}
 					if got.Deletions != want.Deletions {
 						t.Errorf("Deletions = %d, want %d", got.Deletions, want.Deletions)
+					}
+					if got.HeadRef != want.HeadRef || got.BaseRef != want.BaseRef {
+						t.Errorf("branches = %q->%q, want %q->%q", got.HeadRef, got.BaseRef, want.HeadRef, want.BaseRef)
+					}
+					if got.ChangedFiles != want.ChangedFiles || got.Commits != want.Commits ||
+						got.Comments != want.Comments || got.ReviewComments != want.ReviewComments {
+						t.Errorf("counts = files:%d commits:%d comments:%d review:%d, want files:%d commits:%d comments:%d review:%d",
+							got.ChangedFiles, got.Commits, got.Comments, got.ReviewComments,
+							want.ChangedFiles, want.Commits, want.Comments, want.ReviewComments)
 					}
 				}
 			}

@@ -48,7 +48,16 @@ func applyCmd(t *testing.T, m Model, cmd tea.Cmd) Model {
 	if cmd == nil {
 		return m
 	}
-	updated, _ := m.Update(cmd())
+	msg := cmd()
+	// A rescan now batches the data cmd with the spinner tick; unwrap and apply
+	// each sub-cmd so the rescanMsg still feeds back through Update.
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, c := range batch {
+			m = applyCmd(t, m, c)
+		}
+		return m
+	}
+	updated, _ := m.Update(msg)
 	out, ok := updated.(Model)
 	if !ok {
 		t.Fatalf("Update returned %T, want Model", updated)
@@ -409,8 +418,13 @@ func TestModel_RescanRunsRefresh(t *testing.T) {
 	if len(got.prs) != 1 || got.prs[0].Number != 43 {
 		t.Errorf("prs after rescan = %+v, want single PR #43", got.prs)
 	}
-	if !strings.Contains(got.View(), "rescanned") {
-		t.Errorf("view missing rescanned status\n%s", got.View())
+	// A successful rescan no longer prints a transient status line; recency is
+	// carried by the header's "scanned …" instead.
+	if got.status != "" {
+		t.Errorf("status after successful rescan = %q, want empty", got.status)
+	}
+	if !strings.Contains(got.View(), "scanned") {
+		t.Errorf("header should show scan recency\n%s", got.View())
 	}
 }
 
@@ -481,7 +495,10 @@ func TestModel_AutoRefreshSkipsWhenAlreadyRefreshing(t *testing.T) {
 		calls++
 		return samplePRs(), nil
 	}
-	m := NewModel(samplePRs(), "ajardin", "v", 2, false, time.Minute, time.Now(), nil, refresh)
+	// A tiny interval keeps the re-armed tick fast to fire: tea.Tick builds its
+	// timer at construction, so running the returned cmd below blocks until it
+	// elapses — time.Minute would stall the test for a full minute.
+	m := NewModel(samplePRs(), "ajardin", "v", 2, false, time.Millisecond, time.Now(), nil, refresh)
 	m.refreshing = true // a scan is already in flight
 
 	_, cmd := m.Update(autoRefreshMsg(m.now))
@@ -543,7 +560,7 @@ func TestView_RendersHeaderCardsAndKeys(t *testing.T) {
 
 	for _, want := range []string{
 		"KIROSHI", "v0.0.1", "@ajardin",
-		"WAITING ON YOU", "WAITING ON OTHERS", "READY TO MERGE", "IN FLIGHT",
+		"ON YOU", "ON OTHERS", "READY", "IN FLIGHT",
 		"INCOMING", "MINE",
 		"[j/k]", "[tab]", "[o]", "[r]", "[f]", "[q]",
 		"github", "jira",
@@ -614,6 +631,93 @@ func TestView_TerminalTooSmall(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 40, Height: 10})
 	if !strings.Contains(updated.(Model).View(), "Terminal too small") {
 		t.Errorf("expected too-small message, got\n%s", updated.(Model).View())
+	}
+}
+
+// TestView_NarrowDegradesNoOverflow guards the responsive path: between the
+// 2-card floor and the 4-card width the dashboard still renders, and no rendered
+// line spills past the terminal width (line 1 titles and line 2's jira/age tail
+// are clipped by fitRowToWidth rather than overflowing).
+func TestView_NarrowDegradesNoOverflow(t *testing.T) {
+	t.Parallel()
+
+	const width = 60
+	m := NewModel(samplePRs(), "ajardin", "v0.0.1", 2, true, 5*time.Minute, time.Now(), nil, nil)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 30})
+	view := updated.(Model).View()
+
+	if strings.Contains(view, "Terminal too small") {
+		t.Fatalf("width %d should still render, got too-small message:\n%s", width, view)
+	}
+	for i, line := range strings.Split(view, "\n") {
+		if w := lipgloss.Width(line); w > width {
+			t.Errorf("line %d overflows: width %d > %d\n%q", i, w, width, line)
+		}
+	}
+}
+
+func TestModel_ActiveTabUnderlined(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(t, nil, nil) // starts on the incoming pane
+	active := lipgloss.NewStyle().Foreground(colBright).Bold(true).Underline(true).Render("INCOMING")
+	view := m.View()
+	if !strings.Contains(view, active) {
+		t.Errorf("active tab should be underlined+bright\n%s", view)
+	}
+	// The old ▶ cursor-glyph marker must be gone from the strip.
+	if strings.Contains(view, "▶ INCOMING") {
+		t.Error("section header should no longer use the ▶ marker")
+	}
+}
+
+func TestModel_GitHubHealthDot(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(t, nil, nil)
+	if !m.githubHealthy {
+		t.Fatal("github should start healthy")
+	}
+
+	// A failed rescan flips the dot to red.
+	updated, _ := m.Update(rescanMsg{err: errors.New("boom"), at: time.Now()})
+	got := updated.(Model)
+	if got.githubHealthy {
+		t.Error("github should be unhealthy after a failed rescan")
+	}
+	if view := got.View(); !strings.Contains(view, lipgloss.NewStyle().Foreground(colRed).Render("● github")) {
+		t.Errorf("header should render a red github dot\n%s", view)
+	}
+
+	// A successful rescan restores it.
+	updated, _ = got.Update(rescanMsg{prs: samplePRs(), at: time.Now()})
+	if !updated.(Model).githubHealthy {
+		t.Error("github should recover to healthy after a successful rescan")
+	}
+}
+
+func TestModel_JiraHealthDot(t *testing.T) {
+	t.Parallel()
+
+	// jiraEnabled = true so the dot is health-colored; one PR's lookup failed.
+	prs := []gh.PullRequest{{
+		Owner: "o", Repo: "r", Number: 1, Title: "t", Author: "a", URL: "u",
+		JiraLookupFailed: true,
+	}}
+	m := NewModel(prs, "viewer", "v0.0.1", 2, true, 0, time.Now(), nil, nil)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	got := updated.(Model)
+	if got.jiraHealthy {
+		t.Error("jira should be unhealthy when a PR's lookup failed")
+	}
+	if view := got.View(); !strings.Contains(view, lipgloss.NewStyle().Foreground(colRed).Render("● jira")) {
+		t.Errorf("header should render a red jira dot\n%s", view)
+	}
+
+	// A clean rescan (no failures) restores it.
+	updated, _ = got.Update(rescanMsg{prs: samplePRs(), at: time.Now()})
+	if !updated.(Model).jiraHealthy {
+		t.Error("jira should recover when no PR lookup failed")
 	}
 }
 
@@ -957,10 +1061,11 @@ func detailModel(t *testing.T) Model {
 	prs := []gh.PullRequest{{
 		Owner: "ajardin", Repo: "kiroshi", Number: 99,
 		Title: "Add detail overlay", Author: "alice",
-		URL:       "https://github.com/ajardin/kiroshi/pull/99",
+		URL:     "https://github.com/ajardin/kiroshi/pull/99",
+		HeadRef: "feature/detail", BaseRef: "main",
 		CreatedAt: time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
 		UpdatedAt: time.Date(2026, 5, 2, 0, 0, 0, 0, time.UTC),
-		Additions: 200, Deletions: 12,
+		Additions: 200, Deletions: 12, ChangedFiles: 6, Commits: 4, Comments: 3, ReviewComments: 2,
 		Body:             "This is the description.\nSecond line.",
 		Approvals:        []string{"carol"},
 		ChangesRequested: []string{"dave"},
@@ -987,7 +1092,12 @@ func TestModel_DKeyOpensDetail(t *testing.T) {
 	}
 
 	view := got.View()
-	for _, want := range []string{"ajardin/kiroshi #99", "Add detail overlay", "@alice", "carol", "dave", "erin", "DESCRIPTION", "This is the description."} {
+	for _, want := range []string{
+		"ajardin/kiroshi #99", "Add detail overlay", "@alice", "carol", "dave", "erin",
+		"DESCRIPTION", "This is the description.",
+		"feature/detail -> main",             // branch line
+		"6 files", "4 commits", "5 comments", // counters (comments = 3 conv + 2 review)
+	} {
 		if !strings.Contains(view, want) {
 			t.Errorf("detail view missing %q\n%s", want, view)
 		}
@@ -1220,7 +1330,7 @@ func TestView_MinePaneRelabelsCards(t *testing.T) {
 		}
 	}
 	// The incoming-only label must be gone in this pane.
-	if strings.Contains(view, "WAITING ON OTHERS") {
+	if strings.Contains(view, "ON OTHERS") {
 		t.Error("mine pane should not show the incoming card labels")
 	}
 }
