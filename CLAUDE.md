@@ -72,9 +72,13 @@ empty list); `handleKey` short-circuits to `handleDetailKey`, the exact twin of
 field (`Body`, the four reviewer lists, CI/merge/Jira) is already enriched on
 the `PullRequest`, so opening it issues **no** GitHub calls and `internal/gh` is
 untouched. The meta line **reuses the row fragments** (`renderDiff`,
-`ciFragment`, `mergeFragment`, `jiraFragment`) ` · `-joined — but as a flowing
-line, not `renderRow`'s fixed-width columns, so it deliberately does *not* share
-the line-2 assembler. `helpView` and `detailView` share the box chrome via
+`ciFragment`, `mergeFragment`) ` · `-joined — but as a flowing line, not
+`renderRow`'s fixed-width columns, so it deliberately does *not* share the
+line-2 assembler. **Jira is the exception:** it's *not* in the meta line — it
+gets its own labelled row (`JIRA   KEY · Status`, inline-label style like
+`renderReviewers`, status colored via `jiraColor`), present only when a key
+resolved, so the key + status read at a glance instead of being buried in the
+packed meta line. `helpView` and `detailView` share the box chrome via
 `modalBox`. Two locked layout choices: (1) `renderReviewers` is **glyph-free**
 (colored label words only) — it lives inside the bordered box, where
 ambiguous-width glyphs would drift the right border, the same constraint that
@@ -158,17 +162,21 @@ viewer hasn't approved), so it keeps the diff/ci columns aligned rather than
 shifting them. The "you" word was dropped: position plus the green check
 carry the meaning.
 
-The **Jira cell** (`jiraFragment`) is a fourth concession, but a
+The **Jira cell** (`jiraColor`) is a fourth concession, but a
 reuse-only one — it introduces no new accent. It colors by the issue's
 `statusCategory` with the same semantics as CI: `done` → green (like
 "ci: passing"), `indeterminate` → cyan (in progress elsewhere, like
 pending), `new`/unknown → `colDim`. There is deliberately **no red**
 state — a Jira ticket is never an "error". Unlike CI/diff it is **not** a
-fixed column: it's a flowing tail item rendering `KEY Status` (the `ABC-123`
-key shape identifies it, so the `jira:` prefix is dropped), and the cell is
-**omitted entirely** when the PR references no resolved ticket — either no
-key at all, or a lookup that failed (the enricher leaves all three Jira
-fields empty in both cases, so the cell can't tell them apart).
+fixed column: it's a flowing tail item. In the listing it renders the
+**status word alone** (e.g. `In Review`) — the `ABC-123` key is dropped to
+cut noise on an already-dense line, and there's no collision risk because the
+neighbouring cells are glyphs (CI) or distinct words (`conflict`/`behind`).
+The full `KEY · Status` only shows in `detailView`, on its own labelled
+`JIRA` row. The cell is **omitted entirely** when the PR references no
+resolved ticket — either no key at all, or a lookup that failed (the
+enricher leaves all three Jira fields empty in both cases, so the cell can't
+tell them apart).
 
 The **age cell** (`ageColor`) is a fifth concession, this one yellow-side:
 its color escalates with the PR's age-since-`CreatedAt` — `colMuted` fresh,
@@ -186,7 +194,7 @@ tail**, so the high-signal status cells line up vertically and the eye can
 scan one column ("which PRs are failing CI?"):
 
 ```
-@author      ✓ +N   -M  · <ci> · <merge> · <jira KEY Status> · <age>
+@author      ✓ +N   -M  · <ci> · <merge> · <jira Status> · <age>
 └ author ─┘   ↑ └─ diff ─┘  └ ci ┘ └─────────── flowing tail ──────────┘
    wide gap  approval slot
 ```
@@ -199,8 +207,10 @@ scan one column ("which PRs are failing CI?"):
   used to be a bare space. The approval marker stays glued to the diff (no
   separator): it annotates the PR, not a block of its own.
 - **Flowing tail** (` · `-separated, present items only): the merge cell
-  (`conflict`/`behind`, dropped when not flagged) then the Jira cell
-  (dropped when there's no key) then the age (`humanAgo`, no `updated`
+  (`conflict`/`behind`, dropped when not flagged) then the Jira cell — the
+  bare **status word** colored via `jiraColor` (the `ABC-123` key is dropped
+  here to cut noise; it survives only in `detailView`), dropped when there's
+  no key — then the age (`humanAgo`, no `updated`
   prefix). Empty cells are dropped, not shown as `jira: —`/`ci: —` noise.
   Merge leads the tail because it's the most action-worthy; it used to be a
   fixed column but reserving the width left a gap on every clear row.

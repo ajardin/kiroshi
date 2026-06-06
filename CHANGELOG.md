@@ -29,6 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the panel.
 
 ### Changed
+- **Lighter Jira display** — the listing now shows only the Jira ticket's
+  status (e.g. `In Review`), dropping the ticket number to cut noise on the
+  row. The full ticket number and status moved into the detail overlay (`d`),
+  where they get their own labelled `JIRA` line instead of being buried in the
+  packed meta line.
 - **Row layout polish** — the merge cell moved from a fixed column into the
   flowing tail, so a healthy PR no longer leaves a reserved gap on every clear
   row; indicator blocks are now joined by a uniform ` · ` separator and the

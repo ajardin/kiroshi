@@ -695,31 +695,23 @@ func TestView_RendersHeaderCardsAndKeys(t *testing.T) {
 	}
 }
 
-func TestJiraFragment(t *testing.T) {
+func TestJiraColor(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name      string
-		key       string
-		status    string
 		category  string
-		wantLabel string
 		wantColor lipgloss.Color
 	}{
-		{"no key", "", "", "", "—", colMuted},
-		{"done", "PROJ-1", "Done", string(jira.CategoryDone), "PROJ-1 Done", colGreen},
-		{"in progress", "PROJ-2", "In Review", string(jira.CategoryIndeterminate), "PROJ-2 In Review", colCyan},
-		{"to do", "PROJ-3", "To Do", string(jira.CategoryNew), "PROJ-3 To Do", colDim},
-		{"unknown category", "PROJ-4", "Custom", "", "PROJ-4 Custom", colDim},
+		{"done", string(jira.CategoryDone), colGreen},
+		{"in progress", string(jira.CategoryIndeterminate), colCyan},
+		{"to do", string(jira.CategoryNew), colDim},
+		{"unknown category", "", colDim},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			label, color := jiraFragment(tt.key, tt.status, tt.category)
-			if label != tt.wantLabel {
-				t.Errorf("label = %q, want %q", label, tt.wantLabel)
-			}
-			if color != tt.wantColor {
+			if color := jiraColor(tt.category); color != tt.wantColor {
 				t.Errorf("color = %v, want %v", color, tt.wantColor)
 			}
 		})
@@ -741,8 +733,13 @@ func TestView_JiraEnabledIndicator(t *testing.T) {
 	if !strings.Contains(view, "● jira") {
 		t.Errorf("expected active jira indicator, view=\n%s", view)
 	}
-	if !strings.Contains(view, "PROJ-42") {
-		t.Errorf("expected Jira key in row, view=\n%s", view)
+	// The row shows the Jira status word alone — the key is dropped to cut noise
+	// (it only appears in the detail overlay).
+	if !strings.Contains(view, "In Review") {
+		t.Errorf("expected Jira status in row, view=\n%s", view)
+	}
+	if strings.Contains(view, "PROJ-42") {
+		t.Errorf("Jira key should not appear in the listing row, view=\n%s", view)
 	}
 }
 
