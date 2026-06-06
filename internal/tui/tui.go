@@ -492,9 +492,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.status = ""
 		}
 		return m, nil
-	case "j", "down":
+	case "down":
 		return m.moveDown(), nil
-	case "k", "up":
+	case "up":
 		return m.moveUp(), nil
 	case "g", "home":
 		m.cursor, m.offset = 0, 0
@@ -590,11 +590,20 @@ func (m Model) handleHelpKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
-// handleDetailKey dismisses the PR detail overlay on any key, mirroring
-// handleHelpKey. ctrl+c still quits from anywhere.
+// handleDetailKey drives the PR detail overlay. Unlike handleHelpKey (dismiss
+// on any key), up/down move the selection to the previous/next PR so the user
+// can flip through details without returning to the listing; enter/o opens the
+// current PR in the browser; ctrl+c quits; any other key closes the overlay.
 func (m Model) handleDetailKey(msg tea.KeyMsg) (Model, tea.Cmd) {
-	if msg.String() == "ctrl+c" {
+	switch msg.String() {
+	case "ctrl+c":
 		return m, tea.Quit
+	case "up":
+		return m.moveUp(), nil
+	case "down":
+		return m.moveDown(), nil
+	case "enter", "o":
+		return m.openSelected()
 	}
 	m.showDetail = false
 	return m, nil
@@ -886,11 +895,11 @@ func (m Model) helpView() string {
 	// box's right border would drift. Arrow / Home / End all work too; the
 	// words carry that without the layout risk.
 	bindings := []struct{ keys, desc string }{
-		{"j / k", "move selection (arrows too)"},
+		{"up / down", "move selection"},
 		{"tab", "switch incoming / mine view"},
 		{"g / G", "jump to top / bottom"},
 		{"enter / o", "open PR in browser"},
-		{"d", "show PR detail"},
+		{"d", "PR detail (up/down to flip PRs)"},
 		{"r", "rescan pull requests"},
 		{"f / /", "filter by repo, title, author"},
 		{"s", "cycle sort (updated / oldest / newest)"},
@@ -1052,7 +1061,7 @@ func (m Model) detailView() string {
 		bodyBlock = strings.Join(lines, "\n")
 	}
 
-	hint := muted.Italic(true).Render("press any key to dismiss")
+	hint := muted.Italic(true).Render("up/down navigate · enter/o open · any key closes")
 	parts := []string{repoLine, titleLine}
 	if branchLine != "" {
 		parts = append(parts, branchLine)
@@ -1542,7 +1551,7 @@ func padRowToWidth(s string, width int, padStyle lipgloss.Style) string {
 
 func (m Model) footerView() string {
 	keys := []string{
-		keyHint("j/k", "navigate"),
+		keyHint("↑↓", "navigate"),
 		keyHint("tab", "switch view"),
 		keyHint("o", "open"),
 		keyHint("d", "detail"),
