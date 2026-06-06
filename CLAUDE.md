@@ -370,6 +370,13 @@ exactly one that survives `approvalMine`.
 
 ## Conventions
 
+- **Update the changelog with every user-facing change.** Any change that a
+  user would notice — a new key binding, a layout or behaviour change, a config
+  option — gets an entry under `## [Unreleased]` in `CHANGELOG.md` (Keep a
+  Changelog format: `Added` / `Changed` / `Fixed` / `Removed`) **in the same
+  change**, written in the user-facing voice of the existing entries. Don't
+  defer it to release time — it gets forgotten. Internal-only refactors, test,
+  and tooling changes don't need an entry.
 - **No comments unless the why is non-obvious.** Don't restate what
   well-named code already shows. Do explain hidden constraints, lipgloss
   quirks, or workarounds.

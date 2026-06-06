@@ -185,7 +185,7 @@ search = "s"`)
 	}
 }
 
-func TestRun_TUISkippedWhenNoPRs(t *testing.T) {
+func TestRun_TUIRunsEvenWithNoInitialPRs(t *testing.T) {
 	t.Parallel()
 
 	cfgPath := writeConfig(t, `github_token = "t"
@@ -197,6 +197,9 @@ search = "s"`)
 		return nil
 	}
 
+	// The TUI now fetches from inside the program, so it launches regardless of
+	// the eventual PR count — a zero-PR search yields an empty dashboard, not a
+	// plain-text fallback. (The fake runner never executes the scan command.)
 	var stdout, stderr bytes.Buffer
 	err := Run(t.Context(), []string{"-config", cfgPath}, &stdout, &stderr,
 		WithGitHubClient(fakeClient{user: gh.User{Login: "u"}}),
@@ -205,11 +208,11 @@ search = "s"`)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if called {
-		t.Error("TUI runner should not be invoked when there are zero PRs")
+	if !called {
+		t.Error("TUI runner should be invoked even with zero PRs")
 	}
-	if !strings.Contains(stdout.String(), "No pull requests match the search.") {
-		t.Errorf("stdout = %q, want plain-text fallback", stdout.String())
+	if stdout.Len() != 0 {
+		t.Errorf("stdout should be empty when TUI runs, got %q", stdout.String())
 	}
 }
 

@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/ajardin/kiroshi/internal/config"
 	"github.com/ajardin/kiroshi/internal/gh"
@@ -226,22 +225,26 @@ func run(ctx context.Context, logger *slog.Logger, client gh.API, cfg *config.Co
 	}
 	logger.DebugContext(ctx, "authenticated", "login", user.Login)
 
-	prs, err := client.SearchPullRequests(ctx, cfg.Search)
-	if err != nil {
-		return fmt.Errorf("search pull requests: %w", err)
-	}
-	logger.DebugContext(ctx, "searched pull requests", "count", len(prs))
-
-	if useTUI && len(prs) > 0 {
+	// The TUI fetches its first batch from inside the program (Init → refresh)
+	// so the multi-second search+enrichment runs behind the decrypt splash
+	// instead of blocking on a frozen-looking terminal. The plain-text path keeps
+	// the blocking search below (and its non-zero exit on failure).
+	if useTUI {
 		refresh := func(ctx context.Context) ([]gh.PullRequest, error) {
 			return client.SearchPullRequests(ctx, cfg.Search)
 		}
-		model := tui.NewModel(prs, user.Login, version.String(), cfg.MinReviews, cfg.JiraBaseURL != "", cfg.RefreshInterval, time.Now(), tui.OpenURL, refresh)
+		model := tui.NewLoadingModel(user.Login, version.String(), cfg.MinReviews, cfg.JiraBaseURL != "", cfg.RefreshInterval, tui.OpenURL, refresh)
 		if err := runTUI(model); err != nil {
 			return fmt.Errorf("run tui: %w", err)
 		}
 		return nil
 	}
+
+	prs, err := client.SearchPullRequests(ctx, cfg.Search)
+	if err != nil {
+		return fmt.Errorf("search pull requests: %w", err)
+	}
+	logger.DebugContext(ctx, "searched pull requests", "count", len(prs))
 
 	lines := []string{
 		fmt.Sprintf("kiroshi ready as @%s (search=%q)", user.Login, cfg.Search),
