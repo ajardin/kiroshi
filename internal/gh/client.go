@@ -121,14 +121,23 @@ type PullRequest struct {
 	Commented          []string
 	HeadSHA            string
 	HeadRef            string
+	BaseRef            string
 	Body               string
 	CIState            CIState
 	MergeState         MergeState
 	Additions          int
 	Deletions          int
+	ChangedFiles       int
+	Commits            int
+	Comments           int // conversation comments
+	ReviewComments     int // inline review comments
 	JiraKey            string
 	JiraStatus         string
 	JiraCategory       string
+	// JiraLookupFailed is set when a Jira key was found but the lookup errored
+	// (auth/network/404). It distinguishes a genuine failure from "no ticket"
+	// so the header can flag Jira health without failing the scan.
+	JiraLookupFailed bool
 }
 
 // API is the subset of the GitHub API kiroshi consumes. It is declared as an
@@ -301,7 +310,8 @@ func (c *Client) enrichPullRequest(ctx context.Context, pr *PullRequest) error {
 // present. Unlike the other enrichers it never returns an error: Jira is an
 // optional decoration, so a failed lookup (auth, network, 404) leaves all
 // three fields empty and the row falls back to a muted "no ticket" cell rather
-// than failing the whole GitHub scan.
+// than failing the whole GitHub scan. A failed lookup (key found, but the call
+// errored) sets pr.JiraLookupFailed so the header can flag Jira health.
 func (c *Client) enrichJiraStatus(ctx context.Context, pr *PullRequest) error {
 	if c.jira == nil {
 		return nil
@@ -312,6 +322,7 @@ func (c *Client) enrichJiraStatus(ctx context.Context, pr *PullRequest) error {
 	}
 	st, err := c.jira.Issue(ctx, key)
 	if err != nil {
+		pr.JiraLookupFailed = true
 		return nil //nolint:nilerr // Jira is optional: degrade to an empty cell, never fail the scan.
 	}
 	pr.JiraKey = key
@@ -424,11 +435,12 @@ func summarizeReviews(reviews []*github.PullRequestReview, author string) (appro
 	return
 }
 
-// enrichDetail fetches the per-PR detail (PullRequests.Get) and populates
-// the fields that the issues/search response doesn't carry: head SHA, head
-// ref (branch), body, merge state, line additions, line deletions. enrichCIState relies on
-// pr.HeadSHA and enrichJiraStatus on pr.HeadRef/pr.Body, so this must run
-// before both. Skipped silently when the PR coordinates are incomplete.
+// enrichDetail fetches the per-PR detail (PullRequests.Get) and populates the
+// fields that the issues/search response doesn't carry: head SHA, head/base ref
+// (branches), body, merge state, diff stats (additions/deletions/changed files)
+// and the commit/comment counts. enrichCIState relies on pr.HeadSHA and
+// enrichJiraStatus on pr.HeadRef/pr.Body, so this must run before both. Skipped
+// silently when the PR coordinates are incomplete.
 func (c *Client) enrichDetail(ctx context.Context, pr *PullRequest) error {
 	if pr.Owner == "" || pr.Repo == "" || pr.Number == 0 {
 		return nil
@@ -445,10 +457,16 @@ func (c *Client) enrichDetail(ctx context.Context, pr *PullRequest) error {
 		pr.HeadSHA = head.GetSHA()
 		pr.HeadRef = head.GetRef()
 	}
+	pr.BaseRef = detail.GetBase().GetRef()
 	pr.Body = detail.GetBody()
 	pr.MergeState = normalizeMergeState(detail.GetMergeableState())
 	pr.Additions = detail.GetAdditions()
 	pr.Deletions = detail.GetDeletions()
+	// All free from the Get response above — no extra API call.
+	pr.ChangedFiles = detail.GetChangedFiles()
+	pr.Commits = detail.GetCommits()
+	pr.Comments = detail.GetComments()
+	pr.ReviewComments = detail.GetReviewComments()
 	return nil
 }
 

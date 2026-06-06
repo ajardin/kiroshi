@@ -23,7 +23,9 @@ func TestPreview(t *testing.T) {
 			Owner: "ajardin", Repo: "crm-core", Number: 2847, Title: "Refactor lead qualification pipeline",
 			Author: "sarah-dev", URL: "x", CreatedAt: time.Now().Add(-3 * 24 * time.Hour), UpdatedAt: time.Now().Add(-14 * time.Minute),
 			RequestedReviewers: []string{"ajardin"}, CIState: gh.CIStatePending,
-			Additions: 348, Deletions: 127,
+			HeadRef: "refactor/lead-qualification", BaseRef: "main",
+			Additions: 348, Deletions: 127, ChangedFiles: 14, Commits: 7, Comments: 9, ReviewComments: 4,
+			Body:    "Splits the lead qualification pipeline into composable stages.\nAdds a scoring hook and migrates the legacy thresholds.",
 			JiraKey: "CRM-2847", JiraStatus: "In Review", JiraCategory: string(jira.CategoryIndeterminate),
 		},
 		{
@@ -76,4 +78,15 @@ func TestPreview(t *testing.T) {
 	mine, _ := incoming.Update(tea.KeyMsg{Type: tea.KeyTab})
 	fmt.Println()
 	fmt.Println(mine.(Model).View())
+
+	// Narrow terminal: cards fall back to a 2×2 grid and the header drops its
+	// status badges + clock.
+	narrow, _ := incoming.Update(tea.WindowSizeMsg{Width: 60, Height: 30})
+	fmt.Println()
+	fmt.Println(narrow.(Model).View())
+
+	// Detail overlay on the first PR: branch line + commit/comment/file counters.
+	detail, _ := incoming.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	fmt.Println()
+	fmt.Println(detail.(Model).View())
 }

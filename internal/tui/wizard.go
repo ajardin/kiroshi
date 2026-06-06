@@ -77,8 +77,9 @@ type WizardModel struct {
 	jiraEmail string
 	jiraToken string
 
-	login  string // login resolved by a successful token validation
-	errMsg string // inline error shown on stepMinReviews / stepError
+	login     string // login resolved by a successful token validation
+	errMsg    string // inline error shown on stepMinReviews / stepError
+	spinFrame int    // animates the stepValidating spinner
 
 	// validate performs the live token check. Injected so tests and the CLI
 	// can supply their own (the CLI closes over a context + gh client).
@@ -107,6 +108,13 @@ func (m WizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		return m, nil
+	case spinMsg:
+		// Self-terminating: only keep ticking while the validation runs.
+		if m.step != stepValidating {
+			return m, nil
+		}
+		m.spinFrame++
+		return m, spinnerCmd()
 	case wizardValidateMsg:
 		if msg.err != nil {
 			m.step = stepError
@@ -154,7 +162,8 @@ func (m WizardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if strings.TrimSpace(m.jiraURL) == "" {
 				// Blank URL = skip Jira entirely; go straight to validation.
 				m.step = stepValidating
-				return m, m.validateCmd()
+				m.spinFrame = 0
+				return m, tea.Batch(m.validateCmd(), spinnerCmd())
 			}
 			m.step = stepJiraEmail
 			return m, nil
@@ -171,7 +180,8 @@ func (m WizardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case stepJiraToken:
 		if msg.Type == tea.KeyEnter {
 			m.step = stepValidating
-			return m, m.validateCmd()
+			m.spinFrame = 0
+			return m, tea.Batch(m.validateCmd(), spinnerCmd())
 		}
 		m.jiraToken = applyKey(m.jiraToken, msg)
 		return m, nil
@@ -353,7 +363,8 @@ func (m WizardModel) View() string {
 	case stepJiraToken:
 		body = m.fieldView("7/7", "Jira API token", maskValue(m.jiraToken), "id.atlassian.com/manage-profile/security/api-tokens", "")
 	case stepValidating:
-		body = lipgloss.NewStyle().Foreground(colCyan).Render("Validating token with GitHub…")
+		frame := spinFrames[m.spinFrame%len(spinFrames)]
+		body = lipgloss.NewStyle().Foreground(colCyan).Render(frame + " Validating token with GitHub…")
 	case stepError:
 		head := lipgloss.NewStyle().Foreground(colRed).Bold(true).Render("✗ validation failed")
 		detail := lipgloss.NewStyle().Foreground(colText).Render(m.errMsg)

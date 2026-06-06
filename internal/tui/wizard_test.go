@@ -14,6 +14,18 @@ import (
 // validation) feed back through Update — mirroring applyCmd for the dashboard.
 func send(t *testing.T, m WizardModel, msg tea.Msg) (WizardModel, tea.Cmd) {
 	t.Helper()
+	// Validation now batches the validate cmd with the spinner tick; unwrap and
+	// apply each sub-cmd so the wizardValidateMsg still feeds back through Update.
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		var last tea.Cmd
+		for _, c := range batch {
+			if c == nil {
+				continue
+			}
+			m, last = send(t, m, c())
+		}
+		return m, last
+	}
 	updated, cmd := m.Update(msg)
 	out, ok := updated.(WizardModel)
 	if !ok {

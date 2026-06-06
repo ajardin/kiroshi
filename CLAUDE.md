@@ -137,9 +137,11 @@ bucket and shows up on a non-error row:
    other surfaced state, `behind` (head branch behind its base), is a soft
    nudge and stays `colDim` — no new accent. Every other state (clean,
    blocked, unstable, draft, and GitHub's not-yet-computed `unknown`) renders
-   blank, so most rows show nothing here. It's a fixed aligned column carrying
-   a self-describing word (no glyph — avoids width ambiguity — and no prefix),
-   and the whole column collapses to zero width when no visible PR is flagged.
+   blank, so most rows show nothing here. It's a self-describing word (no glyph
+   — avoids width ambiguity — and no prefix) rendered as the **first item of the
+   flowing tail** (like the Jira cell), present only on flagged rows. It was a
+   fixed aligned column once, but reserving the width left a visible gap on every
+   clear row for a rarely-present cell; the tail placement drops that gap.
    See `mergeFragment` in `internal/tui/tui.go` and `MergeState` /
    `normalizeMergeState` in `internal/gh/client.go`.
 
@@ -184,23 +186,24 @@ tail**, so the high-signal status cells line up vertically and the eye can
 scan one column ("which PRs are failing CI?"):
 
 ```
-@author    ✓ +N   -M   <ci>    <merge> · <jira KEY Status> · <age>
-└ author ─┘↑ └─ diff ─┘ └ ci ─┘ └merge┘   └─────── flowing tail ───────┘
-          approval slot
+@author      ✓ +N   -M  · <ci> · <merge> · <jira KEY Status> · <age>
+└ author ─┘   ↑ └─ diff ─┘  └ ci ┘ └─────────── flowing tail ──────────┘
+   wide gap  approval slot
 ```
 
-- **Fixed columns** (always present, aligned across rows): author, the
-  one-col approval slot, diff, ci. Absent diff/ci render a muted `—`
-  *in the column* (the placeholder is justified — the column is real).
-- **Merge column** (after ci): a self-describing word (`conflict`/`behind`)
-  for the two action-worthy `mergeable_state`s, blank otherwise. Unlike
-  diff/ci it has **no `—` placeholder** — a healthy PR shows nothing — and the
-  whole column **collapses to zero width** (no leading separator either) when
-  no visible PR is flagged, so it costs nothing on the common all-clean set.
-  See `mergeFragment`.
-- **Flowing tail** (` · `-separated, present items only): the Jira cell
+- **Fixed columns** (still aligned across rows so the eye can scan one column):
+  author, the one-col approval slot, diff, ci. Absent diff/ci render a muted `—`
+  *in the column* (the placeholder is justified — the column is real). The author
+  is set apart from the indicators by a **wider gap** (`authorGap`), and every
+  indicator block is joined by a uniform ` · ` (`sep`) — including diff→ci, which
+  used to be a bare space. The approval marker stays glued to the diff (no
+  separator): it annotates the PR, not a block of its own.
+- **Flowing tail** (` · `-separated, present items only): the merge cell
+  (`conflict`/`behind`, dropped when not flagged) then the Jira cell
   (dropped when there's no key) then the age (`humanAgo`, no `updated`
   prefix). Empty cells are dropped, not shown as `jira: —`/`ci: —` noise.
+  Merge leads the tail because it's the most action-worthy; it used to be a
+  fixed column but reserving the width left a gap on every clear row.
   The age measures **time since `CreatedAt`** (PR opened), *not* `UpdatedAt` —
   it's an anti-forgetting nudge for PRs that have sat open, so its color
   escalates with age via `ageColor`: `colMuted` while fresh, `colDim` past
@@ -212,7 +215,7 @@ Column widths are computed **once per render over the full visible set**
 (not just the on-screen page, so columns don't jump while scrolling) by
 `computeRowCols` → `rowCols`: max `@author` width (capped at `maxAuthorW`,
 longer names truncated), the widest `+N` (drives the diff sub-alignment),
-total diff width, ci width, and merge width (0 when no PR is flagged).
+total diff width, and ci width.
 `renderRow` pads each styled cell to its column width with `padCell`, which
 appends **bg-aware** spaces — the selected-row background must reach the
 column boundary (same lipgloss back-fill constraint as `st()`; see "Selected
