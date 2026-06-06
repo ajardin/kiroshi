@@ -927,6 +927,181 @@ func TestModel_FooterAdvertisesHelp(t *testing.T) {
 	}
 }
 
+// --- Detail overlay ------------------------------------------------------
+
+// detailModel returns a sized dashboard whose first visible PR (incoming pane,
+// updated_at desc) carries a body and a full reviewer breakdown.
+func detailModel(t *testing.T) Model {
+	t.Helper()
+	prs := []gh.PullRequest{{
+		Owner: "ajardin", Repo: "kiroshi", Number: 99,
+		Title: "Add detail overlay", Author: "alice",
+		URL:       "https://github.com/ajardin/kiroshi/pull/99",
+		CreatedAt: time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
+		UpdatedAt: time.Date(2026, 5, 2, 0, 0, 0, 0, time.UTC),
+		Additions: 200, Deletions: 12,
+		Body:             "This is the description.\nSecond line.",
+		Approvals:        []string{"carol"},
+		ChangesRequested: []string{"dave"},
+		Commented:        []string{"erin"},
+		CIState:          gh.CIStateSuccess,
+	}}
+	m := NewModel(prs, "viewer", "v0.0.1", 2, false, 0, time.Now(), nil, nil)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	return updated.(Model)
+}
+
+func TestModel_DKeyOpensDetail(t *testing.T) {
+	t.Parallel()
+
+	m := detailModel(t)
+	if m.showDetail {
+		t.Fatal("detail should be closed initially")
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	got := updated.(Model)
+	if !got.showDetail {
+		t.Fatal("d should open the detail overlay")
+	}
+
+	view := got.View()
+	for _, want := range []string{"ajardin/kiroshi #99", "Add detail overlay", "@alice", "carol", "dave", "erin", "DESCRIPTION", "This is the description."} {
+		if !strings.Contains(view, want) {
+			t.Errorf("detail view missing %q\n%s", want, view)
+		}
+	}
+	// The overlay replaces the dashboard, so the section header is gone.
+	if strings.Contains(view, "ITEM(S)") {
+		t.Error("dashboard should be hidden while detail is open")
+	}
+}
+
+func TestModel_DKeyNoopOnEmptyList(t *testing.T) {
+	t.Parallel()
+
+	m := NewModel(nil, "viewer", "v", 2, false, 0, time.Now(), nil, nil)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if updated.(Model).showDetail {
+		t.Error("d on an empty list should not open the detail overlay")
+	}
+}
+
+func TestModel_DetailDismissedByAnyKey(t *testing.T) {
+	t.Parallel()
+
+	m := detailModel(t)
+	m.showDetail = true
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	got := updated.(Model)
+	if got.showDetail {
+		t.Error("any key should dismiss the detail overlay")
+	}
+	if cmd != nil {
+		t.Errorf("dismiss key should produce no cmd, got %T", cmd())
+	}
+}
+
+func TestModel_CtrlCQuitsFromDetail(t *testing.T) {
+	t.Parallel()
+
+	m := detailModel(t)
+	m.showDetail = true
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("ctrl+c from detail should return a quit cmd")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Errorf("ctrl+c cmd produced %T, want tea.QuitMsg", cmd())
+	}
+}
+
+func TestModel_FooterAdvertisesDetail(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(t, nil, nil)
+	if !strings.Contains(m.View(), "detail") {
+		t.Errorf("footer should advertise the d detail hint\n%s", m.footerView())
+	}
+}
+
+func TestModel_DetailTruncatesLongBody(t *testing.T) {
+	t.Parallel()
+
+	var sb strings.Builder
+	for i := 0; i < 200; i++ {
+		sb.WriteString("line\n")
+	}
+	prs := []gh.PullRequest{{
+		Owner: "ajardin", Repo: "kiroshi", Number: 1,
+		Title: "Long", Author: "alice",
+		URL:       "https://github.com/ajardin/kiroshi/pull/1",
+		UpdatedAt: time.Now(),
+		Body:      sb.String(),
+	}}
+	m := NewModel(prs, "viewer", "v", 2, false, 0, time.Now(), nil, nil)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+	m.showDetail = true
+
+	if !strings.Contains(m.View(), "more lines") {
+		t.Errorf("a body taller than the panel should show a truncation indicator\n%s", m.View())
+	}
+}
+
+func TestRenderReviewers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		pr       gh.PullRequest
+		wantSubs []string
+		wantNone bool
+	}{
+		{
+			name:     "approvals only",
+			pr:       gh.PullRequest{Approvals: []string{"carol", "dave"}},
+			wantSubs: []string{"Approved", "carol", "dave"},
+		},
+		{
+			name: "mixed",
+			pr: gh.PullRequest{
+				Approvals:        []string{"carol"},
+				ChangesRequested: []string{"dave"},
+				Commented:        []string{"erin"},
+			},
+			wantSubs: []string{"Approved", "Changes", "Commented"},
+		},
+		{
+			name:     "empty",
+			pr:       gh.PullRequest{},
+			wantNone: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := renderReviewers(tc.pr, "viewer")
+			if tc.wantNone {
+				if !strings.Contains(got, "no reviewers yet") {
+					t.Errorf("want 'no reviewers yet', got %q", got)
+				}
+				return
+			}
+			for _, sub := range tc.wantSubs {
+				if !strings.Contains(got, sub) {
+					t.Errorf("renderReviewers missing %q\n%s", sub, got)
+				}
+			}
+		})
+	}
+}
+
 // --- Panes (incoming / mine) ---------------------------------------------
 
 func pressTab(t *testing.T, m Model) Model {

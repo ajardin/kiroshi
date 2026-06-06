@@ -65,6 +65,25 @@ ambiguous-width, so lipgloss and the terminal disagree on cell count and the
 modal's right border drifts — a box must align all four sides, unlike the
 left-anchored row columns (▶/✓/●).
 
+**Detail overlay.** The `d` key sets `Model.showDetail` (guarded: a no-op on an
+empty list); `handleKey` short-circuits to `handleDetailKey`, the exact twin of
+`handleHelpKey` (dismiss on any key, ctrl+c quits), and `View` returns
+`detailView` instead of the dashboard. It's **purely presentational** — every
+field (`Body`, the four reviewer lists, CI/merge/Jira) is already enriched on
+the `PullRequest`, so opening it issues **no** GitHub calls and `internal/gh` is
+untouched. The meta line **reuses the row fragments** (`renderDiff`,
+`ciFragment`, `mergeFragment`, `jiraFragment`) ` · `-joined — but as a flowing
+line, not `renderRow`'s fixed-width columns, so it deliberately does *not* share
+the line-2 assembler. `helpView` and `detailView` share the box chrome via
+`modalBox`. Two locked layout choices: (1) `renderReviewers` is **glyph-free**
+(colored label words only) — it lives inside the bordered box, where
+ambiguous-width glyphs would drift the right border, the same constraint that
+keeps help rows ASCII; the lone in-box glyph is `ciFragment`'s `✓/●/✗`, a
+single non-width-dominant line. (2) the body is wrapped to `bodyW` and capped at
+`maxBodyLines` (10) with a `… (N more lines)` indicator, so a long description
+never dominates the panel on tall terminals. Not surfaced as a separate config —
+it's a key binding, listed in `helpView` and the footer.
+
 **Auto-refresh.** Optional `refresh_interval` config (Go duration; `0`/absent
 disables; no env override). When > 0, `Init` arms an `autoRefreshCmd`
 `tea.Tick`; the `autoRefreshMsg` handler re-arms the tick and rescans **through
