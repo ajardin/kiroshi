@@ -140,13 +140,25 @@ func TestModel_NavigationMovesCursor(t *testing.T) {
 	if m.cursor != 0 {
 		t.Fatalf("initial cursor = %d, want 0", m.cursor)
 	}
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	if got := updated.(Model).cursor; got != 1 {
-		t.Errorf("after j cursor = %d, want 1", got)
+		t.Errorf("after down cursor = %d, want 1", got)
 	}
-	updated, _ = updated.(Model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	updated, _ = updated.(Model).Update(tea.KeyMsg{Type: tea.KeyUp})
 	if got := updated.(Model).cursor; got != 0 {
-		t.Errorf("after k cursor = %d, want 0", got)
+		t.Errorf("after up cursor = %d, want 0", got)
+	}
+}
+
+func TestModel_ViKeysNoLongerMoveCursor(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(t, nil, nil)
+	for _, r := range []rune{'j', 'k'} {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		if got := updated.(Model).cursor; got != 0 {
+			t.Errorf("after %q cursor = %d, want 0 (vi keys removed)", r, got)
+		}
 	}
 }
 
@@ -190,6 +202,12 @@ func TestModel_FilterModeSwallowsNavigation(t *testing.T) {
 func pressKey(t *testing.T, m Model, r rune) Model {
 	t.Helper()
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	return updated.(Model)
+}
+
+func pressDown(t *testing.T, m Model) Model {
+	t.Helper()
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	return updated.(Model)
 }
 
@@ -267,8 +285,8 @@ func TestModel_SortPreservesSelection(t *testing.T) {
 	t.Parallel()
 
 	m := newTestModel(t, nil, nil)
-	// Default order is [#43, #42] (UpdatedAt desc); cursor on j moves to #42.
-	m = pressKey(t, m, 'j')
+	// Default order is [#43, #42] (UpdatedAt desc); down moves cursor to #42.
+	m = pressDown(t, m)
 	if got := m.visiblePRs()[m.cursor].Number; got != 42 {
 		t.Fatalf("setup: selected PR = #%d, want #42", got)
 	}
@@ -358,7 +376,7 @@ func TestModel_ApprovalCyclePreservesSelectionWhenVisible(t *testing.T) {
 
 	m := approvalModel(t)
 	// Default order [#43, #42]; move cursor onto #42 (the approved one).
-	m = pressKey(t, m, 'j')
+	m = pressDown(t, m)
 	if got := m.visiblePRs()[m.cursor].Number; got != 42 {
 		t.Fatalf("setup: selected PR = #%d, want #42", got)
 	}
@@ -684,7 +702,7 @@ func TestView_RendersHeaderCardsAndKeys(t *testing.T) {
 		"KIROSHI", "v0.0.1", "@ajardin",
 		"ON YOU", "ON OTHERS", "READY", "IN FLIGHT",
 		"INCOMING", "MINE",
-		"[j/k]", "[tab]", "[o]", "[r]", "[f]", "[q]",
+		"[↑↓]", "[tab]", "[o]", "[r]", "[f]", "[q]",
 		"github", "jira",
 		"Add PR search", "Add TUI",
 		"+120", "-30", // diff stats for PR #42
@@ -1240,19 +1258,75 @@ func TestModel_DKeyNoopOnEmptyList(t *testing.T) {
 	}
 }
 
-func TestModel_DetailDismissedByAnyKey(t *testing.T) {
+func TestModel_DetailDismissedByOtherKey(t *testing.T) {
 	t.Parallel()
 
 	m := detailModel(t)
 	m.showDetail = true
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
 	got := updated.(Model)
 	if got.showDetail {
-		t.Error("any key should dismiss the detail overlay")
+		t.Error("a non-navigation key should dismiss the detail overlay")
 	}
 	if cmd != nil {
 		t.Errorf("dismiss key should produce no cmd, got %T", cmd())
+	}
+}
+
+func TestModel_DetailNavigatesBetweenPRs(t *testing.T) {
+	t.Parallel()
+
+	// Two incoming PRs, default order [#43, #42]; open detail on the first.
+	m := newTestModel(t, nil, nil)
+	m.showDetail = true
+	if got := m.visiblePRs()[m.cursor].Number; got != 43 {
+		t.Fatalf("setup: detail should start on PR #43, got #%d", got)
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	got := updated.(Model)
+	if !got.showDetail {
+		t.Error("down should keep the detail overlay open")
+	}
+	if n := got.visiblePRs()[got.cursor].Number; n != 42 {
+		t.Errorf("after down, detail PR = #%d, want #42", n)
+	}
+	if !strings.Contains(got.View(), "Add PR search") {
+		t.Errorf("detail view should show PR #42's title after navigating\n%s", got.View())
+	}
+
+	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyUp})
+	got = updated.(Model)
+	if !got.showDetail {
+		t.Error("up should keep the detail overlay open")
+	}
+	if n := got.visiblePRs()[got.cursor].Number; n != 43 {
+		t.Errorf("after up, detail PR = #%d, want #43", n)
+	}
+}
+
+func TestModel_DetailOpensSelectedInBrowser(t *testing.T) {
+	t.Parallel()
+
+	var opened string
+	m := newTestModel(t, func(url string) error { opened = url; return nil }, nil)
+	m.showDetail = true
+
+	for _, key := range []tea.KeyMsg{
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune("o")},
+	} {
+		updated, cmd := m.Update(key)
+		got := updated.(Model)
+		if !got.showDetail {
+			t.Errorf("%v should keep the detail overlay open", key)
+		}
+		applyCmd(t, got, cmd)
+		if opened != got.visiblePRs()[got.cursor].URL {
+			t.Errorf("%v should open the current PR, opened %q", key, opened)
+		}
+		opened = ""
 	}
 }
 
@@ -1428,7 +1502,7 @@ func TestModel_TabResetsCursor(t *testing.T) {
 	m := NewModel(prs, "carol", "v", 2, false, 0, time.Now(), nil, nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = updated.(Model)
-	m = pressKey(t, m, 'j')
+	m = pressDown(t, m)
 	if m.cursor == 0 {
 		t.Fatal("setup: cursor should be off row 0 before toggling")
 	}

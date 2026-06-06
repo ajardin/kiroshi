@@ -24,11 +24,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   PR showing its full description, the complete reviewer breakdown (approved /
   changes / commented / requested) and its CI · merge · Jira status. It's
   purely presentational — it reuses already-enriched data, so it issues no
-  GitHub calls — and any key dismisses it. The description is wrapped and
-  capped with a `… (N more lines)` indicator so a long body never dominates
-  the panel.
+  GitHub calls. Inside the overlay, `↑`/`↓` flip to the previous/next PR so you
+  can review details without returning to the listing, `enter`/`o` opens the
+  current PR in the browser, and any other key closes it. The description is
+  wrapped and capped with a `… (N more lines)` indicator so a long body never
+  dominates the panel.
 
 ### Changed
+- **Simpler navigation** — moving the selection is now done with the `↑`/`↓`
+  arrow keys; the `j`/`k` vi keys were removed. Jumping to the top/bottom of the
+  list with `g`/`G` (or Home/End) still works.
 - **Lighter Jira display** — the listing now shows only the Jira ticket's
   status (e.g. `In Review`), dropping the ticket number to cut noise on the
   row. The full ticket number and status moved into the detail overlay (`d`),

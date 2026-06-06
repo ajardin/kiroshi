@@ -66,9 +66,14 @@ modal's right border drifts — a box must align all four sides, unlike the
 left-anchored row columns (▶/✓/●).
 
 **Detail overlay.** The `d` key sets `Model.showDetail` (guarded: a no-op on an
-empty list); `handleKey` short-circuits to `handleDetailKey`, the exact twin of
-`handleHelpKey` (dismiss on any key, ctrl+c quits), and `View` returns
-`detailView` instead of the dashboard. It's **purely presentational** — every
+empty list); `handleKey` short-circuits to `handleDetailKey`, and `View` returns
+`detailView` instead of the dashboard. Unlike `handleHelpKey` (dismiss on any
+key), the detail overlay is **navigable**: `↑`/`↓` reuse `moveUp`/`moveDown` to
+flip the selection to the previous/next PR without leaving the overlay (the
+cursor moves through `visiblePRs` and `detailView` re-reads `visible[m.cursor]`,
+so no extra rendering plumbing), `enter`/`o` reuse `openSelected` to open the
+current PR in the browser (the overlay stays open — `openSelected` never touches
+`showDetail`), `ctrl+c` quits, and any other key closes the overlay. It's **purely presentational** — every
 field (`Body`, the four reviewer lists, CI/merge/Jira) is already enriched on
 the `PullRequest`, so opening it issues **no** GitHub calls and `internal/gh` is
 untouched. The meta line **reuses the row fragments** (`renderDiff`,
