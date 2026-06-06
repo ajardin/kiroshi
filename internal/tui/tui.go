@@ -822,7 +822,8 @@ func (m Model) detailView() string {
 	if jr, col := jiraFragment(pr.JiraKey, pr.JiraStatus, pr.JiraCategory); pr.JiraKey != "" {
 		meta = append(meta, lipgloss.NewStyle().Foreground(col).Render(jr))
 	}
-	meta = append(meta, muted.Render(humanAgo(m.now.Sub(pr.UpdatedAt))))
+	age := m.now.Sub(pr.CreatedAt)
+	meta = append(meta, lipgloss.NewStyle().Foreground(ageColor(age)).Render(humanAgo(age)))
 	metaLine := strings.Join(meta, dot)
 
 	// Reviewers block.
@@ -1237,7 +1238,8 @@ func (m Model) renderRow(pr gh.PullRequest, selected bool, cols rowCols) string 
 	if jiraText, jiraColor := jiraFragment(pr.JiraKey, pr.JiraStatus, pr.JiraCategory); pr.JiraKey != "" {
 		line2Body += sp + dot + sp + st(jiraColor, false).Render(jiraText)
 	}
-	line2Body += sp + dot + sp + st(colMuted, false).Render(humanAgo(m.now.Sub(pr.UpdatedAt)))
+	age := m.now.Sub(pr.CreatedAt)
+	line2Body += sp + dot + sp + st(ageColor(age), false).Render(humanAgo(age))
 
 	// Compose " ┃ <body>" / " ┃   <body>" (line 2 indents to align with title).
 	line1 := sp + bar + sp + line1Body
@@ -1465,6 +1467,25 @@ func shortDuration(d time.Duration) string {
 		return fmt.Sprintf("%ds", d/time.Second)
 	default:
 		return d.String()
+	}
+}
+
+const (
+	ageStaleAfter     = 7 * 24 * time.Hour  // colDim — aging
+	ageForgottenAfter = 21 * 24 * time.Hour // colYellow — nudge
+)
+
+// ageColor escalates an age toward attention-grabbing as a PR sits unmerged:
+// muted while fresh, dim past a week, yellow past three weeks. Yellow here is a
+// deliberate, documented reuse of the "needs your attention" accent (see CLAUDE.md).
+func ageColor(age time.Duration) lipgloss.Color {
+	switch {
+	case age >= ageForgottenAfter:
+		return colYellow
+	case age >= ageStaleAfter:
+		return colDim
+	default:
+		return colMuted
 	}
 }
 

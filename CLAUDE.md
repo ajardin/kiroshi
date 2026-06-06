@@ -168,6 +168,15 @@ key shape identifies it, so the `jira:` prefix is dropped), and the cell is
 key at all, or a lookup that failed (the enricher leaves all three Jira
 fields empty in both cases, so the cell can't tell them apart).
 
+The **age cell** (`ageColor`) is a fifth concession, this one yellow-side:
+its color escalates with the PR's age-since-`CreatedAt` — `colMuted` fresh,
+`colDim` past `ageStaleAfter` (7d), `colYellow` past `ageForgottenAfter`
+(21d). Yellow here is a deliberate reuse of the "needs your attention" accent
+even though the row isn't in the WaitingOnYou bucket: a PR that's sat open for
+three weeks *does* need a look, so the anti-forgetting nudge earns the accent.
+No new color, no red (an old PR isn't an "error"). Both the flowing-tail age
+and `detailView`'s meta age share this one helper.
+
 ### Row line-2 layout (column alignment)
 
 Each PR row's second line is **fixed-width columns followed by a flowing
@@ -192,6 +201,12 @@ scan one column ("which PRs are failing CI?"):
 - **Flowing tail** (` · `-separated, present items only): the Jira cell
   (dropped when there's no key) then the age (`humanAgo`, no `updated`
   prefix). Empty cells are dropped, not shown as `jira: —`/`ci: —` noise.
+  The age measures **time since `CreatedAt`** (PR opened), *not* `UpdatedAt` —
+  it's an anti-forgetting nudge for PRs that have sat open, so its color
+  escalates with age via `ageColor`: `colMuted` while fresh, `colDim` past
+  `ageStaleAfter` (7d), `colYellow` past `ageForgottenAfter` (21d). `detailView`'s
+  meta line reuses the same `ageColor`/`CreatedAt` pair. See the palette note on
+  this yellow reuse.
 
 Column widths are computed **once per render over the full visible set**
 (not just the on-screen page, so columns don't jump while scrolling) by
