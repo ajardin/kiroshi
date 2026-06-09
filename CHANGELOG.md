@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **CI status reflects the latest run** — a check that failed and was then
+  re-run successfully no longer shows as failing in the listing; only the most
+  recent run of each check counts.
+
 ## [1.4.0] - 2026-06-06
 
 ### Added

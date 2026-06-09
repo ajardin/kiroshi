@@ -493,8 +493,42 @@ func (c *Client) enrichCIState(ctx context.Context, pr *PullRequest) error {
 		}
 		listOpts.Page = cresp.NextPage
 	}
-	pr.CIState = aggregateCheckRuns(runs)
+	pr.CIState = aggregateCheckRuns(latestCheckRuns(runs))
 	return nil
+}
+
+// latestCheckRuns keeps only the most recent run for each check, so a check
+// that failed and was then re-run successfully no longer drags the aggregate
+// to failure. GitHub returns every run for the head SHA — including stale
+// ones from before a re-run — and its server-side filter=latest default is
+// keyed per check-suite, so re-runs landing in a new suite for the same SHA
+// still leak the old run. We dedupe on (app ID, check name) — the key GitHub
+// itself uses — and keep the run with the latest StartedAt, breaking ties by
+// the higher (monotonic) ID.
+func latestCheckRuns(runs []*github.CheckRun) []*github.CheckRun {
+	type key struct {
+		appID int64
+		name  string
+	}
+	latest := make(map[key]*github.CheckRun, len(runs))
+	for _, r := range runs {
+		if r == nil {
+			continue
+		}
+		k := key{appID: r.GetApp().GetID(), name: r.GetName()}
+		if prev, ok := latest[k]; ok {
+			prevAt, curAt := prev.GetStartedAt().Time, r.GetStartedAt().Time
+			if curAt.Before(prevAt) || (curAt.Equal(prevAt) && r.GetID() <= prev.GetID()) {
+				continue
+			}
+		}
+		latest[k] = r
+	}
+	out := make([]*github.CheckRun, 0, len(latest))
+	for _, r := range latest {
+		out = append(out, r)
+	}
+	return out
 }
 
 // aggregateCheckRuns collapses a list of check runs into a single CIState
