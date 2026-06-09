@@ -108,15 +108,8 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("unknown keys in %s: %v", path, keys)
 	}
 
-	token := strings.TrimSpace(os.Getenv(envToken))
-	if token == "" {
-		token = strings.TrimSpace(fc.GitHubToken)
-	}
-
-	jiraToken := strings.TrimSpace(os.Getenv(envJiraToken))
-	if jiraToken == "" {
-		jiraToken = strings.TrimSpace(fc.JiraToken)
-	}
+	token := resolveSecret(envToken, fc.GitHubToken)
+	jiraToken := resolveSecret(envJiraToken, fc.JiraToken)
 
 	minReviews := DefaultMinReviews
 	if fc.MinReviews != nil {
@@ -145,6 +138,15 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
 	return cfg, nil
+}
+
+// resolveSecret returns the env var's value when set, otherwise the file
+// value; both are trimmed.
+func resolveSecret(envVar, fileVal string) string {
+	if v := strings.TrimSpace(os.Getenv(envVar)); v != "" {
+		return v
+	}
+	return strings.TrimSpace(fileVal)
 }
 
 // DefaultPath returns the XDG-based default config path:
