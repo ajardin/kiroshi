@@ -1258,6 +1258,23 @@ func TestModel_DKeyNoopOnEmptyList(t *testing.T) {
 	}
 }
 
+func TestModel_DetailClosesWhenRescanEmptiesList(t *testing.T) {
+	t.Parallel()
+
+	// Auto-refresh keeps rescanning while the detail overlay is open; a scan
+	// that comes back empty must close the overlay instead of letting the next
+	// View index an empty slice (regression: index-out-of-range panic).
+	m := newTestModel(t, nil, nil)
+	m.showDetail = true
+
+	updated, _ := m.Update(rescanMsg{prs: nil, at: time.Now()})
+	got := updated.(Model)
+	if got.showDetail {
+		t.Error("an empty rescan should close the detail overlay")
+	}
+	_ = got.View() // must not panic on the emptied list
+}
+
 func TestModel_DetailDismissedByOtherKey(t *testing.T) {
 	t.Parallel()
 

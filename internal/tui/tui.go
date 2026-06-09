@@ -428,8 +428,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.lastScan = msg.at
 		m.githubHealthy = true
 		m.jiraHealthy = !anyJiraFailure(msg.prs)
-		if n := len(m.visiblePRs()); m.cursor >= n {
-			m.cursor = max(0, n-1)
+		m = m.clampCursor()
+		// An auto-refresh rescan can land while the detail overlay is open; if
+		// the new set is empty there is no PR left to detail, so drop the
+		// overlay rather than letting detailView index an empty slice.
+		if m.showDetail && len(m.visiblePRs()) == 0 {
+			m.showDetail = false
 		}
 		// No success status: the header's "scanned Xm ago" carries recency and
 		// the section header carries the count, so a transient line is redundant.
@@ -951,10 +955,18 @@ func (m Model) modalBox(content string) string {
 // compositing — see helpView for the lipgloss v1 back-fill constraint). It is
 // purely presentational: every field shown is already enriched on the
 // PullRequest, so opening it issues no GitHub calls. The `d` key arms it only
-// when a PR is selected (handleKey guards the empty-list case), so the cursor
-// index is safe here.
+// when a PR is selected and Update drops the overlay when a rescan empties
+// the list; the fallback below is defense in depth for any future mutation
+// path that forgets that invariant.
 func (m Model) detailView() string {
 	visible := m.visiblePRs()
+	if len(visible) == 0 {
+		m.showDetail = false
+		return m.View()
+	}
+	if m.cursor >= len(visible) {
+		m.cursor = len(visible) - 1
+	}
 	pr := visible[m.cursor]
 
 	// Inner content width: wide enough to read a PR body, capped so the box
