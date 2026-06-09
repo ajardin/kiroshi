@@ -65,10 +65,10 @@ type Model struct {
 	status          string
 	statusErr       bool
 	refreshing      bool
-	// loading marks the initial fetch (before any data has arrived). Unlike
-	// refreshing — which keeps the dashboard visible with a status-line spinner —
-	// loading replaces the whole screen with loadingView's decrypt animation.
-	loading   bool
+	// mode is the mutually-exclusive UI mode (list, loading, filter, help,
+	// detail). refreshing is deliberately not a mode: it overlays a spinner on
+	// the status line without changing what is on screen.
+	mode      uiMode
 	spinFrame int
 	// Connection health for the header dots. githubHealthy flips false on a
 	// failed rescan; jiraHealthy flips false when any PR's Jira lookup failed.
@@ -76,14 +76,35 @@ type Model struct {
 	// before the TUI launches, so the dot is meaningful only after a rescan).
 	githubHealthy bool
 	jiraHealthy   bool
-	filterMode    bool
 	filter        string
 	sort          sortMode
 	approval      approvalFilter
 	pane          paneView
-	showHelp      bool
-	showDetail    bool
 }
+
+// uiMode enumerates the mutually-exclusive UI modes. handleKey and View both
+// switch on it, so the "one mode at a time" invariant is structural — the
+// previous four booleans (loading/filterMode/showHelp/showDetail) enforced it
+// only through matching if-chain order kept in sync by hand across two files.
+type uiMode int
+
+const (
+	// modeList is the default dashboard (the zero value): header, cards, PR
+	// list, footer.
+	modeList uiMode = iota
+	// modeLoading is the initial fetch, before any data has arrived. Unlike
+	// refreshing — which keeps the dashboard visible with a status-line
+	// spinner — it replaces the whole screen with loadingView's decrypt
+	// animation.
+	modeLoading
+	// modeFilter routes typed keys into the filter buffer; the dashboard stays
+	// visible with the filter prompt in the status line.
+	modeFilter
+	// modeHelp replaces the dashboard with the keybindings overlay.
+	modeHelp
+	// modeDetail replaces the dashboard with the selected PR's detail overlay.
+	modeDetail
+)
 
 // NewModel builds a Model populated with the given pull requests. Pass
 // time.Now() for lastScan; the header displays "last scan Xm ago" relative
@@ -125,7 +146,7 @@ func NewLoadingModel(login, version string, minReviews int, jiraEnabled bool, re
 		now:             time.Now(),
 		open:            open,
 		refresh:         refresh,
-		loading:         true,
+		mode:            modeLoading,
 		githubHealthy:   true,
 		jiraHealthy:     true,
 	}
@@ -148,7 +169,7 @@ func anyJiraFailure(prs []gh.PullRequest) bool {
 // fetch runs behind the loading splash.
 func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{tickCmd(), autoRefreshCmd(m.refreshInterval)}
-	if m.loading && m.refresh != nil {
+	if m.mode == modeLoading && m.refresh != nil {
 		cmds = append(cmds, m.rescanCmd(), spinnerCmd())
 	}
 	return tea.Batch(cmds...)
@@ -210,7 +231,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case spinMsg:
 		// Self-terminating: stop re-arming once the rescan / initial load finishes.
-		if !m.refreshing && !m.loading {
+		if !m.refreshing && m.mode != modeLoading {
 			return m, nil
 		}
 		m.spinFrame++
@@ -223,7 +244,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case rescanMsg:
 		m.refreshing = false
-		m.loading = false
+		if m.mode == modeLoading {
+			m.mode = modeList
+		}
 		if msg.err != nil {
 			m.status = "scan failed: " + msg.err.Error()
 			m.statusErr = true
@@ -238,8 +261,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// An auto-refresh rescan can land while the detail overlay is open; if
 		// the new set is empty there is no PR left to detail, so drop the
 		// overlay rather than letting detailView index an empty slice.
-		if m.showDetail && len(m.visiblePRs()) == 0 {
-			m.showDetail = false
+		if m.mode == modeDetail && len(m.visiblePRs()) == 0 {
+			m.mode = modeList
 		}
 		// No success status: the header's "scanned Xm ago" carries recency and
 		// the section header carries the count, so a transient line is redundant.
@@ -252,7 +275,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// isn't already in flight (a slow scan that outlasts the interval simply
 		// skips a beat rather than stacking). Mirrors the manual "r" path.
 		next := autoRefreshCmd(m.refreshInterval)
-		if m.refresh == nil || m.refreshing || m.loading {
+		if m.refresh == nil || m.refreshing || m.mode == modeLoading {
 			return m, next
 		}
 		m.refreshing = true
@@ -273,32 +296,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
-	if m.loading {
+	switch m.mode {
+	case modeLoading:
 		// Nothing to act on until the first batch lands; only let the user bail.
 		if k := msg.String(); k == "q" || k == "esc" || k == "ctrl+c" {
 			return m, tea.Quit
 		}
 		return m, nil
-	}
-	if m.filterMode {
+	case modeFilter:
 		return m.handleFilterKey(msg)
-	}
-	if m.showHelp {
+	case modeHelp:
 		return m.handleHelpKey(msg)
-	}
-	if m.showDetail {
+	case modeDetail:
 		return m.handleDetailKey(msg)
 	}
 	switch msg.String() {
 	case "q", "esc", "ctrl+c":
 		return m, tea.Quit
 	case "?":
-		m.showHelp = true
+		m.mode = modeHelp
 		m.status = ""
 		return m, nil
 	case "d":
 		if m.cursor < len(m.visiblePRs()) {
-			m.showDetail = true
+			m.mode = modeDetail
 			m.status = ""
 		}
 		return m, nil
@@ -316,7 +337,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	case "enter", "o":
 		return m.openSelected()
 	case "r":
-		if m.refresh == nil || m.refreshing || m.loading {
+		if m.refresh == nil || m.refreshing {
 			return m, nil
 		}
 		m.refreshing = true
@@ -325,7 +346,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.spinFrame = 0
 		return m, tea.Batch(m.rescanCmd(), spinnerCmd())
 	case "f", "/":
-		m.filterMode = true
+		m.mode = modeFilter
 		m.status = ""
 		return m, nil
 	case "s":
@@ -396,7 +417,7 @@ func (m Model) handleHelpKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	if msg.String() == "ctrl+c" {
 		return m, tea.Quit
 	}
-	m.showHelp = false
+	m.mode = modeList
 	return m, nil
 }
 
@@ -415,7 +436,7 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	case "enter", "o":
 		return m.openSelected()
 	}
-	m.showDetail = false
+	m.mode = modeList
 	return m, nil
 }
 
@@ -424,12 +445,12 @@ func (m Model) handleFilterKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	case "ctrl+c":
 		return m, tea.Quit
 	case "esc":
-		m.filterMode = false
+		m.mode = modeList
 		m.filter = ""
 		m.cursor, m.offset = 0, 0
 		return m, nil
 	case "enter":
-		m.filterMode = false
+		m.mode = modeList
 		return m, nil
 	case "backspace":
 		if len(m.filter) > 0 {

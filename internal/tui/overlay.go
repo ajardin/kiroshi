@@ -138,7 +138,7 @@ func (m Model) modalBox(content string) string {
 func (m Model) detailView() string {
 	visible := m.visiblePRs()
 	if len(visible) == 0 {
-		m.showDetail = false
+		m.mode = modeList
 		return m.View()
 	}
 	if m.cursor >= len(visible) {

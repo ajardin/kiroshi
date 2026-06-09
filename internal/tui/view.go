@@ -12,13 +12,12 @@ func (m Model) View() string {
 	if m.width == 0 || m.height == 0 {
 		return ""
 	}
-	if m.loading {
+	switch m.mode {
+	case modeLoading:
 		return m.loadingView()
-	}
-	if m.showHelp {
+	case modeHelp:
 		return m.helpView()
-	}
-	if m.showDetail {
+	case modeDetail:
 		return m.detailView()
 	}
 	// Below fullCardsW the four cards no longer fit on one row; cardsView falls
@@ -381,7 +380,7 @@ func packSegments(segs []string, sep string, width int) []string {
 
 func (m Model) statusLineView() string {
 	switch {
-	case m.filterMode:
+	case m.mode == modeFilter:
 		label := lipgloss.NewStyle().Foreground(colYellow).Bold(true).Render("filter:")
 		value := lipgloss.NewStyle().Foreground(colText).Render(m.filter + "_")
 		hint := lipgloss.NewStyle().Foreground(colMuted).Render("(enter to confirm · esc to clear)")

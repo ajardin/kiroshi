@@ -169,8 +169,8 @@ func TestModel_FilterModeNarrowsList(t *testing.T) {
 	// Activate filter mode.
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
 	got := updated.(Model)
-	if !got.filterMode {
-		t.Fatal("filterMode should be true after f")
+	if got.mode != modeFilter {
+		t.Fatal("f should enter filter mode")
 	}
 	// Type "TUI" — only PR #43 matches.
 	for _, r := range "TUI" {
@@ -187,7 +187,7 @@ func TestModel_FilterBackspaceTrimsRuneNotByte(t *testing.T) {
 	t.Parallel()
 
 	m := newTestModel(t, nil, nil)
-	m.filterMode = true
+	m.mode = modeFilter
 	m.filter = "café"
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
@@ -201,7 +201,7 @@ func TestModel_FilterTypingResetsScrollOffset(t *testing.T) {
 	t.Parallel()
 
 	m := newTestModel(t, nil, nil)
-	m.filterMode = true
+	m.mode = modeFilter
 	m.offset = 5 // leftover scroll from before filtering
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
@@ -216,10 +216,10 @@ func TestModel_FilterModeSwallowsNavigation(t *testing.T) {
 
 	var opened bool
 	m := newTestModel(t, func(string) error { opened = true; return nil }, nil)
-	m.filterMode = true
+	m.mode = modeFilter
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if got := updated.(Model); got.filterMode {
+	if got := updated.(Model); got.mode == modeFilter {
 		t.Error("enter should exit filter mode")
 	}
 	if opened {
@@ -513,7 +513,7 @@ func TestModel_LoadingViewShowsDecryptSplash(t *testing.T) {
 	t.Parallel()
 
 	m := newLoadingModel(t, nil, 0)
-	if !m.loading {
+	if m.mode != modeLoading {
 		t.Fatal("NewLoadingModel should start in the loading state")
 	}
 	plain := ansi.Strip(m.View())
@@ -558,7 +558,7 @@ func TestModel_InitialScanPopulatesDashboard(t *testing.T) {
 	if !called {
 		t.Error("initial scan did not invoke refresh")
 	}
-	if got.loading {
+	if got.mode == modeLoading {
 		t.Error("loading flag should clear once the first batch lands")
 	}
 	if len(got.prs) != len(samplePRs()) {
@@ -577,7 +577,7 @@ func TestModel_InitialScanErrorLeavesLoadingWithStatus(t *testing.T) {
 	}
 	m := newLoadingModel(t, refresh, 0)
 	got := applyCmd(t, m, m.rescanCmd())
-	if got.loading {
+	if got.mode == modeLoading {
 		t.Error("loading should clear even when the initial scan fails")
 	}
 	if !got.statusErr || !strings.Contains(got.View(), "scan failed") {
@@ -1157,13 +1157,13 @@ func TestModel_QuestionMarkTogglesHelp(t *testing.T) {
 	t.Parallel()
 
 	m := newTestModel(t, nil, nil)
-	if m.showHelp {
+	if m.mode == modeHelp {
 		t.Fatal("help should be closed initially")
 	}
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
 	got := updated.(Model)
-	if !got.showHelp {
+	if got.mode != modeHelp {
 		t.Fatal("? should open the help overlay")
 	}
 	if !strings.Contains(got.View(), "KEYBINDINGS") {
@@ -1180,12 +1180,12 @@ func TestModel_HelpDismissedByAnyKey(t *testing.T) {
 
 	open := func(string) error { t.Fatal("dismiss key must not act on the dashboard"); return nil }
 	m := newTestModel(t, open, nil)
-	m.showHelp = true
+	m.mode = modeHelp
 
 	// A key that would otherwise open a PR ("o") just closes help instead.
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
 	got := updated.(Model)
-	if got.showHelp {
+	if got.mode == modeHelp {
 		t.Error("any key should dismiss the help overlay")
 	}
 	if cmd != nil {
@@ -1197,7 +1197,7 @@ func TestModel_CtrlCQuitsFromHelp(t *testing.T) {
 	t.Parallel()
 
 	m := newTestModel(t, nil, nil)
-	m.showHelp = true
+	m.mode = modeHelp
 
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	if cmd == nil {
@@ -1246,13 +1246,13 @@ func TestModel_DKeyOpensDetail(t *testing.T) {
 	t.Parallel()
 
 	m := detailModel(t)
-	if m.showDetail {
+	if m.mode == modeDetail {
 		t.Fatal("detail should be closed initially")
 	}
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
 	got := updated.(Model)
-	if !got.showDetail {
+	if got.mode != modeDetail {
 		t.Fatal("d should open the detail overlay")
 	}
 
@@ -1281,7 +1281,7 @@ func TestModel_DKeyNoopOnEmptyList(t *testing.T) {
 	m = updated.(Model)
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
-	if updated.(Model).showDetail {
+	if updated.(Model).mode == modeDetail {
 		t.Error("d on an empty list should not open the detail overlay")
 	}
 }
@@ -1293,11 +1293,11 @@ func TestModel_DetailClosesWhenRescanEmptiesList(t *testing.T) {
 	// that comes back empty must close the overlay instead of letting the next
 	// View index an empty slice (regression: index-out-of-range panic).
 	m := newTestModel(t, nil, nil)
-	m.showDetail = true
+	m.mode = modeDetail
 
 	updated, _ := m.Update(rescanMsg{prs: nil, at: time.Now()})
 	got := updated.(Model)
-	if got.showDetail {
+	if got.mode == modeDetail {
 		t.Error("an empty rescan should close the detail overlay")
 	}
 	_ = got.View() // must not panic on the emptied list
@@ -1307,11 +1307,11 @@ func TestModel_DetailDismissedByOtherKey(t *testing.T) {
 	t.Parallel()
 
 	m := detailModel(t)
-	m.showDetail = true
+	m.mode = modeDetail
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
 	got := updated.(Model)
-	if got.showDetail {
+	if got.mode == modeDetail {
 		t.Error("a non-navigation key should dismiss the detail overlay")
 	}
 	if cmd != nil {
@@ -1324,14 +1324,14 @@ func TestModel_DetailNavigatesBetweenPRs(t *testing.T) {
 
 	// Two incoming PRs, default order [#43, #42]; open detail on the first.
 	m := newTestModel(t, nil, nil)
-	m.showDetail = true
+	m.mode = modeDetail
 	if got := m.visiblePRs()[m.cursor].Number; got != 43 {
 		t.Fatalf("setup: detail should start on PR #43, got #%d", got)
 	}
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	got := updated.(Model)
-	if !got.showDetail {
+	if got.mode != modeDetail {
 		t.Error("down should keep the detail overlay open")
 	}
 	if n := got.visiblePRs()[got.cursor].Number; n != 42 {
@@ -1343,7 +1343,7 @@ func TestModel_DetailNavigatesBetweenPRs(t *testing.T) {
 
 	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyUp})
 	got = updated.(Model)
-	if !got.showDetail {
+	if got.mode != modeDetail {
 		t.Error("up should keep the detail overlay open")
 	}
 	if n := got.visiblePRs()[got.cursor].Number; n != 43 {
@@ -1356,7 +1356,7 @@ func TestModel_DetailOpensSelectedInBrowser(t *testing.T) {
 
 	var opened string
 	m := newTestModel(t, func(url string) error { opened = url; return nil }, nil)
-	m.showDetail = true
+	m.mode = modeDetail
 
 	for _, key := range []tea.KeyMsg{
 		{Type: tea.KeyEnter},
@@ -1364,7 +1364,7 @@ func TestModel_DetailOpensSelectedInBrowser(t *testing.T) {
 	} {
 		updated, cmd := m.Update(key)
 		got := updated.(Model)
-		if !got.showDetail {
+		if got.mode != modeDetail {
 			t.Errorf("%v should keep the detail overlay open", key)
 		}
 		applyCmd(t, got, cmd)
@@ -1379,7 +1379,7 @@ func TestModel_CtrlCQuitsFromDetail(t *testing.T) {
 	t.Parallel()
 
 	m := detailModel(t)
-	m.showDetail = true
+	m.mode = modeDetail
 
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	if cmd == nil {
@@ -1394,7 +1394,7 @@ func TestModel_CtrlCQuitsFromFilterMode(t *testing.T) {
 	t.Parallel()
 
 	m := newTestModel(t, nil, nil)
-	m.filterMode = true
+	m.mode = modeFilter
 
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	if cmd == nil {
@@ -1431,7 +1431,7 @@ func TestModel_DetailTruncatesLongBody(t *testing.T) {
 	m := NewModel(prs, "viewer", "v", 2, false, 0, time.Now(), nil, nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = updated.(Model)
-	m.showDetail = true
+	m.mode = modeDetail
 
 	if !strings.Contains(m.View(), "more lines") {
 		t.Errorf("a body taller than the panel should show a truncation indicator\n%s", m.View())

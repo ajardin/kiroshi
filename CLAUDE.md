@@ -55,8 +55,11 @@ extraction is `jira.ExtractKey` (branch → title → body, regex
 `jira_base_url`/`jira_email`/`jira_token` trio (env override `JIRA_API_TOKEN`);
 all three or none.
 
-**Help overlay.** The `?` key sets `Model.showHelp`; `handleKey` short-circuits
-to `handleHelpKey`, which dismisses on *any* key (ctrl+c still quits). `View`
+**Help overlay.** The `?` key sets `Model.mode = modeHelp` (the UI modes —
+list, loading, filter, help, detail — are one `uiMode` enum, so they are
+mutually exclusive by construction and `handleKey`/`View` both switch on it);
+`handleKey` routes to `handleHelpKey`, which dismisses on *any* key (ctrl+c
+still quits). `View`
 returns `helpView` (a centered `lipgloss.Place` modal) **instead of** the
 dashboard — it replaces rather than composites, because lipgloss v1 can't
 back-fill a box over already-rendered content (same constraint behind `st()`).
@@ -65,15 +68,15 @@ ambiguous-width, so lipgloss and the terminal disagree on cell count and the
 modal's right border drifts — a box must align all four sides, unlike the
 left-anchored row columns (▶/✓/●).
 
-**Detail overlay.** The `d` key sets `Model.showDetail` (guarded: a no-op on an
-empty list); `handleKey` short-circuits to `handleDetailKey`, and `View` returns
+**Detail overlay.** The `d` key sets `Model.mode = modeDetail` (guarded: a
+no-op on an empty list); `handleKey` routes to `handleDetailKey`, and `View` returns
 `detailView` instead of the dashboard. Unlike `handleHelpKey` (dismiss on any
 key), the detail overlay is **navigable**: `↑`/`↓` reuse `moveUp`/`moveDown` to
 flip the selection to the previous/next PR without leaving the overlay (the
 cursor moves through `visiblePRs` and `detailView` re-reads `visible[m.cursor]`,
 so no extra rendering plumbing), `enter`/`o` reuse `openSelected` to open the
 current PR in the browser (the overlay stays open — `openSelected` never touches
-`showDetail`), `ctrl+c` quits, and any other key closes the overlay. It's **purely presentational** — every
+the mode), `ctrl+c` quits, and any other key closes the overlay. It's **purely presentational** — every
 field (`Body`, the four reviewer lists, CI/merge/Jira) is already enriched on
 the `PullRequest`, so opening it issues **no** GitHub calls and `internal/gh` is
 untouched. The meta line **reuses the row fragments** (`renderDiff`,
