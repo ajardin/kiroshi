@@ -133,7 +133,7 @@ bucket and shows up on a non-error row:
    (matches "in progress elsewhere"; yellow would collide semantically with
    "Waiting On You"), muted for "no CI". It's a fixed aligned column (see
    "Row line-2 layout"), so the textual `ci:` prefix is dropped — position
-   identifies it. See `ciFragment` in `internal/tui/tui.go`.
+   identifies it. See `ciFragment` in `internal/tui/fragments.go`.
 2. **Diff cell** — `+N` in green and `-N` in red, like `git diff` and every
    diff viewer users already know. Both sides are always shown (including
    a `+0` or `-0`); an all-zero diff falls back to a muted em-dash. It's a
@@ -151,7 +151,7 @@ bucket and shows up on a non-error row:
    flowing tail** (like the Jira cell), present only on flagged rows. It was a
    fixed aligned column once, but reserving the width left a visible gap on every
    clear row for a rarely-present cell; the tail placement drops that gap.
-   See `mergeFragment` in `internal/tui/tui.go` and `MergeState` /
+   See `mergeFragment` in `internal/tui/fragments.go` and `MergeState` /
    `normalizeMergeState` in `internal/gh/client.go`.
 
 All three exceptions are deliberate concessions to universal conventions; do
