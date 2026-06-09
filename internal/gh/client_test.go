@@ -654,6 +654,81 @@ func TestAggregateCheckRuns(t *testing.T) {
 	}
 }
 
+func TestLatestCheckRuns(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	// run builds a check run; appID/name form the dedup key, startedMin offsets
+	// StartedAt from base so later runs win.
+	run := func(id, appID int64, name, status, conclusion string, startedMin int) *github.CheckRun {
+		s, c, n := status, conclusion, name
+		return &github.CheckRun{
+			ID:         &id,
+			Name:       &n,
+			Status:     &s,
+			Conclusion: &c,
+			App:        &github.App{ID: &appID},
+			StartedAt:  &github.Timestamp{Time: base.Add(time.Duration(startedMin) * time.Minute)},
+		}
+	}
+
+	cases := []struct {
+		name string
+		runs []*github.CheckRun
+		want CIState
+	}{
+		{
+			name: "re-run success supersedes earlier failure",
+			runs: []*github.CheckRun{
+				run(1, 10, "build", "completed", "failure", 0),
+				run(2, 10, "build", "completed", "success", 5),
+			},
+			want: CIStateSuccess,
+		},
+		{
+			name: "tie on StartedAt breaks to higher id",
+			runs: []*github.CheckRun{
+				run(2, 10, "build", "completed", "success", 0),
+				run(1, 10, "build", "completed", "failure", 0),
+			},
+			want: CIStateSuccess,
+		},
+		{
+			name: "same name across apps stays separate",
+			runs: []*github.CheckRun{
+				run(1, 10, "build", "completed", "success", 0),
+				run(2, 20, "build", "completed", "failure", 0),
+			},
+			want: CIStateFailure,
+		},
+		{
+			name: "distinct checks all kept",
+			runs: []*github.CheckRun{
+				run(1, 10, "lint", "completed", "success", 0),
+				run(2, 10, "test", "completed", "failure", 0),
+			},
+			want: CIStateFailure,
+		},
+		{
+			name: "nil entries dropped",
+			runs: []*github.CheckRun{
+				nil,
+				run(1, 10, "build", "completed", "success", 0),
+			},
+			want: CIStateSuccess,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := aggregateCheckRuns(latestCheckRuns(tc.runs)); got != tc.want {
+				t.Errorf("aggregateCheckRuns(latestCheckRuns()) = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestNormalizeMergeState(t *testing.T) {
 	t.Parallel()
 
