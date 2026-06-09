@@ -821,6 +821,60 @@ func TestView_NarrowDegradesNoOverflow(t *testing.T) {
 	}
 }
 
+// TestView_TallListNeverExceedsTerminalHeight guards the vertical invariant
+// behind the paginated list: whatever the terminal size, the rendered view
+// must fit within the height. In alt-screen mode Bubble Tea trims overflow
+// from the top, so even a single extra line clips the header off the screen.
+func TestView_TallListNeverExceedsTerminalHeight(t *testing.T) {
+	t.Parallel()
+
+	prs := make([]gh.PullRequest, 0, 20)
+	for i := 0; i < 20; i++ {
+		pr := samplePRs()[i%2]
+		pr.Number = 100 + i
+		prs = append(prs, pr)
+	}
+
+	for _, width := range []int{50, 60, 91, 100, 120, 140} {
+		for height := 14; height <= 40; height++ {
+			m := NewModel(prs, "ajardin", "v1.4.0 (e677d65, built 2026-06-09)", 2, true, 5*time.Minute, time.Now(), nil, nil)
+			updated, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: height})
+			view := updated.(Model).View()
+
+			if strings.Contains(view, "Terminal too small") {
+				continue
+			}
+			if got := lipgloss.Height(view); got > height {
+				t.Errorf("%d×%d: view is %d lines tall, overflows by %d", width, height, got, got-height)
+				continue
+			}
+			if first := strings.SplitN(view, "\n", 2)[0]; !strings.Contains(first, "KIROSHI") {
+				t.Errorf("%d×%d: header missing from first line: %q", width, height, first)
+			}
+		}
+	}
+}
+
+// TestView_HeaderNeverWraps guards listAreaHeight's single-line header
+// assumption: across widths (including the 91–130 band where the full header
+// used to overflow), headerView must stay one line and within the terminal
+// width, degrading by measurement instead of wrapping.
+func TestView_HeaderNeverWraps(t *testing.T) {
+	t.Parallel()
+
+	m := NewModel(samplePRs(), "a-rather-long-login", "v1.4.0 (e677d65, built 2026-06-09)", 2, true, 5*time.Minute, time.Now(), nil, nil)
+	for width := 46; width <= 160; width++ {
+		updated, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 40})
+		header := updated.(Model).headerView()
+		if strings.Contains(header, "\n") {
+			t.Errorf("width %d: header spans multiple lines:\n%q", width, header)
+		}
+		if w := lipgloss.Width(header); w > width {
+			t.Errorf("width %d: header is %d cols wide", width, w)
+		}
+	}
+}
+
 func TestModel_ActiveTabUnderlined(t *testing.T) {
 	t.Parallel()
 

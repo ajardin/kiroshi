@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // View composes the full dashboard.
@@ -22,10 +23,15 @@ func (m Model) View() string {
 	}
 	// Below fullCardsW the four cards no longer fit on one row; cardsView falls
 	// back to a 2×2 grid down to minW (two cards wide). Below that we give up.
+	// The height floor is derived from listAreaHeight rather than hard-coded:
+	// the fixed regions vary with the width (2×2 cards, wrapped footer), and a
+	// view taller than the terminal gets its top — the header — trimmed in
+	// alt-screen mode.
 	minW := 1 + minCardW*2 + 2
-	if m.width < minW || m.height < 14 {
+	minH := m.height - m.listAreaHeight() + rowHeight
+	if m.width < minW || m.height < minH {
 		return lipgloss.NewStyle().Width(m.width).Align(lipgloss.Center).
-			Render(fmt.Sprintf("\nTerminal too small.\nResize to at least %d × 14.\n", minW))
+			Render(fmt.Sprintf("\nTerminal too small.\nResize to at least %d × %d.\n", minW, minH))
 	}
 
 	parts := []string{
@@ -79,12 +85,6 @@ func (m Model) headerView() string {
 		build += " (" + scanned + ")"
 	}
 	left := logo + " " + lipgloss.NewStyle().Foreground(colCyan).Render(build)
-	// On a narrow terminal the build parenthetical would push the header past one
-	// line (wrapping breaks listAreaHeight's single-line assumption): keep only
-	// the brand mark.
-	if m.width < fullCardsW {
-		left = logo
-	}
 
 	// Wider whitespace between clusters; a uniform " · " everywhere reads cramped.
 	gap := "      "
@@ -111,9 +111,19 @@ func (m Model) headerView() string {
 	clock := lipgloss.NewStyle().Foreground(colCyan).Render(m.now.Format("15:04:05"))
 	right := user + gap + strings.Join(status, dot) + gap + clock
 
-	// On a narrow terminal the status badges + clock overflow and collide with
-	// the left cluster. Drop them to secondary status, keeping only @login.
-	if m.width < fullCardsW {
+	// Degrade by measurement, not by a fixed width threshold: a header wider
+	// than the terminal wraps, which breaks listAreaHeight's single-line
+	// assumption and pushes the view past the screen height (alt-screen trims
+	// the overflow from the top, clipping this very line). Drop the build
+	// parenthetical first, then the status badges + clock, keeping only the
+	// brand mark and @login.
+	overflows := func() bool {
+		return lipgloss.Width(left)+lipgloss.Width(right)+3 > m.width // 2 margins + min pad
+	}
+	if overflows() {
+		left = logo
+	}
+	if overflows() {
 		right = user
 	}
 
@@ -121,7 +131,13 @@ func (m Model) headerView() string {
 	if pad < 1 {
 		pad = 1
 	}
-	return " " + left + strings.Repeat(" ", pad) + right + " "
+	line := " " + left + strings.Repeat(" ", pad) + right + " "
+	// Last resort (a very long login on a very narrow terminal): clip rather
+	// than wrap.
+	if lipgloss.Width(line) > m.width {
+		line = ansi.Truncate(line, m.width, "…")
+	}
+	return line
 }
 
 func (m Model) ruleView() string {

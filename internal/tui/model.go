@@ -599,9 +599,11 @@ func (m Model) rowsVisible() int {
 // listAreaHeight is the vertical room left for the PR rows after the fixed
 // regions (header, cards, section header, footer, status line, separators).
 func (m Model) listAreaHeight() int {
-	// header, rule, blank (after cards), blank (after section), + the extra
-	// footerGap line between the list and the footer.
-	fixed := 1 + 1 + 1 + 1 + 1
+	// header, rule, blank (after cards), the section header itself, blank
+	// (after section), + the net footerGap line between the list and the
+	// footer (the gap renders two blank lines, but the first one is the last
+	// row's trailing spacer, already counted in its rowHeight budget).
+	fixed := 1 + 1 + 1 + 1 + 1 + 1
 	// Cards are one 4-line row, or a 2×2 grid (8 lines) below fullCardsW. Derive
 	// the height from the same width threshold cardsView uses rather than
 	// rendering cardsView a second time per frame just to count its lines.
