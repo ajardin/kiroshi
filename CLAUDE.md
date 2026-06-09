@@ -385,13 +385,14 @@ exactly one that survives `approvalMine`.
 
 ## Conventions
 
-- **Update the changelog with every user-facing change.** Any change that a
-  user would notice — a new key binding, a layout or behaviour change, a config
-  option — gets an entry under `## [Unreleased]` in `CHANGELOG.md` (Keep a
-  Changelog format: `Added` / `Changed` / `Fixed` / `Removed`) **in the same
-  change**, written in the user-facing voice of the existing entries. Don't
-  defer it to release time — it gets forgotten. Internal-only refactors, test,
-  and tooling changes don't need an entry.
+- **The changelog is the GitHub release, generated from commits.** There is no
+  `CHANGELOG.md` — goreleaser builds the release notes from commit messages
+  (`changelog: use: github` in `.goreleaser.yml`), grouped into Features / Fixes
+  / Refactors. So the commit message *is* the changelog entry: write conventional
+  commit subjects (`feat:`, `fix:`, `refactor:`) with a clear, user-facing
+  summary of what changed. `docs:`/`test:`/`chore:` and merge commits are
+  filtered out of the notes. Don't author a separate changelog file. To see the
+  changelog, check the [releases page](https://github.com/ajardin/kiroshi/releases).
 - **No comments unless the why is non-obvious.** Don't restate what
   well-named code already shows. Do explain hidden constraints, lipgloss
   quirks, or workarounds.

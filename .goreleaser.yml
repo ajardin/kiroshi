@@ -42,7 +42,6 @@ archives:
     files:
       - LICENSE
       - README.md
-      - CHANGELOG.md
 
 checksum:
   name_template: "checksums.txt"
@@ -81,7 +80,6 @@ release:
   mode: replace
   header: |
     ## kiroshi {{ .Tag }}
-    See [CHANGELOG.md](https://github.com/ajardin/kiroshi/blob/main/CHANGELOG.md) for a curated summary.
   footer: |
     ---
     Built with [goreleaser](https://goreleaser.com/).
