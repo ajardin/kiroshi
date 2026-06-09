@@ -134,6 +134,29 @@ func TestWizard_JiraConfigured(t *testing.T) {
 	}
 }
 
+func TestWizard_JiraURLRequiresHTTPS(t *testing.T) {
+	t.Parallel()
+
+	m := NewWizardModel(okValidator, okJiraValidator)
+	m = typeRunes(t, m, "ghp_token")
+	m, _ = enter(t, m) // -> search
+	m, _ = enter(t, m) // search blank -> min reviews
+	m, _ = enter(t, m) // min reviews blank -> refresh interval
+	m, _ = enter(t, m) // refresh blank -> jira url
+
+	m = typeRunes(t, m, "http://acme.atlassian.net")
+	m, _ = enter(t, m)
+	if m.step != stepJiraURL {
+		t.Fatalf("step = %v, want to stay on stepJiraURL for an http URL", m.step)
+	}
+	if !strings.Contains(m.errMsg, "https") {
+		t.Errorf("errMsg = %q, want an https hint", m.errMsg)
+	}
+	if !strings.Contains(m.View(), "https") {
+		t.Error("view should surface the https error inline")
+	}
+}
+
 func TestWizard_JiraValidationFails(t *testing.T) {
 	t.Parallel()
 
