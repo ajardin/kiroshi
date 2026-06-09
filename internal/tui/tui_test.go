@@ -1362,6 +1362,21 @@ func TestModel_CtrlCQuitsFromDetail(t *testing.T) {
 	}
 }
 
+func TestModel_CtrlCQuitsFromFilterMode(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(t, nil, nil)
+	m.filterMode = true
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("ctrl+c from filter mode should return a quit cmd")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Errorf("ctrl+c cmd produced %T, want tea.QuitMsg", cmd())
+	}
+}
+
 func TestModel_FooterAdvertisesDetail(t *testing.T) {
 	t.Parallel()
 

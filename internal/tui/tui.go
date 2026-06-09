@@ -615,6 +615,8 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 
 func (m Model) handleFilterKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
 	case "esc":
 		m.filterMode = false
 		m.filter = ""
