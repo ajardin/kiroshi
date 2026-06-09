@@ -620,21 +620,23 @@ func (m Model) handleFilterKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	case "esc":
 		m.filterMode = false
 		m.filter = ""
-		m.cursor = 0
+		m.cursor, m.offset = 0, 0
 		return m, nil
 	case "enter":
 		m.filterMode = false
 		return m, nil
 	case "backspace":
 		if len(m.filter) > 0 {
-			m.filter = m.filter[:len(m.filter)-1]
-			m.cursor = 0
+			m.filter = trimLastRune(m.filter)
+			m.cursor, m.offset = 0, 0
 		}
 		return m, nil
 	default:
 		if msg.Type == tea.KeyRunes && len(msg.Runes) > 0 {
 			m.filter += string(msg.Runes)
-			m.cursor = 0
+			// Reset the scroll window along with the cursor: a leftover offset
+			// from a scrolled list would render past the end of a shrunken set.
+			m.cursor, m.offset = 0, 0
 		}
 		return m, nil
 	}

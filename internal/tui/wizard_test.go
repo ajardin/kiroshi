@@ -34,6 +34,18 @@ func send(t *testing.T, m WizardModel, msg tea.Msg) (WizardModel, tea.Cmd) {
 	return out, cmd
 }
 
+func TestApplyKey_BackspaceTrimsRuneNotByte(t *testing.T) {
+	t.Parallel()
+
+	got := applyKey("café", tea.KeyMsg{Type: tea.KeyBackspace})
+	if got != "caf" {
+		t.Errorf("applyKey backspace = %q, want %q (must trim the whole rune)", got, "caf")
+	}
+	if got = applyKey("", tea.KeyMsg{Type: tea.KeyBackspace}); got != "" {
+		t.Errorf("applyKey backspace on empty = %q, want empty", got)
+	}
+}
+
 func typeRunes(t *testing.T, m WizardModel, s string) WizardModel {
 	t.Helper()
 	m, _ = send(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)})

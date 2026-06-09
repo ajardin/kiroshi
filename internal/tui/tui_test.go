@@ -183,6 +183,34 @@ func TestModel_FilterModeNarrowsList(t *testing.T) {
 	}
 }
 
+func TestModel_FilterBackspaceTrimsRuneNotByte(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(t, nil, nil)
+	m.filterMode = true
+	m.filter = "café"
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	got := updated.(Model)
+	if got.filter != "caf" {
+		t.Errorf("filter = %q, want %q (backspace must trim the whole rune)", got.filter, "caf")
+	}
+}
+
+func TestModel_FilterTypingResetsScrollOffset(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(t, nil, nil)
+	m.filterMode = true
+	m.offset = 5 // leftover scroll from before filtering
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	got := updated.(Model)
+	if got.cursor != 0 || got.offset != 0 {
+		t.Errorf("after typing: cursor=%d offset=%d, want 0/0", got.cursor, got.offset)
+	}
+}
+
 func TestModel_FilterModeSwallowsNavigation(t *testing.T) {
 	t.Parallel()
 
