@@ -217,14 +217,31 @@ func (t *advancedSearchTransport) RoundTrip(req *http.Request) (*http.Response, 
 // request, signalling the PAT is missing, revoked or expired.
 var ErrInvalidToken = errors.New("invalid or expired GitHub token")
 
+// ErrRateLimited is returned when GitHub rejects a request because the token
+// exhausted its primary quota or tripped the secondary (abuse) rate limit.
+// The wrapped message carries the reset/retry hint when GitHub provides one.
+var ErrRateLimited = errors.New("GitHub rate limit exceeded")
+
 // wrapAPIError translates a go-github (response, error) pair into the error
-// kiroshi exposes to callers: a 401 becomes ErrInvalidToken so the CLI can
-// print an actionable message; anything else is wrapped with op as context.
-// Returns nil when err is nil. Centralised here so every new REST call
-// inherits the 401 → ErrInvalidToken translation by default.
+// kiroshi exposes to callers: a 401 becomes ErrInvalidToken and a rate-limit
+// rejection becomes ErrRateLimited, so the CLI can print an actionable
+// message; anything else is wrapped with op as context. Returns nil when err
+// is nil. Centralised here so every new REST call inherits the translations
+// by default.
 func wrapAPIError(op string, resp *github.Response, err error) error {
 	if err == nil {
 		return nil
+	}
+	var rateErr *github.RateLimitError
+	if errors.As(err, &rateErr) {
+		return fmt.Errorf("%s: %w (quota resets at %s)", op, ErrRateLimited, rateErr.Rate.Reset.Format("15:04:05"))
+	}
+	var abuseErr *github.AbuseRateLimitError
+	if errors.As(err, &abuseErr) {
+		if abuseErr.RetryAfter != nil {
+			return fmt.Errorf("%s: %w (retry in %s)", op, ErrRateLimited, abuseErr.RetryAfter.Round(time.Second))
+		}
+		return fmt.Errorf("%s: %w", op, ErrRateLimited)
 	}
 	if resp != nil && resp.StatusCode == http.StatusUnauthorized {
 		return ErrInvalidToken
