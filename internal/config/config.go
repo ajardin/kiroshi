@@ -165,14 +165,24 @@ func DefaultPath() (string, error) {
 // file holds the GitHub token, so it is created with 0600 (and the directory
 // with 0700). MinReviews is always written explicitly via the fileConfig
 // pointer so a deliberate 0 round-trips instead of being re-defaulted on load.
+//
+// The write is atomic: it goes to a temp file in the same directory which is
+// renamed over the target, so a crash or full disk mid-encode never leaves a
+// corrupted config behind (a corrupt file would also block the auto-wizard,
+// which only triggers when no file exists at all). The rename also guarantees
+// the result is 0600 even when replacing an older, looser-permissioned file.
 func Save(path string, c *Config) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
+	// Remove any stale temp file from an interrupted save so O_EXCL below
+	// creates a fresh one with 0600 (O_CREATE's mode only applies at creation).
+	tmp := path + ".tmp"
+	_ = os.Remove(tmp)
 	//nolint:gosec // G304: the config path is user-supplied by design (-config flag / XDG).
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
-		return fmt.Errorf("create config %s: %w", path, err)
+		return fmt.Errorf("create config %s: %w", tmp, err)
 	}
 
 	mr := c.MinReviews
@@ -191,12 +201,18 @@ func Save(path string, c *Config) error {
 	}
 	if err := toml.NewEncoder(f).Encode(fc); err != nil {
 		_ = f.Close()
+		_ = os.Remove(tmp)
 		return fmt.Errorf("encode config %s: %w", path, err)
 	}
 	// Check Close explicitly: it surfaces deferred write/flush errors that a
 	// deferred Close would silently swallow.
 	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
 		return fmt.Errorf("close config %s: %w", path, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("write config %s: %w", path, err)
 	}
 	return nil
 }
@@ -243,6 +259,12 @@ func (c *Config) validateJira() error {
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("incomplete jira config; missing: %s", strings.Join(missing, "; "))
+	}
+	// Jira auth is HTTP Basic, so the email and token travel on every request;
+	// anything but https would send them in cleartext. Jira Cloud is always
+	// https, so there is no legitimate http:// case to allow.
+	if !strings.HasPrefix(c.JiraBaseURL, "https://") {
+		return fmt.Errorf("jira_base_url must start with https://, got %q", c.JiraBaseURL)
 	}
 	return nil
 }

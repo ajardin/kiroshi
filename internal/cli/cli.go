@@ -161,6 +161,13 @@ func runWizard(ctx context.Context, configPath string, stdout io.Writer, ro runO
 		path = def
 	}
 
+	// Refuse to clobber an existing config: it holds tokens and may be
+	// hand-edited. The auto-fallback path never gets here with a file present
+	// (it is gated on config.ErrNotFound), so this only guards explicit -init.
+	if _, err := os.Stat(path); err == nil {
+		return fmt.Errorf("config already exists at %s; delete it first or use -config to write elsewhere", path)
+	}
+
 	runWiz := ro.runWizard
 	if runWiz == nil {
 		if !isTerminal(stdout) {

@@ -21,7 +21,9 @@ is tagged and the advisory published.
 ## Handling of credentials
 
 kiroshi reads a GitHub personal access token from the `GITHUB_TOKEN`
-environment variable or the `github_token` config field. The token is
-redacted from structured logs (`config.Config.LogValue`) and is never written
-anywhere by kiroshi. If you believe a code path leaks the token, treat it as a
-security issue and report it through the channels above.
+environment variable or the `github_token` config field, and optionally a
+Jira API token (`JIRA_API_TOKEN` / `jira_token`). Tokens are redacted from
+structured logs (`config.Config.LogValue`) and never logged. The only place
+kiroshi ever writes them is the config file created at your request by
+`kiroshi -init`, with file mode 0600. If you believe a code path leaks a
+token, treat it as a security issue and report it through the channels above.

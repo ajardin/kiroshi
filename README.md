@@ -113,19 +113,19 @@ automatically — TTY detection lives in `cli.isTerminal`.
 
 ### Keybindings (TUI)
 
-| Key       | Action                          |
-| --------- | ------------------------------- |
-| j/k ↓/↑   | navigate up / down              |
-| tab       | switch incoming / mine view     |
-| g/G       | jump to top / bottom            |
-| enter / o | open selected PR in browser     |
-| d         | show selected PR detail overlay |
-| r         | rescan from GitHub              |
-| f         | filter the visible list         |
-| s         | cycle sort order                |
-| a         | cycle approval filter           |
-| ?         | toggle the keybindings overlay  |
-| q / esc   | quit                            |
+| Key        | Action                          |
+| ---------- | ------------------------------- |
+| ↓/↑        | move selection down / up        |
+| tab        | switch incoming / mine view     |
+| g/G        | jump to top / bottom (or home/end) |
+| enter / o  | open selected PR in browser     |
+| d          | show selected PR detail overlay |
+| r          | rescan from GitHub              |
+| f or /     | filter the visible list         |
+| s          | cycle sort order                |
+| a          | cycle approval filter           |
+| ?          | toggle the keybindings overlay  |
+| q / esc    | quit                            |
 
 ## Development
 

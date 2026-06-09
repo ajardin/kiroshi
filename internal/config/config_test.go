@@ -412,4 +412,57 @@ jira_base_url = "https://acme.atlassian.net"`)
 			t.Errorf("err = %v, want a jira validation error", err)
 		}
 	})
+
+	t.Run("non-https base url is rejected", func(t *testing.T) {
+		// Basic auth would send email:token in cleartext over http.
+		p := writeConfig(t, `github_token = "t"
+search = "s"
+jira_base_url = "http://acme.atlassian.net"
+jira_email = "me@acme.com"
+jira_token = "tok"`)
+		_, err := Load(p)
+		if err == nil || !strings.Contains(err.Error(), "https") {
+			t.Errorf("err = %v, want an https validation error", err)
+		}
+	})
+}
+
+func TestSaveIsAtomicAndRestoresPerms(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("JIRA_API_TOKEN", "")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	// Simulate a pre-existing, hand-created config with loose permissions and
+	// a stale temp file from an interrupted save.
+	if err := os.WriteFile(path, []byte("github_token = \"old\"\nsearch = \"s\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".tmp", []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Save(path, &Config{GitHubToken: "new", Search: "s", MinReviews: 2}); err != nil {
+		t.Fatalf("Save() err = %v", err)
+	}
+
+	if _, err := os.Stat(path + ".tmp"); !errors.Is(err, fs.ErrNotExist) {
+		t.Error("temp file should not survive a successful save")
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Errorf("config perm after overwrite = %o, want 600 (rename must restore secret-file perms)", perm)
+		}
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() err = %v", err)
+	}
+	if cfg.GitHubToken != "new" {
+		t.Errorf("github_token = %q, want %q", cfg.GitHubToken, "new")
+	}
 }

@@ -317,6 +317,36 @@ func TestRun_InitAbortedWritesNothing(t *testing.T) {
 	}
 }
 
+func TestRun_InitRefusesToOverwriteExistingConfig(t *testing.T) {
+	t.Parallel()
+
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	original := []byte("github_token = \"keep-me\"\nsearch = \"is:pr\"\n")
+	if err := os.WriteFile(cfgPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := func(_ tui.WizardModel) (tui.WizardResult, error) {
+		t.Error("wizard must not run when a config already exists")
+		return tui.WizardResult{}, nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	err := Run(t.Context(), []string{"-init", "-config", cfgPath}, &stdout, &stderr,
+		WithWizardRunner(runner))
+	if err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("err = %v, want refusal mentioning the existing config", err)
+	}
+
+	got, readErr := os.ReadFile(cfgPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != string(original) {
+		t.Error("existing config was modified")
+	}
+}
+
 func TestRun_AutoWizardOnMissingConfig(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())

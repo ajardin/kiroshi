@@ -34,6 +34,18 @@ func send(t *testing.T, m WizardModel, msg tea.Msg) (WizardModel, tea.Cmd) {
 	return out, cmd
 }
 
+func TestApplyKey_BackspaceTrimsRuneNotByte(t *testing.T) {
+	t.Parallel()
+
+	got := applyKey("café", tea.KeyMsg{Type: tea.KeyBackspace})
+	if got != "caf" {
+		t.Errorf("applyKey backspace = %q, want %q (must trim the whole rune)", got, "caf")
+	}
+	if got = applyKey("", tea.KeyMsg{Type: tea.KeyBackspace}); got != "" {
+		t.Errorf("applyKey backspace on empty = %q, want empty", got)
+	}
+}
+
 func typeRunes(t *testing.T, m WizardModel, s string) WizardModel {
 	t.Helper()
 	m, _ = send(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)})
@@ -119,6 +131,29 @@ func TestWizard_JiraConfigured(t *testing.T) {
 	res := m.result()
 	if res.JiraBaseURL != "https://acme.atlassian.net" || res.JiraEmail != "me@acme.com" || res.JiraToken != "jira-secret" {
 		t.Errorf("unexpected Jira config: %+v", res)
+	}
+}
+
+func TestWizard_JiraURLRequiresHTTPS(t *testing.T) {
+	t.Parallel()
+
+	m := NewWizardModel(okValidator, okJiraValidator)
+	m = typeRunes(t, m, "ghp_token")
+	m, _ = enter(t, m) // -> search
+	m, _ = enter(t, m) // search blank -> min reviews
+	m, _ = enter(t, m) // min reviews blank -> refresh interval
+	m, _ = enter(t, m) // refresh blank -> jira url
+
+	m = typeRunes(t, m, "http://acme.atlassian.net")
+	m, _ = enter(t, m)
+	if m.step != stepJiraURL {
+		t.Fatalf("step = %v, want to stay on stepJiraURL for an http URL", m.step)
+	}
+	if !strings.Contains(m.errMsg, "https") {
+		t.Errorf("errMsg = %q, want an https hint", m.errMsg)
+	}
+	if !strings.Contains(m.View(), "https") {
+		t.Error("view should surface the https error inline")
 	}
 }
 

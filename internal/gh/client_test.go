@@ -561,6 +561,73 @@ func TestClient_SearchPullRequests_UnauthorizedDuringEnrichment(t *testing.T) {
 	}
 }
 
+func TestWrapAPIError(t *testing.T) {
+	t.Parallel()
+
+	retry := 90 * time.Second
+	cases := []struct {
+		name     string
+		resp     *github.Response
+		err      error
+		wantIs   error
+		wantText string
+	}{
+		{
+			name: "nil error passes through",
+			err:  nil,
+		},
+		{
+			name:     "primary rate limit maps to ErrRateLimited with reset hint",
+			err:      &github.RateLimitError{Rate: github.Rate{Reset: github.Timestamp{Time: time.Date(2026, 6, 9, 18, 30, 0, 0, time.UTC)}}},
+			wantIs:   ErrRateLimited,
+			wantText: "quota resets at 18:30:00",
+		},
+		{
+			name:     "secondary rate limit maps to ErrRateLimited with retry hint",
+			err:      &github.AbuseRateLimitError{RetryAfter: &retry},
+			wantIs:   ErrRateLimited,
+			wantText: "retry in 1m30s",
+		},
+		{
+			name:   "secondary rate limit without retry-after still maps",
+			err:    &github.AbuseRateLimitError{},
+			wantIs: ErrRateLimited,
+		},
+		{
+			name:   "401 maps to ErrInvalidToken",
+			resp:   &github.Response{Response: &http.Response{StatusCode: http.StatusUnauthorized}},
+			err:    errors.New("bad credentials"),
+			wantIs: ErrInvalidToken,
+		},
+		{
+			name:     "anything else is wrapped with op context",
+			err:      errors.New("boom"),
+			wantText: "list reviews: boom",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := wrapAPIError("list reviews", tc.resp, tc.err)
+			if tc.err == nil {
+				if err != nil {
+					t.Fatalf("err = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("err = nil, want non-nil")
+			}
+			if tc.wantIs != nil && !errors.Is(err, tc.wantIs) {
+				t.Errorf("err = %v, want errors.Is(%v)", err, tc.wantIs)
+			}
+			if tc.wantText != "" && !strings.Contains(err.Error(), tc.wantText) {
+				t.Errorf("err = %q, want substring %q", err, tc.wantText)
+			}
+		})
+	}
+}
+
 func TestAggregateCheckRuns(t *testing.T) {
 	t.Parallel()
 

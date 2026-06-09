@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -159,16 +160,25 @@ func (m WizardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleRefreshKey(msg)
 	case stepJiraURL:
 		if msg.Type == tea.KeyEnter {
-			if strings.TrimSpace(m.jiraURL) == "" {
+			trimmed := strings.TrimSpace(m.jiraURL)
+			if trimmed == "" {
 				// Blank URL = skip Jira entirely; go straight to validation.
 				m.step = stepValidating
 				m.spinFrame = 0
 				return m, tea.Batch(m.validateCmd(), spinnerCmd())
 			}
+			// Basic auth ships email:token on every request; refuse a scheme
+			// that would send them in cleartext (Jira Cloud is always https).
+			if !strings.HasPrefix(trimmed, "https://") {
+				m.errMsg = "URL must start with https://"
+				return m, nil
+			}
+			m.errMsg = ""
 			m.step = stepJiraEmail
 			return m, nil
 		}
 		m.jiraURL = applyKey(m.jiraURL, msg)
+		m.errMsg = ""
 		return m, nil
 	case stepJiraEmail:
 		if msg.Type == tea.KeyEnter {
@@ -195,15 +205,23 @@ func (m WizardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
+// trimLastRune removes the trailing rune from s — not the trailing byte, so
+// backspacing over a multi-byte character (é, CJK, emoji) never leaves the
+// buffer with invalid UTF-8.
+func trimLastRune(s string) string {
+	if s == "" {
+		return s
+	}
+	_, size := utf8.DecodeLastRuneInString(s)
+	return s[:len(s)-size]
+}
+
 // applyKey edits a plain text buffer in response to a keypress: backspace
-// trims the last byte, runes and space append. Anything else is a no-op.
+// trims the last rune, runes and space append. Anything else is a no-op.
 func applyKey(buf string, msg tea.KeyMsg) string {
 	switch msg.Type {
 	case tea.KeyBackspace, tea.KeyDelete:
-		if len(buf) > 0 {
-			return buf[:len(buf)-1]
-		}
-		return buf
+		return trimLastRune(buf)
 	case tea.KeyRunes:
 		return buf + string(msg.Runes)
 	case tea.KeySpace:
@@ -225,7 +243,7 @@ func (m WizardModel) handleMinReviewsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyBackspace, tea.KeyDelete:
 		if len(m.minReviewsStr) > 0 {
-			m.minReviewsStr = m.minReviewsStr[:len(m.minReviewsStr)-1]
+			m.minReviewsStr = trimLastRune(m.minReviewsStr)
 			m.errMsg = ""
 		}
 		return m, nil
@@ -250,7 +268,7 @@ func (m WizardModel) handleRefreshKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyBackspace, tea.KeyDelete:
 		if len(m.refreshStr) > 0 {
-			m.refreshStr = m.refreshStr[:len(m.refreshStr)-1]
+			m.refreshStr = trimLastRune(m.refreshStr)
 			m.errMsg = ""
 		}
 		return m, nil
@@ -357,7 +375,7 @@ func (m WizardModel) View() string {
 	case stepRefresh:
 		body = m.fieldView("4/7", "Auto-refresh interval (optional)", m.refreshStr, "e.g. 5m · blank to disable", m.errMsg)
 	case stepJiraURL:
-		body = m.fieldView("5/7", "Jira base URL (optional)", m.jiraURL, "https://acme.atlassian.net · blank to skip", "")
+		body = m.fieldView("5/7", "Jira base URL (optional)", m.jiraURL, "https://acme.atlassian.net · blank to skip", m.errMsg)
 	case stepJiraEmail:
 		body = m.fieldView("6/7", "Jira account email", m.jiraEmail, "you@acme.com", "")
 	case stepJiraToken:
