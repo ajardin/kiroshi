@@ -60,8 +60,7 @@ var ErrIssueNotFound = errors.New("jira issue not found")
 type Client struct {
 	http    *http.Client
 	baseURL string
-	email   string
-	token   string
+	auth    string // pre-encoded "Basic <base64(email:token)>" header value
 }
 
 // New builds a Jira Cloud client. baseURL is the instance root
@@ -73,8 +72,7 @@ func New(baseURL, email, token string) *Client {
 	return &Client{
 		http:    &http.Client{Timeout: httpTimeout},
 		baseURL: strings.TrimRight(baseURL, "/"),
-		email:   email,
-		token:   token,
+		auth:    "Basic " + base64.StdEncoding.EncodeToString([]byte(email+":"+token)),
 	}
 }
 
@@ -99,8 +97,7 @@ func (c *Client) Issue(ctx context.Context, key string) (Status, error) {
 	if err != nil {
 		return Status{}, fmt.Errorf("build jira request for %s: %w", key, err)
 	}
-	auth := base64.StdEncoding.EncodeToString([]byte(c.email + ":" + c.token))
-	req.Header.Set("Authorization", "Basic "+auth)
+	req.Header.Set("Authorization", c.auth)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.http.Do(req)
@@ -137,8 +134,7 @@ func (c *Client) Validate(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("build jira validation request: %w", err)
 	}
-	auth := base64.StdEncoding.EncodeToString([]byte(c.email + ":" + c.token))
-	req.Header.Set("Authorization", "Basic "+auth)
+	req.Header.Set("Authorization", c.auth)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.http.Do(req)
