@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/go-github/v80/github"
@@ -151,9 +152,92 @@ type API interface {
 // Client talks to the GitHub REST API on behalf of kiroshi. When jira is
 // non-nil it also resolves the Jira issue status of each PR; a nil jira
 // disables that enrichment.
+//
+// The client persists across rescans (the TUI's refresh closure captures it),
+// so it carries the per-PR review-state cache that lets a rescan skip the
+// review calls for PRs whose updated_at hasn't moved; see cachedEnrichment.
 type Client struct {
 	gh   *github.Client
 	jira jira.Lookup
+
+	// mu guards cache: enrichment runs through an errgroup worker pool, so
+	// concurrent reads and writes would race without it.
+	mu    sync.Mutex
+	cache map[string]cachedEnrichment
+}
+
+// cachedEnrichment memoizes one PR's review state together with the
+// UpdatedAt it was computed at. Review submissions, review-request changes,
+// pushes and title/body edits all bump the PR's updated_at, so an unchanged
+// UpdatedAt guarantees the review state is unchanged and the two REST calls
+// behind it (ListReviewers + ListReviews) can be skipped on rescan.
+//
+// Deliberately NOT cached: check runs can complete and mergeable_state can
+// flip (base branch moved) without any PR activity, so PullRequests.Get and
+// the check-runs call stay live every scan; Jira is a different service with
+// its own quota and its ticket status moves independently, so it stays live
+// too.
+type cachedEnrichment struct {
+	updatedAt          time.Time
+	requestedReviewers []string
+	approvals          []string
+	changesRequested   []string
+	commented          []string
+}
+
+// cacheKey identifies a PR across rescans: owner/repo#number.
+func cacheKey(pr *PullRequest) string {
+	return fmt.Sprintf("%s/%s#%d", pr.Owner, pr.Repo, pr.Number)
+}
+
+// reviewStateFromCache copies the cached review state into pr when an entry
+// exists at the same UpdatedAt. A miss or a stale entry returns false and the
+// caller fetches live.
+func (c *Client) reviewStateFromCache(pr *PullRequest) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.cache[cacheKey(pr)]
+	if !ok || !entry.updatedAt.Equal(pr.UpdatedAt) {
+		return false
+	}
+	pr.RequestedReviewers = entry.requestedReviewers
+	pr.Approvals = entry.approvals
+	pr.ChangesRequested = entry.changesRequested
+	pr.Commented = entry.commented
+	return true
+}
+
+// storeReviewState records pr's freshly fetched review state keyed by its
+// UpdatedAt, for reuse on the next scan.
+func (c *Client) storeReviewState(pr *PullRequest) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cache == nil {
+		c.cache = make(map[string]cachedEnrichment)
+	}
+	c.cache[cacheKey(pr)] = cachedEnrichment{
+		updatedAt:          pr.UpdatedAt,
+		requestedReviewers: pr.RequestedReviewers,
+		approvals:          pr.Approvals,
+		changesRequested:   pr.ChangesRequested,
+		commented:          pr.Commented,
+	}
+}
+
+// pruneCache evicts entries for PRs absent from the current result set, so
+// PRs that left the search (merged, closed) don't occupy memory forever.
+func (c *Client) pruneCache(prs []PullRequest) {
+	keep := make(map[string]struct{}, len(prs))
+	for i := range prs {
+		keep[cacheKey(&prs[i])] = struct{}{}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for k := range c.cache {
+		if _, ok := keep[k]; !ok {
+			delete(c.cache, k)
+		}
+	}
 }
 
 // New returns a Client authenticated with the given personal access token,
@@ -270,6 +354,10 @@ func (c *Client) AuthenticatedUser(ctx context.Context) (User, error) {
 // with a worker pool of enrichConcurrency; the order of the returned slice
 // matches the search response order regardless. A 401 is translated into
 // ErrInvalidToken.
+//
+// Across rescans the review-state calls are skipped for PRs whose updated_at
+// hasn't moved (see cachedEnrichment); detail, check runs and Jira stay live.
+// Cache entries for PRs that dropped out of the results are evicted.
 func (c *Client) SearchPullRequests(ctx context.Context, query string) ([]PullRequest, error) {
 	opts := &github.SearchOptions{ListOptions: github.ListOptions{PerPage: 100}}
 	var out []PullRequest
@@ -289,6 +377,8 @@ func (c *Client) SearchPullRequests(ctx context.Context, query string) ([]PullRe
 		}
 		opts.Page = resp.NextPage
 	}
+
+	c.pruneCache(out)
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(enrichConcurrency)
@@ -365,9 +455,13 @@ func pullRequestFromIssue(iss *github.Issue) PullRequest {
 
 // enrichReviewState fetches the pending requested reviewers and the review
 // history of pr, populating pr.RequestedReviewers, pr.Approvals and
-// pr.ChangesRequested in place.
+// pr.ChangesRequested in place. Both REST calls are skipped when the cache
+// holds this PR's review state at the same UpdatedAt (see cachedEnrichment).
 func (c *Client) enrichReviewState(ctx context.Context, pr *PullRequest) error {
 	if pr.Owner == "" || pr.Repo == "" || pr.Number == 0 {
+		return nil
+	}
+	if c.reviewStateFromCache(pr) {
 		return nil
 	}
 
@@ -398,6 +492,7 @@ func (c *Client) enrichReviewState(ctx context.Context, pr *PullRequest) error {
 		listOpts.Page = rresp.NextPage
 	}
 	pr.Approvals, pr.ChangesRequested, pr.Commented = summarizeReviews(reviews, pr.Author)
+	c.storeReviewState(pr)
 	return nil
 }
 

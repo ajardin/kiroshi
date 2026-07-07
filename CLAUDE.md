@@ -45,6 +45,17 @@ capped at `enrichConcurrency` (8) — a comfortable margin under GitHub's
 secondary rate limit (~100 concurrent requests per token). Raise it if you ever
 scan hundreds of PRs at once.
 
+**Rescan cache.** `gh.Client` memoizes review state per PR (`cachedEnrichment`,
+mutex-guarded, keyed `owner/repo#number`, validated by `UpdatedAt`): any review
+submission, re-request, push or title/body edit bumps `updated_at`, so an
+unchanged `UpdatedAt` lets a rescan skip `ListReviewers` + `ListReviews` — half
+the GitHub cost with zero staleness. `Get` and check-runs deliberately stay
+live: check runs complete and `mergeable_state` flips (base branch moved)
+without any PR activity, so caching them would show stale CI/merge cells. Jira
+stays live too (different service, own quota). Entries for PRs that leave the
+search results are evicted each scan (`pruneCache`). Internal optimization —
+no config knob.
+
 **Error semantics.** Fail-fast for the GitHub enrichers — the first error
 cancels the rest and surfaces on the rescan status line. **Jira is the
 exception:** it's an optional decoration, so `enrichJiraStatus` swallows every

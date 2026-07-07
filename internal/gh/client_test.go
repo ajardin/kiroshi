@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -558,6 +559,160 @@ func TestClient_SearchPullRequests_UnauthorizedDuringEnrichment(t *testing.T) {
 	_, err := c.SearchPullRequests(t.Context(), "org:ajardin is:pr")
 	if !errors.Is(err, ErrInvalidToken) {
 		t.Errorf("err = %v, want errors.Is(ErrInvalidToken)", err)
+	}
+}
+
+func TestClient_SearchPullRequests_ReviewCache(t *testing.T) {
+	t.Parallel()
+
+	var (
+		mu        sync.Mutex
+		counts    = map[string]int{}
+		updatedAt = "2026-04-20T10:00:00Z"
+	)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		counts[r.URL.Path]++
+		at := updatedAt
+		mu.Unlock()
+		switch r.URL.Path {
+		case "/search/issues":
+			fmt.Fprintf(w, `{"total_count":1,"items":[{
+				"number":1,"title":"PR 1","user":{"login":"alice"},
+				"html_url":"https://github.com/ajardin/repo-x/pull/1",
+				"repository_url":"https://api.github.com/repos/ajardin/repo-x",
+				"updated_at":%q,
+				"pull_request":{"url":"https://api.github.com/repos/ajardin/repo-x/pulls/1"}
+			}]}`, at)
+		case "/repos/ajardin/repo-x/pulls/1/requested_reviewers":
+			fmt.Fprint(w, `{"users":[{"login":"carol"}],"teams":[]}`)
+		case "/repos/ajardin/repo-x/pulls/1/reviews":
+			fmt.Fprint(w, `[{"user":{"login":"bob"},"state":"APPROVED","submitted_at":"2026-04-20T11:00:00Z"}]`)
+		case "/repos/ajardin/repo-x/pulls/1":
+			fmt.Fprint(w, `{"number":1,"head":{"sha":"sha-1","ref":"feature/x"}}`)
+		case "/repos/ajardin/repo-x/commits/sha-1/check-runs":
+			fmt.Fprint(w, `{"total_count":0,"check_runs":[]}`)
+		default:
+			t.Errorf("unexpected path %q", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	})
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	c := newClient("test-token", srv.URL+"/", nil)
+	count := func(path string) int {
+		mu.Lock()
+		defer mu.Unlock()
+		return counts[path]
+	}
+	scan := func() PullRequest {
+		t.Helper()
+		prs, err := c.SearchPullRequests(t.Context(), "org:ajardin is:pr")
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if len(prs) != 1 {
+			t.Fatalf("got %d PRs, want 1", len(prs))
+		}
+		return prs[0]
+	}
+
+	first := scan()
+	if got := count("/repos/ajardin/repo-x/pulls/1/reviews"); got != 1 {
+		t.Fatalf("reviews calls after first scan = %d, want 1", got)
+	}
+
+	second := scan()
+	if got := count("/repos/ajardin/repo-x/pulls/1/requested_reviewers"); got != 1 {
+		t.Errorf("requested_reviewers calls after unchanged rescan = %d, want 1 (cache should skip)", got)
+	}
+	if got := count("/repos/ajardin/repo-x/pulls/1/reviews"); got != 1 {
+		t.Errorf("reviews calls after unchanged rescan = %d, want 1 (cache should skip)", got)
+	}
+	if got := count("/repos/ajardin/repo-x/pulls/1"); got != 2 {
+		t.Errorf("detail calls = %d, want 2 (merge state must stay live)", got)
+	}
+	if got := count("/repos/ajardin/repo-x/commits/sha-1/check-runs"); got != 2 {
+		t.Errorf("check-runs calls = %d, want 2 (CI must stay live)", got)
+	}
+	if !equalStrings(second.RequestedReviewers, first.RequestedReviewers) ||
+		!equalStrings(second.Approvals, first.Approvals) ||
+		!equalStrings(second.ChangesRequested, first.ChangesRequested) ||
+		!equalStrings(second.Commented, first.Commented) {
+		t.Errorf("cached review state differs: first %+v, second %+v", first, second)
+	}
+
+	mu.Lock()
+	updatedAt = "2026-04-21T10:00:00Z"
+	mu.Unlock()
+	scan()
+	if got := count("/repos/ajardin/repo-x/pulls/1/requested_reviewers"); got != 2 {
+		t.Errorf("requested_reviewers calls after bumped updated_at = %d, want 2 (cache should invalidate)", got)
+	}
+	if got := count("/repos/ajardin/repo-x/pulls/1/reviews"); got != 2 {
+		t.Errorf("reviews calls after bumped updated_at = %d, want 2 (cache should invalidate)", got)
+	}
+}
+
+func TestClient_SearchPullRequests_CacheEvictsDroppedPRs(t *testing.T) {
+	t.Parallel()
+
+	var (
+		mu      sync.Mutex
+		counts  = map[string]int{}
+		results = 2
+	)
+	fallback := defaultEnrichmentHandler(t)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		counts[r.URL.Path]++
+		n := results
+		mu.Unlock()
+		if r.URL.Path == "/search/issues" {
+			fmt.Fprint(w, multiSearchBody(n, "ajardin", "repo-x"))
+			return
+		}
+		fallback(w, r)
+	})
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	c := newClient("test-token", srv.URL+"/", nil)
+	count := func(path string) int {
+		mu.Lock()
+		defer mu.Unlock()
+		return counts[path]
+	}
+	scan := func(want int) {
+		t.Helper()
+		prs, err := c.SearchPullRequests(t.Context(), "org:ajardin is:pr")
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if len(prs) != want {
+			t.Fatalf("got %d PRs, want %d", len(prs), want)
+		}
+	}
+
+	scan(2) // both PRs cached
+
+	mu.Lock()
+	results = 1
+	mu.Unlock()
+	scan(1) // PR 2 leaves the results: its entry must be evicted
+
+	mu.Lock()
+	results = 2
+	mu.Unlock()
+	scan(2)
+	// PR 1 stayed in every scan with an unchanged updated_at: still cached.
+	if got := count("/repos/ajardin/repo-x/pulls/1/reviews"); got != 1 {
+		t.Errorf("PR 1 reviews calls = %d, want 1 (should stay cached)", got)
+	}
+	// PR 2 was evicted while absent, so its return pays the review calls again.
+	if got := count("/repos/ajardin/repo-x/pulls/2/reviews"); got != 2 {
+		t.Errorf("PR 2 reviews calls = %d, want 2 (entry should have been evicted)", got)
 	}
 }
 
