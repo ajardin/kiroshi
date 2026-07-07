@@ -65,16 +65,21 @@ type Model struct {
 	height          int
 	status          string
 	statusErr       bool
-	refreshing      bool
+	// statusDim renders the status line in colDim instead of green/red: used
+	// for the partial-enrichment note, a warning that is neither a success
+	// nor an error.
+	statusDim  bool
+	refreshing bool
 	// mode is the mutually-exclusive UI mode (list, loading, filter, help,
 	// detail). refreshing is deliberately not a mode: it overlays a spinner on
 	// the status line without changing what is on screen.
 	mode      uiMode
 	spinFrame int
 	// Connection health for the header dots. githubHealthy flips false on a
-	// failed rescan; jiraHealthy flips false when any PR's Jira lookup failed.
-	// Both default true (a fatal initial GitHub auth error exits in the CLI
-	// before the TUI launches, so the dot is meaningful only after a rescan).
+	// failed rescan or when any PR came back partially enriched (see
+	// gh.PullRequest.EnrichPartial); jiraHealthy flips false when any PR's
+	// Jira lookup failed. Both default true (a fatal initial GitHub auth
+	// error exits in the CLI before the TUI launches).
 	githubHealthy bool
 	jiraHealthy   bool
 	filter        string
@@ -126,7 +131,7 @@ func NewModel(prs []gh.PullRequest, login, version string, minReviews int, jiraE
 		now:             time.Now(),
 		open:            open,
 		refresh:         refresh,
-		githubHealthy:   true,
+		githubHealthy:   countPartial(prs) == 0,
 		jiraHealthy:     !anyJiraFailure(prs),
 	}
 }
@@ -172,6 +177,19 @@ func anyJiraFailure(prs []gh.PullRequest) bool {
 		}
 	}
 	return false
+}
+
+// countPartial counts the PRs whose GitHub enrichment failed partway (see
+// gh.PullRequest.EnrichPartial). Drives the github health dot and the
+// partial-enrichment status note.
+func countPartial(prs []gh.PullRequest) int {
+	n := 0
+	for _, pr := range prs {
+		if pr.EnrichPartial {
+			n++
+		}
+	}
+	return n
 }
 
 // Init kicks off the per-second clock tick and, when configured, the
@@ -251,6 +269,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case statusMsg:
 		m.status = msg.text
 		m.statusErr = msg.err
+		m.statusDim = false
 		return m, nil
 
 	case rescanMsg:
@@ -261,12 +280,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.status = "scan failed: " + msg.err.Error()
 			m.statusErr = true
+			m.statusDim = false
 			m.githubHealthy = false
 			return m, nil
 		}
 		m.prs = msg.prs
 		m.lastScan = msg.at
-		m.githubHealthy = true
+		partial := countPartial(msg.prs)
+		m.githubHealthy = partial == 0
 		m.jiraHealthy = !anyJiraFailure(msg.prs)
 		m = m.clampCursor()
 		// An auto-refresh rescan can land while the detail overlay is open; if
@@ -277,8 +298,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// No success status: the header's "scanned Xm ago" carries recency and
 		// the section header carries the count, so a transient line is redundant.
+		// The exception is a degraded scan, flagged with a muted note (a
+		// warning, not an error — the scan did land).
 		m.status = ""
+		if partial > 0 {
+			m.status = fmt.Sprintf("%d pull request(s) partially enriched", partial)
+		}
 		m.statusErr = false
+		m.statusDim = partial > 0
 		return m, nil
 
 	case autoRefreshMsg:

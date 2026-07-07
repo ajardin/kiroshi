@@ -509,7 +509,7 @@ func TestClient_SearchPullRequests_EnrichesConcurrently(t *testing.T) {
 	}
 }
 
-func TestClient_SearchPullRequests_PartialFailureCancels(t *testing.T) {
+func TestClient_SearchPullRequests_PartialFailureDegrades(t *testing.T) {
 	t.Parallel()
 
 	fallback := defaultEnrichmentHandler(t)
@@ -517,6 +517,8 @@ func TestClient_SearchPullRequests_PartialFailureCancels(t *testing.T) {
 		switch r.URL.Path {
 		case "/search/issues":
 			fmt.Fprint(w, multiSearchBody(3, "ajardin", "repo-x"))
+		case "/repos/ajardin/repo-x/pulls/2/requested_reviewers":
+			fmt.Fprint(w, `{"users":[{"login":"carol"}],"teams":[]}`)
 		case "/repos/ajardin/repo-x/pulls/2":
 			w.WriteHeader(http.StatusInternalServerError)
 			fmt.Fprint(w, `{"message":"boom"}`)
@@ -528,12 +530,123 @@ func TestClient_SearchPullRequests_PartialFailureCancels(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	c := newClient("test-token", srv.URL+"/", nil)
-	_, err := c.SearchPullRequests(t.Context(), "org:ajardin is:pr")
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	prs, err := c.SearchPullRequests(t.Context(), "org:ajardin is:pr")
+	if err != nil {
+		t.Fatalf("err = %v, want nil (one PR's enrichment failure must not fail the scan)", err)
 	}
-	if !strings.Contains(err.Error(), "fetch pull request") {
-		t.Errorf("err = %v, want substring %q", err, "fetch pull request")
+	if len(prs) != 3 {
+		t.Fatalf("got %d PRs, want 3", len(prs))
+	}
+	for _, pr := range prs {
+		if pr.Number == 2 {
+			if !pr.EnrichPartial {
+				t.Error("PR 2 should be flagged EnrichPartial after its detail call failed")
+			}
+			// The review state fetched before the failure is kept...
+			if !equalStrings(pr.RequestedReviewers, []string{"carol"}) {
+				t.Errorf("PR 2 RequestedReviewers = %v, want [carol] (fields enriched before the failure must survive)", pr.RequestedReviewers)
+			}
+			// ...and the fields owned by the failed enricher stay zero.
+			if pr.HeadSHA != "" || pr.CIState != CIStateNone {
+				t.Errorf("PR 2 HeadSHA = %q, CIState = %q, want both empty", pr.HeadSHA, pr.CIState)
+			}
+			continue
+		}
+		if pr.EnrichPartial {
+			t.Errorf("PR %d should not be flagged EnrichPartial", pr.Number)
+		}
+		if pr.HeadSHA == "" {
+			t.Errorf("PR %d should be fully enriched", pr.Number)
+		}
+	}
+}
+
+func TestClient_SearchPullRequests_RateLimitDuringEnrichmentAborts(t *testing.T) {
+	t.Parallel()
+
+	fallback := defaultEnrichmentHandler(t)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/search/issues":
+			fmt.Fprint(w, multiSearchBody(3, "ajardin", "repo-x"))
+		case "/repos/ajardin/repo-x/pulls/2/reviews":
+			w.Header().Set("X-RateLimit-Limit", "60")
+			w.Header().Set("X-RateLimit-Remaining", "0")
+			w.Header().Set("X-RateLimit-Reset", "1750000000")
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprint(w, `{"message":"API rate limit exceeded"}`)
+		default:
+			fallback(w, r)
+		}
+	})
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	c := newClient("test-token", srv.URL+"/", nil)
+	_, err := c.SearchPullRequests(t.Context(), "org:ajardin is:pr")
+	if !errors.Is(err, ErrRateLimited) {
+		t.Errorf("err = %v, want errors.Is(ErrRateLimited) (systemic errors must stay fail-fast)", err)
+	}
+}
+
+func TestClient_SearchPullRequests_PartialReviewStateNotCached(t *testing.T) {
+	t.Parallel()
+
+	var (
+		mu          sync.Mutex
+		failReviews = true
+	)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		fail := failReviews
+		mu.Unlock()
+		switch r.URL.Path {
+		case "/search/issues":
+			fmt.Fprint(w, multiSearchBody(1, "ajardin", "repo-x"))
+		case "/repos/ajardin/repo-x/pulls/1/reviews":
+			if fail {
+				w.WriteHeader(http.StatusInternalServerError)
+				fmt.Fprint(w, `{"message":"boom"}`)
+				return
+			}
+			fmt.Fprint(w, `[{"user":{"login":"bob"},"state":"APPROVED","submitted_at":"2026-04-20T11:00:00Z"}]`)
+		default:
+			defaultEnrichmentHandler(t)(w, r)
+		}
+	})
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	c := newClient("test-token", srv.URL+"/", nil)
+	scan := func() PullRequest {
+		t.Helper()
+		prs, err := c.SearchPullRequests(t.Context(), "org:ajardin is:pr")
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if len(prs) != 1 {
+			t.Fatalf("got %d PRs, want 1", len(prs))
+		}
+		return prs[0]
+	}
+
+	first := scan()
+	if !first.EnrichPartial {
+		t.Fatal("first scan should be partial (reviews call failed)")
+	}
+
+	mu.Lock()
+	failReviews = false
+	mu.Unlock()
+
+	// Same updated_at: a rescan must retry the review calls live (the failed
+	// enrichment must not have seeded the cache) and come back complete.
+	second := scan()
+	if second.EnrichPartial {
+		t.Error("second scan should be complete once the reviews call recovers")
+	}
+	if !equalStrings(second.Approvals, []string{"bob"}) {
+		t.Errorf("Approvals = %v, want [bob] (partial review state must not be cached)", second.Approvals)
 	}
 }
 

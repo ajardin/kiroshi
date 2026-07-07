@@ -139,6 +139,12 @@ type PullRequest struct {
 	// (auth/network/404). It distinguishes a genuine failure from "no ticket"
 	// so the header can flag Jira health without failing the scan.
 	JiraLookupFailed bool
+	// EnrichPartial is set when a GitHub enricher failed for this PR
+	// (transient 403, odd repo, …): the PR keeps whatever fields were
+	// enriched before the failure and the rest stay zero, instead of the
+	// failure killing the whole scan. Systemic errors (ErrInvalidToken,
+	// ErrRateLimited) still abort the scan; see enrichPullRequest.
+	EnrichPartial bool
 }
 
 // API is the subset of the GitHub API kiroshi consumes. It is declared as an
@@ -355,6 +361,10 @@ func (c *Client) AuthenticatedUser(ctx context.Context) (User, error) {
 // matches the search response order regardless. A 401 is translated into
 // ErrInvalidToken.
 //
+// A GitHub enricher failure marks that one PR EnrichPartial instead of
+// failing the scan; only a failed search, ErrInvalidToken or ErrRateLimited
+// abort (see enrichPullRequest).
+//
 // Across rescans the review-state calls are skipped for PRs whose updated_at
 // hasn't moved (see cachedEnrichment); detail, check runs and Jira stay live.
 // Cache entries for PRs that dropped out of the results are evicted.
@@ -396,15 +406,28 @@ func (c *Client) SearchPullRequests(ctx context.Context, query string) ([]PullRe
 // state call which consumes the SHA and the Jira lookup which consumes the
 // branch/body. Extracted so the worker pool in SearchPullRequests has a single
 // closure to call per PR.
+//
+// GitHub enricher errors degrade per PR instead of failing the scan: the
+// error is swallowed, EnrichPartial is set and the chain moves on, so the PR
+// keeps whatever was enriched before the failure (an enricher whose input is
+// missing — e.g. CI without a head SHA — is already a no-op). The review-state
+// cache can't be poisoned by a partial PR: storeReviewState only runs after
+// both review calls succeed, so the next scan retries live. The two systemic
+// errors are the exception — ErrInvalidToken and ErrRateLimited doom every
+// subsequent call, so they propagate and abort the scan with their
+// actionable messages.
 func (c *Client) enrichPullRequest(ctx context.Context, pr *PullRequest) error {
-	if err := c.enrichReviewState(ctx, pr); err != nil {
-		return err
-	}
-	if err := c.enrichDetail(ctx, pr); err != nil {
-		return err
-	}
-	if err := c.enrichCIState(ctx, pr); err != nil {
-		return err
+	for _, enrich := range []func(context.Context, *PullRequest) error{
+		c.enrichReviewState,
+		c.enrichDetail,
+		c.enrichCIState,
+	} {
+		if err := enrich(ctx, pr); err != nil {
+			if errors.Is(err, ErrInvalidToken) || errors.Is(err, ErrRateLimited) {
+				return err
+			}
+			pr.EnrichPartial = true
+		}
 	}
 	return c.enrichJiraStatus(ctx, pr)
 }
