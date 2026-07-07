@@ -119,6 +119,7 @@ automatically — TTY detection lives in `cli.isTerminal`.
 | tab        | switch incoming / mine view     |
 | g/G        | jump to top / bottom (or home/end) |
 | enter / o  | open selected PR in browser     |
+| y          | yank selected PR URL to clipboard |
 | d          | show selected PR detail overlay |
 | r          | rescan from GitHub              |
 | f or /     | filter the visible list         |

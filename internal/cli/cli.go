@@ -240,7 +240,8 @@ func run(ctx context.Context, logger *slog.Logger, client gh.API, cfg *config.Co
 		refresh := func(ctx context.Context) ([]gh.PullRequest, error) {
 			return client.SearchPullRequests(ctx, cfg.Search)
 		}
-		model := tui.NewLoadingModel(user.Login, version.String(), cfg.MinReviews, cfg.JiraBaseURL != "", cfg.RefreshInterval, tui.OpenURL, refresh)
+		model := tui.NewLoadingModel(user.Login, version.String(), cfg.MinReviews, cfg.JiraBaseURL != "", cfg.RefreshInterval, tui.OpenURL, refresh).
+			WithCopier(tui.CopyToClipboard)
 		if err := runTUI(model); err != nil {
 			return fmt.Errorf("run tui: %w", err)
 		}

@@ -80,6 +80,7 @@ func (m Model) helpView() string {
 		{"tab", "switch incoming / mine view"},
 		{"g / G", "jump to top / bottom"},
 		{"enter / o", "open PR in browser"},
+		{"y", "yank PR URL to clipboard"},
 		{"d", "PR detail (up/down to flip PRs)"},
 		{"r", "rescan pull requests"},
 		{"f / /", "filter by repo, title, author"},
@@ -250,7 +251,7 @@ func (m Model) detailView() string {
 		bodyBlock = strings.Join(lines, "\n")
 	}
 
-	hint := muted.Italic(true).Render("up/down navigate · enter/o open · any key closes")
+	hint := muted.Italic(true).Render("up/down navigate · enter/o open · y yank · any key closes")
 	parts := []string{repoLine, titleLine}
 	if branchLine != "" {
 		parts = append(parts, branchLine)
