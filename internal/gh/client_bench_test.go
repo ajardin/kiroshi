@@ -18,6 +18,11 @@ import (
 // roughly grow by latency/concurrency × PR count and nothing else. (The
 // bench builds the client with a nil Jira lookup, so the optional Jira call
 // is not exercised here.)
+//
+// "cold" uses a fresh client per iteration, so every scan pays all four REST
+// calls per PR. "warm" primes one shared client and rescans with unchanged
+// updated_at, so the review-state cache skips two of the four calls — the
+// gap between the two is the rescan saving.
 func BenchmarkSearchPullRequests_Enrichment(b *testing.B) {
 	const (
 		prCount = 50
@@ -51,13 +56,11 @@ func BenchmarkSearchPullRequests_Enrichment(b *testing.B) {
 	srv := httptest.NewServer(handler)
 	b.Cleanup(srv.Close)
 
-	c := newClient("bench-token", srv.URL+"/", nil)
 	ctx := context.Background()
-
-	b.ResetTimer()
-	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
-		prs, err := c.SearchPullRequests(ctx, "org:"+owner+" is:pr")
+	query := "org:" + owner + " is:pr"
+	scan := func(b *testing.B, c *Client) {
+		b.Helper()
+		prs, err := c.SearchPullRequests(ctx, query)
 		if err != nil {
 			b.Fatalf("SearchPullRequests: %v", err)
 		}
@@ -65,4 +68,21 @@ func BenchmarkSearchPullRequests_Enrichment(b *testing.B) {
 			b.Fatalf("got %d PRs, want %d", len(prs), prCount)
 		}
 	}
+
+	b.Run("cold", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			scan(b, newClient("bench-token", srv.URL+"/", nil))
+		}
+	})
+
+	b.Run("warm", func(b *testing.B) {
+		c := newClient("bench-token", srv.URL+"/", nil)
+		scan(b, c)
+		b.ResetTimer()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			scan(b, c)
+		}
+	})
 }
