@@ -327,6 +327,7 @@ func (m Model) footerView() string {
 		keyHint("↑↓", "navigate"),
 		keyHint("tab", "switch view"),
 		keyHint("o", "open"),
+		keyHint("y", "yank"),
 		keyHint("d", "detail"),
 		keyHint("r", "rescan"),
 		keyHint("f", "filter"),

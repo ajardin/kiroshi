@@ -113,6 +113,79 @@ func TestModel_EnterReportsOpenError(t *testing.T) {
 	}
 }
 
+func TestModel_YKeyYanksSelectedPR(t *testing.T) {
+	t.Parallel()
+
+	var copied string
+	m := newTestModel(t, nil, nil).WithCopier(func(text string) error {
+		copied = text
+		return nil
+	})
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	got := applyCmd(t, updated.(Model), cmd)
+
+	// Default sort is updated_at desc, so PR #43 (updated Apr 22) is at index 0.
+	want := "https://github.com/ajardin/kiroshi/pull/43"
+	if copied != want {
+		t.Errorf("copied = %q, want %q", copied, want)
+	}
+	if !strings.Contains(got.View(), "yanked "+want) {
+		t.Errorf("view missing status line for yanked URL\n%s", got.View())
+	}
+}
+
+func TestModel_YKeyYanksFromDetail(t *testing.T) {
+	t.Parallel()
+
+	var copied string
+	m := newTestModel(t, nil, nil).WithCopier(func(text string) error {
+		copied = text
+		return nil
+	})
+	m.mode = modeDetail
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	got := updated.(Model)
+	if got.mode != modeDetail {
+		t.Error("y should keep the detail overlay open")
+	}
+	applyCmd(t, got, cmd)
+	if want := got.visiblePRs()[got.cursor].URL; copied != want {
+		t.Errorf("copied = %q, want %q", copied, want)
+	}
+}
+
+func TestModel_YKeyNoopOnEmptyList(t *testing.T) {
+	t.Parallel()
+
+	m := NewModel(nil, "viewer", "v", 2, false, 0, time.Now(), nil, nil).
+		WithCopier(func(string) error {
+			t.Error("copier should not be called on an empty list")
+			return nil
+		})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	if cmd != nil {
+		t.Errorf("y on an empty list should produce no cmd, got %T", cmd())
+	}
+}
+
+func TestModel_YKeyReportsCopyError(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(t, nil, nil).
+		WithCopier(func(string) error { return errors.New("no clipboard") })
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	got := applyCmd(t, updated.(Model), cmd)
+	if !strings.Contains(got.View(), "failed to yank") {
+		t.Errorf("expected failure status, got\n%s", got.View())
+	}
+}
+
 func TestModel_QuitKeysReturnQuitCmd(t *testing.T) {
 	t.Parallel()
 

@@ -34,6 +34,9 @@ var (
 // Opener launches the user's default browser at a URL.
 type Opener func(url string) error
 
+// Copier places text on the system clipboard.
+type Copier func(text string) error
+
 // Refresher re-fetches the pull requests displayed in the dashboard.
 type Refresher func(ctx context.Context) ([]gh.PullRequest, error)
 

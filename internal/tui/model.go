@@ -48,6 +48,7 @@ const (
 // Model is the Bubble Tea model backing the dashboard.
 type Model struct {
 	open    Opener
+	copier  Copier
 	refresh Refresher
 	login   string
 	version string
@@ -150,6 +151,16 @@ func NewLoadingModel(login, version string, minReviews int, jiraEnabled bool, re
 		githubHealthy:   true,
 		jiraHealthy:     true,
 	}
+}
+
+// WithCopier returns a copy of the model with its clipboard copier set. A
+// chainable setter rather than a tenth constructor parameter: only the CLI
+// wires a real copier (CopyToClipboard) and only clipboard tests need a fake,
+// so widening NewModel/NewLoadingModel would ripple nil through every other
+// call site for nothing. nil (the default) makes `y` a no-op.
+func (m Model) WithCopier(c Copier) Model {
+	m.copier = c
+	return m
 }
 
 // anyJiraFailure reports whether any PR's Jira lookup failed during enrichment
@@ -336,6 +347,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m.scrollIntoView(), nil
 	case "enter", "o":
 		return m.openSelected()
+	case "y":
+		return m.yankSelected()
 	case "r":
 		if m.refresh == nil || m.refreshing {
 			return m, nil
@@ -424,7 +437,9 @@ func (m Model) handleHelpKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 // handleDetailKey drives the PR detail overlay. Unlike handleHelpKey (dismiss
 // on any key), up/down move the selection to the previous/next PR so the user
 // can flip through details without returning to the listing; enter/o opens the
-// current PR in the browser; ctrl+c quits; any other key closes the overlay.
+// current PR in the browser; y yanks its URL to the clipboard (the overlay is
+// where users inspect a PR, so it's a natural place to grab the link — and it
+// stays open, like enter/o); ctrl+c quits; any other key closes the overlay.
 func (m Model) handleDetailKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
@@ -435,6 +450,8 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m.moveDown(), nil
 	case "enter", "o":
 		return m.openSelected()
+	case "y":
+		return m.yankSelected()
 	}
 	m.mode = modeList
 	return m, nil
@@ -479,6 +496,21 @@ func (m Model) openSelected() (Model, tea.Cmd) {
 		return m, warn(fmt.Sprintf("failed to open %s: %v", url, err))
 	}
 	return m, info("opened " + url)
+}
+
+// yankSelected copies the selected PR's URL to the clipboard. Like
+// openSelected it never touches the mode, so yanking from the detail overlay
+// leaves the overlay open.
+func (m Model) yankSelected() (Model, tea.Cmd) {
+	visible := m.visiblePRs()
+	if m.cursor >= len(visible) || m.copier == nil {
+		return m, nil
+	}
+	url := visible[m.cursor].URL
+	if err := m.copier(url); err != nil {
+		return m, warn(fmt.Sprintf("failed to yank %s: %v", url, err))
+	}
+	return m, info("yanked " + url)
 }
 
 func (m Model) rescanCmd() tea.Cmd {
