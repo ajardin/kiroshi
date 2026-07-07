@@ -52,9 +52,13 @@ type Config struct {
 	// cadence; zero (the default) disables auto-refresh and leaves rescanning to
 	// the manual "r" key. Stored in the file as a Go duration string ("5m").
 	RefreshInterval time.Duration
-	JiraBaseURL     string
-	JiraEmail       string
-	JiraToken       string
+	// Notify, when true, makes the TUI emit a terminal bell (plus a status
+	// note) when a rescan moves a PR into the viewer's Waiting On You bucket.
+	// Off by default; hand-edit only (not offered by the setup wizard).
+	Notify      bool
+	JiraBaseURL string
+	JiraEmail   string
+	JiraToken   string
 }
 
 // LogValue implements slog.LogValuer to prevent the tokens from leaking into
@@ -64,6 +68,7 @@ func (c *Config) LogValue() slog.Value {
 		slog.String("search", c.Search),
 		slog.Int("min_reviews", c.MinReviews),
 		slog.Duration("refresh_interval", c.RefreshInterval),
+		slog.Bool("notify", c.Notify),
 		slog.String("github_token", "<redacted>"),
 		slog.String("jira_base_url", c.JiraBaseURL),
 		slog.String("jira_email", c.JiraEmail),
@@ -78,6 +83,7 @@ type fileConfig struct {
 	Search          string `toml:"search"`
 	MinReviews      *int   `toml:"min_reviews"`
 	RefreshInterval string `toml:"refresh_interval"`
+	Notify          bool   `toml:"notify"`
 	JiraBaseURL     string `toml:"jira_base_url"`
 	JiraEmail       string `toml:"jira_email"`
 	JiraToken       string `toml:"jira_token"`
@@ -130,6 +136,7 @@ func Load(path string) (*Config, error) {
 		Search:          strings.TrimSpace(fc.Search),
 		MinReviews:      minReviews,
 		RefreshInterval: refreshInterval,
+		Notify:          fc.Notify,
 		JiraBaseURL:     strings.TrimSpace(fc.JiraBaseURL),
 		JiraEmail:       strings.TrimSpace(fc.JiraEmail),
 		JiraToken:       jiraToken,
@@ -197,6 +204,7 @@ func Save(path string, c *Config) error {
 		Search:          c.Search,
 		MinReviews:      &mr,
 		RefreshInterval: refresh,
+		Notify:          c.Notify,
 		JiraBaseURL:     c.JiraBaseURL,
 		JiraEmail:       c.JiraEmail,
 		JiraToken:       c.JiraToken,

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -572,6 +573,124 @@ func TestModel_RescanIgnoredWhenNoRefresh(t *testing.T) {
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
 	if cmd != nil {
 		t.Errorf("expected no cmd when refresh is nil, got %v", cmd)
+	}
+}
+
+// waitingOnYouPR returns sample PR #42 mutated so bucketFor classifies it
+// WaitingOnYou for the "ajardin" viewer (a pending review request).
+func waitingOnYouPR() gh.PullRequest {
+	pr := samplePRs()[0]
+	pr.RequestedReviewers = []string{"ajardin"}
+	return pr
+}
+
+func TestModel_NotifyBellsOnNewWaitingOnYou(t *testing.T) {
+	t.Parallel()
+
+	var bell bytes.Buffer
+	m := newTestModel(t, nil, nil).WithNotify(true)
+	m.bell = &bell
+
+	// samplePRs has nothing waiting on the viewer; the rescan flips PR #42 in.
+	updated, cmd := m.Update(rescanMsg{prs: []gh.PullRequest{waitingOnYouPR(), samplePRs()[1]}, at: time.Now()})
+	got := applyCmd(t, updated.(Model), cmd)
+
+	if bell.String() != "\a" {
+		t.Errorf("bell output = %q, want exactly one BEL", bell.String())
+	}
+	if !strings.Contains(got.View(), "1 new waiting on you") {
+		t.Errorf("view missing notify status note\n%s", got.View())
+	}
+}
+
+func TestModel_NotifySilentWithoutTransition(t *testing.T) {
+	t.Parallel()
+
+	var bell bytes.Buffer
+	m := newTestModel(t, nil, nil).WithNotify(true)
+	m.bell = &bell
+
+	updated, cmd := m.Update(rescanMsg{prs: samplePRs(), at: time.Now()})
+	got := applyCmd(t, updated.(Model), cmd)
+
+	if bell.Len() != 0 {
+		t.Errorf("bell output = %q, want none without a bucket transition", bell.String())
+	}
+	if got.status != "" {
+		t.Errorf("status = %q, want empty without a bucket transition", got.status)
+	}
+}
+
+func TestModel_NotifySkipsInitialLoad(t *testing.T) {
+	t.Parallel()
+
+	refresh := func(_ context.Context) ([]gh.PullRequest, error) {
+		return []gh.PullRequest{waitingOnYouPR()}, nil
+	}
+	var bell bytes.Buffer
+	m := newLoadingModel(t, refresh, 0).WithNotify(true)
+	m.bell = &bell
+
+	got := applyCmd(t, m, m.rescanCmd())
+
+	if bell.Len() != 0 {
+		t.Errorf("bell output = %q, want none on the initial load", bell.String())
+	}
+	if got.status != "" {
+		t.Errorf("status = %q, want empty on the initial load", got.status)
+	}
+}
+
+func TestModel_NotifyReBellsOnReEntry(t *testing.T) {
+	t.Parallel()
+
+	var bell bytes.Buffer
+	m := newTestModel(t, nil, nil).WithNotify(true)
+	m.bell = &bell
+
+	rescan := func(prs []gh.PullRequest) {
+		t.Helper()
+		updated, cmd := m.Update(rescanMsg{prs: prs, at: time.Now()})
+		m = applyCmd(t, updated.(Model), cmd)
+	}
+
+	// Enters the bucket: one bell.
+	rescan([]gh.PullRequest{waitingOnYouPR()})
+	if bell.String() != "\a" {
+		t.Fatalf("bell after entry = %q, want one BEL", bell.String())
+	}
+
+	// Stays in the bucket: silent.
+	bell.Reset()
+	rescan([]gh.PullRequest{waitingOnYouPR()})
+	if bell.Len() != 0 {
+		t.Errorf("bell while staying in bucket = %q, want none", bell.String())
+	}
+
+	// Leaves (request withdrawn), then re-enters: bell again.
+	rescan(samplePRs())
+	bell.Reset()
+	rescan([]gh.PullRequest{waitingOnYouPR()})
+	if bell.String() != "\a" {
+		t.Errorf("bell after re-entry = %q, want one BEL", bell.String())
+	}
+}
+
+func TestModel_NotifyOffByDefault(t *testing.T) {
+	t.Parallel()
+
+	var bell bytes.Buffer
+	m := newTestModel(t, nil, nil)
+	m.bell = &bell
+
+	updated, cmd := m.Update(rescanMsg{prs: []gh.PullRequest{waitingOnYouPR()}, at: time.Now()})
+	got := applyCmd(t, updated.(Model), cmd)
+
+	if bell.Len() != 0 {
+		t.Errorf("bell output = %q, want none when notify is off", bell.String())
+	}
+	if got.status != "" {
+		t.Errorf("status = %q, want empty when notify is off", got.status)
 	}
 }
 

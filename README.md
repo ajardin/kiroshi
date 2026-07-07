@@ -103,6 +103,13 @@ min_reviews = 2
 # with the "r" key.
 refresh_interval = "5m"
 
+# Optional terminal bell: when true, a rescan (manual "r" or auto-refresh)
+# that moves a pull request into Waiting On You emits an ASCII BEL and a
+# "<n> new waiting on you" status note. Your terminal or tmux translates the
+# BEL into its configured alert (sound, visual bell, window flag). Defaults
+# to false.
+notify = true
+
 # Optional Jira Cloud integration. When set, kiroshi extracts the issue key
 # from each PR's branch, title, or body (e.g. PROJ-1234) and shows the ticket
 # status in the listing. All three fields are required together; leave them

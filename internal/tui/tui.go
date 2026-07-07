@@ -43,6 +43,9 @@ type Refresher func(ctx context.Context) ([]gh.PullRequest, error)
 // Run executes the TUI to completion against the given input/output. Use
 // os.Stdin/os.Stdout in production; tests can pass pipes to drive it.
 func Run(m Model, in io.Reader, out io.Writer) error {
+	// Wire the bell to the program's own output so a notify BEL reaches the
+	// terminal Bubble Tea renders to.
+	m.bell = out
 	p := tea.NewProgram(m, tea.WithInput(in), tea.WithOutput(out), tea.WithAltScreen())
 	_, err := p.Run()
 	return err

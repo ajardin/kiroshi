@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"time"
@@ -57,14 +58,21 @@ type Model struct {
 	minReviews      int
 	jiraEnabled     bool
 	refreshInterval time.Duration
-	lastScan        time.Time
-	now             time.Time
-	cursor          int
-	offset          int
-	width           int
-	height          int
-	status          string
-	statusErr       bool
+	// notify, when true, emits a terminal bell plus a status note when a
+	// rescan moves a PR into the viewer's WaitingOnYou bucket. bell is where
+	// the BEL byte goes — Run wires the program's own output writer so the
+	// byte reaches the terminal Bubble Tea renders to (BEL moves no cursor,
+	// so it cannot corrupt the frame); nil skips the bell.
+	notify    bool
+	bell      io.Writer
+	lastScan  time.Time
+	now       time.Time
+	cursor    int
+	offset    int
+	width     int
+	height    int
+	status    string
+	statusErr bool
 	// statusDim renders the status line in colDim instead of green/red: used
 	// for the partial-enrichment note, a warning that is neither a success
 	// nor an error.
@@ -165,6 +173,15 @@ func NewLoadingModel(login, version string, minReviews int, jiraEnabled bool, re
 // call site for nothing. nil (the default) makes `y` a no-op.
 func (m Model) WithCopier(c Copier) Model {
 	m.copier = c
+	return m
+}
+
+// WithNotify returns a copy of the model with bell notifications enabled or
+// disabled. A chainable setter like WithCopier, for the same reason: only the
+// CLI wires it (from the config's notify flag), so widening the constructors
+// would ripple a parameter through every other call site for nothing.
+func (m Model) WithNotify(enabled bool) Model {
+	m.notify = enabled
 	return m
 }
 
@@ -274,7 +291,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case rescanMsg:
 		m.refreshing = false
-		if m.mode == modeLoading {
+		wasLoading := m.mode == modeLoading
+		if wasLoading {
 			m.mode = modeList
 		}
 		if msg.err != nil {
@@ -283,6 +301,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusDim = false
 			m.githubHealthy = false
 			return m, nil
+		}
+		// Diff bucket membership before m.prs is replaced. Never notify on the
+		// initial load (everything would be "new"): loading mode or an empty
+		// previous set means there is no baseline to diff against.
+		var notifyCmd tea.Cmd
+		if m.notify && !wasLoading && len(m.prs) > 0 {
+			if n := newlyWaitingOnYou(m.prs, msg.prs, m.login, m.minReviews); n > 0 {
+				notifyCmd = tea.Batch(m.bellCmd(), info(fmt.Sprintf("%d new waiting on you", n)))
+			}
 		}
 		m.prs = msg.prs
 		m.lastScan = msg.at
@@ -306,7 +333,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.statusErr = false
 		m.statusDim = partial > 0
-		return m, nil
+		return m, notifyCmd
 
 	case autoRefreshMsg:
 		// Always re-arm so the cadence continues; only kick off a rescan when one
@@ -538,6 +565,43 @@ func (m Model) yankSelected() (Model, tea.Cmd) {
 		return m, warn(fmt.Sprintf("failed to yank %s: %v", url, err))
 	}
 	return m, info("yanked " + url)
+}
+
+// newlyWaitingOnYou counts the PRs classified WaitingOnYou in next that were
+// not WaitingOnYou in prev. Diffing by URL survives re-ordering and
+// re-enrichment; a PR that left the bucket and re-entered counts again.
+// Classification uses the incoming-pane semantics (bucketFor) regardless of
+// the active pane — the transition is about the viewer being on the hook,
+// not about what is on screen.
+func newlyWaitingOnYou(prev, next []gh.PullRequest, login string, minReviews int) int {
+	before := make(map[string]bool, len(prev))
+	for _, pr := range prev {
+		if bucketFor(pr, login, minReviews) == BucketWaitingOnYou {
+			before[pr.URL] = true
+		}
+	}
+	n := 0
+	for _, pr := range next {
+		if bucketFor(pr, login, minReviews) == BucketWaitingOnYou && !before[pr.URL] {
+			n++
+		}
+	}
+	return n
+}
+
+// bellCmd writes the ASCII BEL through the wired output writer, off the Update
+// goroutine like every other side effect. The terminal (or tmux) translates
+// BEL into the user's configured alert — sound, visual bell, or window flag.
+// Returns nil when no writer is wired (tea.Batch drops nil cmds).
+func (m Model) bellCmd() tea.Cmd {
+	w := m.bell
+	if w == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		_, _ = io.WriteString(w, "\a")
+		return nil
+	}
 }
 
 func (m Model) rescanCmd() tea.Cmd {

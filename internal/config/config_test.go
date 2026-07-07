@@ -247,6 +247,7 @@ func TestSaveRoundTrip(t *testing.T) {
 		Search:          "is:pr author:@me",
 		MinReviews:      0,
 		RefreshInterval: 5 * time.Minute,
+		Notify:          true,
 		JiraBaseURL:     "https://acme.atlassian.net",
 		JiraEmail:       "me@acme.com",
 		JiraToken:       "jira-tok",
@@ -281,6 +282,9 @@ func TestSaveRoundTrip(t *testing.T) {
 	}
 	if got.RefreshInterval != want.RefreshInterval {
 		t.Errorf("refresh_interval round-trip = %v, want %v", got.RefreshInterval, want.RefreshInterval)
+	}
+	if got.Notify != want.Notify {
+		t.Errorf("notify round-trip = %v, want %v", got.Notify, want.Notify)
 	}
 }
 
@@ -333,6 +337,37 @@ refresh_interval = "-5m"`)
 		_, err := Load(p)
 		if err == nil || !strings.Contains(err.Error(), "refresh_interval") {
 			t.Fatalf("expected refresh_interval error, got %v", err)
+		}
+	})
+}
+
+func TestLoadNotify(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+
+	t.Run("parses true", func(t *testing.T) {
+		p := writeConfig(t, `github_token = "t"
+search = "s"
+notify = true`)
+
+		cfg, err := Load(p)
+		if err != nil {
+			t.Fatalf("Load() err = %v", err)
+		}
+		if !cfg.Notify {
+			t.Error("notify = false, want true")
+		}
+	})
+
+	t.Run("absent defaults to false", func(t *testing.T) {
+		p := writeConfig(t, `github_token = "t"
+search = "s"`)
+
+		cfg, err := Load(p)
+		if err != nil {
+			t.Fatalf("Load() err = %v", err)
+		}
+		if cfg.Notify {
+			t.Error("notify = true, want false by default")
 		}
 	})
 }
