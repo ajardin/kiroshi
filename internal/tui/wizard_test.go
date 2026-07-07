@@ -7,6 +7,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/ajardin/kiroshi/internal/config"
 )
 
 // send applies a key message and unwraps the result back to a WizardModel,
@@ -318,6 +320,166 @@ func TestWizard_TokenRejectedRecovers(t *testing.T) {
 	m, _ = send(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
 	if m.step != stepToken {
 		t.Errorf("step = %v, want stepToken after retry", m.step)
+	}
+}
+
+// backspaceAll erases the whole current buffer by sending backspaces, the way
+// a user would blank a seeded field.
+func backspaceAll(t *testing.T, m WizardModel, n int) WizardModel {
+	t.Helper()
+	for range n {
+		m, _ = send(t, m, tea.KeyMsg{Type: tea.KeyBackspace})
+	}
+	return m
+}
+
+func existingConfig() *config.Config {
+	return &config.Config{
+		GitHubToken:     "ghp_old",
+		Search:          "is:pr involves:@me",
+		MinReviews:      3,
+		RefreshInterval: 5 * time.Minute,
+		JiraBaseURL:     "https://acme.atlassian.net",
+		JiraEmail:       "me@acme.com",
+		JiraToken:       "jira-old",
+	}
+}
+
+func TestWizard_ReconfigureBlankInputsKeepEverything(t *testing.T) {
+	t.Parallel()
+
+	m := NewWizardModel(okValidator, okJiraValidator).WithExistingConfig(existingConfig())
+	m, _ = enter(t, m)    // token blank -> keep ghp_old
+	m, _ = enter(t, m)    // search (seeded) -> min reviews
+	m, _ = enter(t, m)    // min reviews (seeded) -> refresh
+	m, _ = enter(t, m)    // refresh (seeded) -> jira url
+	m, _ = enter(t, m)    // jira url (seeded) -> jira email
+	m, _ = enter(t, m)    // jira email (seeded) -> jira token
+	m, cmd := enter(t, m) // jira token blank -> keep jira-old, validating
+	m, _ = send(t, m, cmd())
+
+	res := m.result()
+	if !res.Completed {
+		t.Fatal("result not completed")
+	}
+	want := existingConfig()
+	if res.Token != want.GitHubToken {
+		t.Errorf("token = %q, want kept %q", res.Token, want.GitHubToken)
+	}
+	if res.Search != want.Search || res.MinReviews != want.MinReviews || res.RefreshInterval != want.RefreshInterval {
+		t.Errorf("seeded values not kept: %+v", res)
+	}
+	if res.JiraBaseURL != want.JiraBaseURL || res.JiraEmail != want.JiraEmail || res.JiraToken != want.JiraToken {
+		t.Errorf("jira values not kept: %+v", res)
+	}
+}
+
+func TestWizard_ReconfigureNewTokenReplaces(t *testing.T) {
+	t.Parallel()
+
+	m := NewWizardModel(okValidator, okJiraValidator).WithExistingConfig(existingConfig())
+	m = typeRunes(t, m, "ghp_new")
+	m, _ = enter(t, m)    // -> search
+	m, _ = enter(t, m)    // -> min reviews
+	m, _ = enter(t, m)    // -> refresh
+	m, _ = enter(t, m)    // -> jira url
+	m, _ = enter(t, m)    // -> jira email
+	m, _ = enter(t, m)    // -> jira token
+	m, cmd := enter(t, m) // -> validating
+	m, _ = send(t, m, cmd())
+
+	if res := m.result(); res.Token != "ghp_new" {
+		t.Errorf("token = %q, want replacement %q", res.Token, "ghp_new")
+	}
+}
+
+func TestWizard_ReconfigureKeptTokenIsValidated(t *testing.T) {
+	t.Parallel()
+
+	var validated string
+	spy := func(token string) (string, error) {
+		validated = token
+		return "octocat", nil
+	}
+	m := NewWizardModel(spy, okJiraValidator).WithExistingConfig(existingConfig())
+	m, _ = enter(t, m) // token blank -> keep
+	m, _ = enter(t, m)
+	m, _ = enter(t, m)
+	m, _ = enter(t, m)
+	m, _ = enter(t, m) // jira url
+	m, _ = enter(t, m) // jira email
+	m, cmd := enter(t, m)
+	_, _ = send(t, m, cmd())
+
+	if validated != "ghp_old" {
+		t.Errorf("validated token = %q, want the kept token to go through live validation", validated)
+	}
+}
+
+func TestWizard_ReconfigureSentinelClearsJira(t *testing.T) {
+	t.Parallel()
+
+	cfg := existingConfig()
+	m := NewWizardModel(okValidator, okJiraValidator).WithExistingConfig(cfg)
+	m, _ = enter(t, m) // token blank -> keep
+	m, _ = enter(t, m) // search
+	m, _ = enter(t, m) // min reviews
+	m, _ = enter(t, m) // refresh
+
+	m = backspaceAll(t, m, len(cfg.JiraBaseURL))
+	m = typeRunes(t, m, "-")
+	m, cmd := enter(t, m) // sentinel -> validating, jira cleared
+	if m.step != stepValidating {
+		t.Fatalf("step = %v, want stepValidating after the \"-\" sentinel", m.step)
+	}
+	m, _ = send(t, m, cmd())
+
+	res := m.result()
+	if res.JiraBaseURL != "" || res.JiraEmail != "" || res.JiraToken != "" {
+		t.Errorf("jira config not cleared: %+v", res)
+	}
+}
+
+func TestWizard_ReconfigureBlankJiraURLKeepsCurrent(t *testing.T) {
+	t.Parallel()
+
+	cfg := existingConfig()
+	m := NewWizardModel(okValidator, okJiraValidator).WithExistingConfig(cfg)
+	m, _ = enter(t, m) // token
+	m, _ = enter(t, m) // search
+	m, _ = enter(t, m) // min reviews
+	m, _ = enter(t, m) // refresh
+
+	m = backspaceAll(t, m, len(cfg.JiraBaseURL))
+	m, _ = enter(t, m) // blank -> keep current URL, on to email
+	if m.step != stepJiraEmail {
+		t.Fatalf("step = %v, want stepJiraEmail (blank keeps the current URL)", m.step)
+	}
+	if m.jiraURL != cfg.JiraBaseURL {
+		t.Errorf("jiraURL = %q, want restored %q", m.jiraURL, cfg.JiraBaseURL)
+	}
+}
+
+func TestWizard_ReconfigureHints(t *testing.T) {
+	t.Parallel()
+
+	m := NewWizardModel(okValidator, okJiraValidator).WithExistingConfig(existingConfig())
+	if view := m.View(); !strings.Contains(view, "keep the current token") {
+		t.Errorf("token step should hint that blank keeps the token, got %q", view)
+	}
+	if view := m.View(); !strings.Contains(view, "update your config") {
+		t.Errorf("subtitle should mention updating, got %q", view)
+	}
+
+	m.step = stepJiraURL
+	m.jiraURL = ""
+	if view := m.View(); !strings.Contains(view, `"-" to remove Jira`) {
+		t.Errorf("jira url step should document the removal sentinel, got %q", view)
+	}
+
+	m.step = stepJiraToken
+	if view := m.View(); !strings.Contains(view, "keep the current token") {
+		t.Errorf("jira token step should hint that blank keeps the token, got %q", view)
 	}
 }
 

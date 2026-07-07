@@ -78,7 +78,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, opts ...O
 	fs.BoolVar(&showVersion, "version", false, "print version and exit")
 	fs.BoolVar(&verbose, "verbose", false, "enable verbose logging")
 	fs.BoolVar(&noTUI, "no-tui", false, "disable the interactive TUI and print plain text")
-	fs.BoolVar(&initMode, "init", false, "interactively create the config file and exit")
+	fs.BoolVar(&initMode, "init", false, "interactively create or update the config file and exit")
 	fs.StringVar(&configPath, "config", "", "path to config file (default: $XDG_CONFIG_HOME/kiroshi/config.toml)")
 
 	if err := fs.Parse(args); err != nil {
@@ -149,8 +149,10 @@ func isTerminal(w io.Writer) bool {
 }
 
 // runWizard resolves the target config path, runs the interactive setup
-// wizard, and writes the resulting config. The default runner requires a real
-// terminal; the WithWizardRunner test seam bypasses that check.
+// wizard, and writes the resulting config. When the target already exists and
+// loads cleanly, the wizard runs in reconfigure mode, seeded with the current
+// values. The default runner requires a real terminal; the WithWizardRunner
+// test seam bypasses that check.
 func runWizard(ctx context.Context, configPath string, stdout io.Writer, ro runOptions) error {
 	path := configPath
 	if path == "" {
@@ -161,11 +163,18 @@ func runWizard(ctx context.Context, configPath string, stdout io.Writer, ro runO
 		path = def
 	}
 
-	// Refuse to clobber an existing config: it holds tokens and may be
-	// hand-edited. The auto-fallback path never gets here with a file present
-	// (it is gated on config.ErrNotFound), so this only guards explicit -init.
+	// An existing config that loads cleanly switches the wizard to reconfigure
+	// mode, seeded with the current values. A corrupt or invalid file still
+	// refuses — never silently overwrite something unreadable. The
+	// auto-fallback path never gets here with a file present (it is gated on
+	// config.ErrNotFound), so this only concerns explicit -init.
+	var existing *config.Config
 	if _, err := os.Stat(path); err == nil {
-		return fmt.Errorf("config already exists at %s; delete it first or use -config to write elsewhere", path)
+		cfg, loadErr := config.Load(path)
+		if loadErr != nil {
+			return fmt.Errorf("config already exists at %s but cannot be loaded; fix or delete it first, or use -config to write elsewhere: %w", path, loadErr)
+		}
+		existing = cfg
 	}
 
 	runWiz := ro.runWizard
@@ -197,6 +206,9 @@ func runWizard(ctx context.Context, configPath string, stdout io.Writer, ro runO
 			return jira.New(baseURL, email, token).Validate(ctx)
 		},
 	)
+	if existing != nil {
+		model = model.WithExistingConfig(existing)
+	}
 	res, err := runWiz(model)
 	if err != nil {
 		return fmt.Errorf("run setup wizard: %w", err)
@@ -214,6 +226,11 @@ func runWizard(ctx context.Context, configPath string, stdout io.Writer, ro runO
 		JiraBaseURL:     res.JiraBaseURL,
 		JiraEmail:       res.JiraEmail,
 		JiraToken:       res.JiraToken,
+	}
+	if existing != nil {
+		// Notify is hand-edit only (the wizard never asks for it), so a
+		// reconfigure must carry it over instead of silently resetting it.
+		cfg.Notify = existing.Notify
 	}
 	if err := config.Save(path, cfg); err != nil {
 		return fmt.Errorf("save config: %w", err)
