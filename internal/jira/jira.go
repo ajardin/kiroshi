@@ -69,8 +69,16 @@ type Client struct {
 // Server/Data Center would instead use "Bearer "+token with no email; that
 // path is not implemented.)
 func New(baseURL, email, token string) *Client {
+	// Clone the default transport instead of sharing it: anything in the
+	// process calling http.DefaultTransport.CloseIdleConnections — which
+	// httptest.Server.Close does on every test-server shutdown — would race
+	// a concurrent request on the shared pool and break it mid-flight.
+	var transport http.RoundTripper
+	if t, ok := http.DefaultTransport.(*http.Transport); ok {
+		transport = t.Clone()
+	}
 	return &Client{
-		http:    &http.Client{Timeout: httpTimeout},
+		http:    &http.Client{Timeout: httpTimeout, Transport: transport},
 		baseURL: strings.TrimRight(baseURL, "/"),
 		auth:    "Basic " + base64.StdEncoding.EncodeToString([]byte(email+":"+token)),
 	}

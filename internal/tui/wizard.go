@@ -78,6 +78,16 @@ type WizardModel struct {
 	jiraEmail string
 	jiraToken string
 
+	// reconfigure marks a re-run over an existing config (seeded via
+	// WithExistingConfig). The masked token steps can't show a prefilled
+	// value, so the existing secrets are kept aside: a blank entry keeps
+	// them, non-blank input replaces them. existingJiraURL backs the
+	// blank-keeps / "-"-removes convention on the Jira URL step.
+	reconfigure       bool
+	existingToken     string
+	existingJiraURL   string
+	existingJiraToken string
+
 	login     string // login resolved by a successful token validation
 	errMsg    string // inline error shown on stepMinReviews / stepError
 	spinFrame int    // animates the stepValidating spinner
@@ -98,6 +108,27 @@ type WizardModel struct {
 // validateJira.
 func NewWizardModel(validate func(token string) (login string, err error), validateJira func(baseURL, email, token string) error) WizardModel {
 	return WizardModel{step: stepToken, validate: validate, validateJira: validateJira}
+}
+
+// WithExistingConfig switches the wizard to reconfigure mode, seeding every
+// step with cfg's current values. It reuses the same buffers the
+// validation-failure retry path keeps, so the form re-walks prefilled. The
+// two token buffers stay empty (they are masked, so a prefill would be
+// unreadable); the existing secrets are kept aside and a blank entry keeps
+// them.
+func (m WizardModel) WithExistingConfig(cfg *config.Config) WizardModel {
+	m.reconfigure = true
+	m.existingToken = cfg.GitHubToken
+	m.search = cfg.Search
+	m.minReviewsStr = strconv.Itoa(cfg.MinReviews)
+	if cfg.RefreshInterval > 0 {
+		m.refreshStr = shortDuration(cfg.RefreshInterval)
+	}
+	m.jiraURL = cfg.JiraBaseURL
+	m.jiraEmail = cfg.JiraEmail
+	m.existingJiraURL = cfg.JiraBaseURL
+	m.existingJiraToken = cfg.JiraToken
+	return m
 }
 
 // Init implements tea.Model. The wizard has no startup command.
@@ -142,6 +173,11 @@ func (m WizardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.step {
 	case stepToken:
 		if msg.Type == tea.KeyEnter {
+			// Reconfigure: a blank entry keeps the stored token (it still goes
+			// through live validation, catching an expired token).
+			if strings.TrimSpace(m.token) == "" && m.existingToken != "" {
+				m.token = m.existingToken
+			}
 			m.step = stepSearch
 			return m, nil
 		}
@@ -161,7 +197,24 @@ func (m WizardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case stepJiraURL:
 		if msg.Type == tea.KeyEnter {
 			trimmed := strings.TrimSpace(m.jiraURL)
+			if trimmed == "-" {
+				// "-" sentinel: drop the whole Jira trio (existing values too, so
+				// a validation-failure retry doesn't resurrect them) and validate.
+				m.jiraURL, m.jiraEmail, m.jiraToken = "", "", ""
+				m.existingJiraURL, m.existingJiraToken = "", ""
+				m.step = stepValidating
+				m.spinFrame = 0
+				return m, tea.Batch(m.validateCmd(), spinnerCmd())
+			}
 			if trimmed == "" {
+				// Reconfigure with Jira set up: blank keeps the current URL and
+				// walks the remaining Jira steps ("-" is the way to remove it).
+				if m.existingJiraURL != "" {
+					m.jiraURL = m.existingJiraURL
+					m.errMsg = ""
+					m.step = stepJiraEmail
+					return m, nil
+				}
 				// Blank URL = skip Jira entirely; go straight to validation.
 				m.step = stepValidating
 				m.spinFrame = 0
@@ -189,6 +242,11 @@ func (m WizardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case stepJiraToken:
 		if msg.Type == tea.KeyEnter {
+			// Reconfigure: blank keeps the stored Jira token (validated live,
+			// same as the GitHub one).
+			if strings.TrimSpace(m.jiraToken) == "" && m.existingJiraToken != "" {
+				m.jiraToken = m.existingJiraToken
+			}
 			m.step = stepValidating
 			m.spinFrame = 0
 			return m, tea.Batch(m.validateCmd(), spinnerCmd())
@@ -362,12 +420,31 @@ func (m WizardModel) result() WizardResult {
 // View implements tea.Model.
 func (m WizardModel) View() string {
 	title := lipgloss.NewStyle().Foreground(colYellow).Bold(true).Render("kiroshi setup")
-	sub := lipgloss.NewStyle().Foreground(colDim).Render("Let's create your config file.")
+	subText := "Let's create your config file."
+	if m.reconfigure {
+		subText = "Let's update your config file."
+	}
+	sub := lipgloss.NewStyle().Foreground(colDim).Render(subText)
+
+	// fieldView wraps the placeholder in "(default: …)", so the reconfigure
+	// hints are phrased to read as the blank-input outcome.
+	tokenHint := "fine-grained PAT, read-only: Pull requests / Contents / Members" //nolint:gosec // G101: helper text, not a credential
+	if m.existingToken != "" {
+		tokenHint = "keep the current token"
+	}
+	jiraURLHint := "https://acme.atlassian.net · blank to skip"
+	if m.existingJiraURL != "" {
+		jiraURLHint = `keep current · type "-" to remove Jira`
+	}
+	jiraTokenHint := "id.atlassian.com/manage-profile/security/api-tokens" //nolint:gosec // G101: helper text, not a credential
+	if m.existingJiraToken != "" {
+		jiraTokenHint = "keep the current token"
+	}
 
 	var body string
 	switch m.step {
 	case stepToken:
-		body = m.fieldView("1/7", "GitHub token", maskValue(m.token), "fine-grained PAT, read-only: Pull requests / Contents / Members", "")
+		body = m.fieldView("1/7", "GitHub token", maskValue(m.token), tokenHint, "")
 	case stepSearch:
 		body = m.fieldView("2/7", "Search query", m.search, defaultSearch, "")
 	case stepMinReviews:
@@ -375,11 +452,11 @@ func (m WizardModel) View() string {
 	case stepRefresh:
 		body = m.fieldView("4/7", "Auto-refresh interval (optional)", m.refreshStr, "e.g. 5m · blank to disable", m.errMsg)
 	case stepJiraURL:
-		body = m.fieldView("5/7", "Jira base URL (optional)", m.jiraURL, "https://acme.atlassian.net · blank to skip", m.errMsg)
+		body = m.fieldView("5/7", "Jira base URL (optional)", m.jiraURL, jiraURLHint, m.errMsg)
 	case stepJiraEmail:
 		body = m.fieldView("6/7", "Jira account email", m.jiraEmail, "you@acme.com", "")
 	case stepJiraToken:
-		body = m.fieldView("7/7", "Jira API token", maskValue(m.jiraToken), "id.atlassian.com/manage-profile/security/api-tokens", "")
+		body = m.fieldView("7/7", "Jira API token", maskValue(m.jiraToken), jiraTokenHint, "")
 	case stepValidating:
 		frame := spinFrames[m.spinFrame%len(spinFrames)]
 		body = lipgloss.NewStyle().Foreground(colCyan).Render(frame + " Validating token with GitHub…")

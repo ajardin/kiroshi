@@ -51,6 +51,14 @@ against GitHub live, and writes the file
 (mode `0600`). kiroshi also launches the wizard automatically the first time
 you run it on a terminal with no config present.
 
+Re-running `kiroshi -init` with an existing config re-walks the wizard
+pre-filled with the current values, so you can add Jira later or tweak the
+search query without re-typing everything. On the masked token steps, leaving
+the input blank keeps the stored token (it is still re-validated live); typing
+a new one replaces it. Entering `-` on the Jira base URL step removes the Jira
+configuration entirely. A config file that no longer loads cleanly is never
+overwritten — fix or delete it first.
+
 ### GitHub token
 
 Create a [fine-grained personal access token](https://github.com/settings/personal-access-tokens) —
@@ -129,7 +137,7 @@ Both token fields are redacted from structured logs (see
 
 ```bash
 kiroshi                       # interactive TUI when stdout is a terminal
-kiroshi -init                 # interactively create the config file and exit
+kiroshi -init                 # interactively create or update the config file and exit
 kiroshi -no-tui               # plain text, always
 kiroshi -config ./my.toml     # override the config path
 kiroshi -verbose              # debug-level slog output on stderr

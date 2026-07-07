@@ -382,17 +382,59 @@ func TestRun_InitAbortedWritesNothing(t *testing.T) {
 	}
 }
 
-func TestRun_InitRefusesToOverwriteExistingConfig(t *testing.T) {
+func TestRun_InitWithExistingConfigReconfigures(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("JIRA_API_TOKEN", "")
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	original := []byte("github_token = \"keep-me\"\nsearch = \"is:pr\"\nnotify = true\n")
+	if err := os.WriteFile(cfgPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var called bool
+	runner := func(_ tui.WizardModel) (tui.WizardResult, error) {
+		called = true
+		return tui.WizardResult{
+			Completed:  true,
+			Token:      "keep-me",
+			Search:     "is:pr involves:@me",
+			MinReviews: 1,
+		}, nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	err := Run(t.Context(), []string{"-init", "-config", cfgPath}, &stdout, &stderr,
+		WithWizardRunner(runner))
+	if err != nil {
+		t.Fatalf("unexpected err: %v (stderr=%q)", err, stderr.String())
+	}
+	if !called {
+		t.Error("wizard must run in reconfigure mode when a valid config exists")
+	}
+
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("rewritten config does not load: %v", err)
+	}
+	if cfg.Search != "is:pr involves:@me" || cfg.MinReviews != 1 {
+		t.Errorf("config not overwritten: %+v", cfg)
+	}
+	if !cfg.Notify {
+		t.Error("notify is hand-edit only and must survive a reconfigure")
+	}
+}
+
+func TestRun_InitCorruptConfigStillRefuses(t *testing.T) {
 	t.Parallel()
 
 	cfgPath := filepath.Join(t.TempDir(), "config.toml")
-	original := []byte("github_token = \"keep-me\"\nsearch = \"is:pr\"\n")
+	original := []byte("github_token = \"keep-me\"\nsearch = ???broken\n")
 	if err := os.WriteFile(cfgPath, original, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	runner := func(_ tui.WizardModel) (tui.WizardResult, error) {
-		t.Error("wizard must not run when a config already exists")
+		t.Error("wizard must not run over a config that does not load cleanly")
 		return tui.WizardResult{}, nil
 	}
 
@@ -409,6 +451,34 @@ func TestRun_InitRefusesToOverwriteExistingConfig(t *testing.T) {
 	}
 	if string(got) != string(original) {
 		t.Error("existing config was modified")
+	}
+}
+
+func TestRun_InitAbortLeavesExistingConfigIntact(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	original := []byte("github_token = \"keep-me\"\nsearch = \"is:pr\"\n")
+	if err := os.WriteFile(cfgPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := func(_ tui.WizardModel) (tui.WizardResult, error) {
+		return tui.WizardResult{Completed: false}, nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	err := Run(t.Context(), []string{"-init", "-config", cfgPath}, &stdout, &stderr,
+		WithWizardRunner(runner))
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+
+	got, readErr := os.ReadFile(cfgPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != string(original) {
+		t.Error("aborted reconfigure must leave the existing config byte-identical")
 	}
 }
 
