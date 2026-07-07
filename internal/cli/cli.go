@@ -262,17 +262,73 @@ func run(ctx context.Context, logger *slog.Logger, client gh.API, cfg *config.Co
 		lines = append(lines, "No pull requests match the search.")
 	} else {
 		lines = append(lines, fmt.Sprintf("Found %d pull request(s):", len(prs)))
-		for _, pr := range prs {
-			lines = append(lines,
-				fmt.Sprintf("  [%s/%s#%d] %s", pr.Owner, pr.Repo, pr.Number, pr.Title),
-				fmt.Sprintf("    by @%s, updated %s", pr.Author, pr.UpdatedAt.Format("2006-01-02")),
-				fmt.Sprintf("    %s", pr.URL),
-			)
-		}
+		lines = append(lines, textListing(prs, user.Login, cfg.MinReviews)...)
 	}
 
 	if _, err := io.WriteString(stdout, strings.Join(lines, "\n")+"\n"); err != nil {
 		return fmt.Errorf("write output: %w", err)
 	}
 	return nil
+}
+
+// bucketOrder pins the plain-text group headings to the TUI's locked card
+// order: Waiting On You → Waiting On Others → Ready To Ship → In Flight.
+var bucketOrder = []struct {
+	bucket tui.Bucket
+	label  string
+}{
+	{tui.BucketWaitingOnYou, "Waiting On You"},
+	{tui.BucketWaitingOnOthers, "Waiting On Others"},
+	{tui.BucketReadyToShip, "Ready To Ship"},
+	{tui.BucketInFlight, "In Flight"},
+}
+
+// textListing groups prs under the bucket headings in the locked card order,
+// skipping empty buckets. Classification is shared with the TUI via
+// tui.BucketFor, so both paths always agree.
+func textListing(prs []gh.PullRequest, login string, minReviews int) []string {
+	grouped := make(map[tui.Bucket][]gh.PullRequest, len(bucketOrder))
+	for _, pr := range prs {
+		b := tui.BucketFor(pr, login, minReviews)
+		grouped[b] = append(grouped[b], pr)
+	}
+
+	var lines []string
+	for _, g := range bucketOrder {
+		group := grouped[g.bucket]
+		if len(group) == 0 {
+			continue
+		}
+		lines = append(lines, "", fmt.Sprintf("%s (%d)", g.label, len(group)))
+		for _, pr := range group {
+			lines = append(lines,
+				fmt.Sprintf("  [%s/%s#%d] %s", pr.Owner, pr.Repo, pr.Number, pr.Title),
+				"    "+textDetail(pr),
+				fmt.Sprintf("    %s", pr.URL),
+			)
+		}
+	}
+	return lines
+}
+
+// textDetail renders an entry's state line: author and update date, then the
+// enriched CI and merge cells joined by " · ". Empty cells are dropped rather
+// than printed as "ci: —" noise, same philosophy as the TUI's flowing tail.
+func textDetail(pr gh.PullRequest) string {
+	parts := []string{fmt.Sprintf("by @%s, updated %s", pr.Author, pr.UpdatedAt.Format("2006-01-02"))}
+	switch pr.CIState {
+	case gh.CIStatePending:
+		parts = append(parts, "ci: pending")
+	case gh.CIStateSuccess:
+		parts = append(parts, "ci: passing")
+	case gh.CIStateFailure:
+		parts = append(parts, "ci: failing")
+	}
+	switch pr.MergeState {
+	case gh.MergeStateConflict:
+		parts = append(parts, "conflict")
+	case gh.MergeStateBehind:
+		parts = append(parts, "behind")
+	}
+	return strings.Join(parts, " · ")
 }

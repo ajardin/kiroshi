@@ -133,6 +133,71 @@ search = "my-search"`)
 	}
 }
 
+func TestRun_NoTUIGroupsByBucket(t *testing.T) {
+	t.Parallel()
+
+	cfgPath := writeConfig(t, `github_token = "t"
+search = "s"`)
+
+	// Input order is deliberately scrambled to prove the output regroups by
+	// bucket. With the default min_reviews (2): the draft lands In Flight, the
+	// requested-reviewer PR lands Waiting On You, the twice-approved PR lands
+	// Ready To Ship — and the empty Waiting On Others heading is omitted.
+	prs := []gh.PullRequest{
+		{
+			Owner: "acme", Repo: "api", Number: 9, Title: "WIP thing",
+			Author: "carol", URL: "https://github.com/acme/api/pull/9",
+			UpdatedAt: time.Date(2026, 6, 3, 0, 0, 0, 0, time.UTC),
+			IsDraft:   true,
+		},
+		{
+			Owner: "acme", Repo: "api", Number: 7, Title: "Fix login",
+			Author: "alice", URL: "https://github.com/acme/api/pull/7",
+			UpdatedAt:          time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
+			RequestedReviewers: []string{"ajardin"},
+			CIState:            gh.CIStateFailure,
+			MergeState:         gh.MergeStateConflict,
+		},
+		{
+			Owner: "acme", Repo: "api", Number: 8, Title: "Add cache",
+			Author: "bob", URL: "https://github.com/acme/api/pull/8",
+			UpdatedAt: time.Date(2026, 6, 2, 0, 0, 0, 0, time.UTC),
+			Approvals: []string{"alice", "ajardin"},
+			CIState:   gh.CIStateSuccess,
+		},
+	}
+
+	var stdout, stderr bytes.Buffer
+	err := Run(t.Context(), []string{"-no-tui", "-config", cfgPath}, &stdout, &stderr,
+		WithGitHubClient(fakeClient{user: gh.User{Login: "ajardin"}, prs: prs}))
+	if err != nil {
+		t.Fatalf("unexpected err: %v (stderr=%q)", err, stderr.String())
+	}
+
+	want := `kiroshi ready as @ajardin (search="s")
+
+Found 3 pull request(s):
+
+Waiting On You (1)
+  [acme/api#7] Fix login
+    by @alice, updated 2026-06-01 · ci: failing · conflict
+    https://github.com/acme/api/pull/7
+
+Ready To Ship (1)
+  [acme/api#8] Add cache
+    by @bob, updated 2026-06-02 · ci: passing
+    https://github.com/acme/api/pull/8
+
+In Flight (1)
+  [acme/api#9] WIP thing
+    by @carol, updated 2026-06-03
+    https://github.com/acme/api/pull/9
+`
+	if got := stdout.String(); got != want {
+		t.Errorf("stdout mismatch:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+}
+
 func TestRun_GitHubErrorPreservesInvalidToken(t *testing.T) {
 	t.Parallel()
 

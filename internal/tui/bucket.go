@@ -109,6 +109,15 @@ func othersStillPending(pr gh.PullRequest, viewer string) bool {
 	return false
 }
 
+// BucketFor classifies pr from the viewer's perspective with the incoming
+// pane's review-state semantics, minReviews being the number of non-author
+// approving reviews required for BucketReadyToShip. It is the exported entry
+// point for non-TUI callers (the plain-text CLI output), so the bucket logic
+// stays a single implementation.
+func BucketFor(pr gh.PullRequest, viewer string, minReviews int) Bucket {
+	return bucketFor(pr, viewer, minReviews)
+}
+
 // mineBucketFor classifies a PR the viewer authored, reusing the four Bucket
 // values (and so the locked palette) with author-side semantics: the yellow
 // "needs you" slot means changes were requested or CI is red, cyan means it's
