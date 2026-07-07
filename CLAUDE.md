@@ -56,9 +56,19 @@ stays live too (different service, own quota). Entries for PRs that leave the
 search results are evicted each scan (`pruneCache`). Internal optimization —
 no config knob.
 
-**Error semantics.** Fail-fast for the GitHub enrichers — the first error
-cancels the rest and surfaces on the rescan status line. **Jira is the
-exception:** it's an optional decoration, so `enrichJiraStatus` swallows every
+**Error semantics.** Per-PR degradation for the GitHub enrichers — an
+enricher error marks that one PR `EnrichPartial` and the chain moves on, so
+the PR keeps whatever was enriched before the failure and the scan still
+lands (missing cells already render as absent). Only two errors stay
+fail-fast, checked with `errors.Is` in `enrichPullRequest`: `ErrInvalidToken`
+and `ErrRateLimited` doom every subsequent call, so they cancel the errgroup
+and surface their actionable messages on the rescan status line — as does a
+failure of the search itself. Degradation is surfaced by the header's github
+health dot (red while any PR is partial) plus a muted (`colDim`, not red —
+warning, not error) status note `N pull request(s) partially enriched`.
+Partial PRs are never cached: `storeReviewState` only runs after both review
+calls succeed, so the next scan retries them live. Jira keeps its own
+degradation: `enrichJiraStatus` swallows every
 error (auth, network, 404) and degrades to an omitted cell rather than failing
 the scan; it's also a full no-op under `gh.New` (vs `gh.NewWithJira`). Key
 extraction is `jira.ExtractKey` (branch → title → body, regex

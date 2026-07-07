@@ -988,6 +988,49 @@ func TestModel_GitHubHealthDot(t *testing.T) {
 	}
 }
 
+func TestModel_PartialEnrichmentDegradesGitHubDot(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(t, nil, nil)
+
+	partial := samplePRs()
+	partial[0].EnrichPartial = true
+	updated, _ := m.Update(rescanMsg{prs: partial, at: time.Now()})
+	got := updated.(Model)
+	if got.githubHealthy {
+		t.Error("github should be unhealthy when a PR came back partially enriched")
+	}
+	if got.statusErr {
+		t.Error("partial enrichment is a warning, not an error")
+	}
+	if got.status != "1 pull request(s) partially enriched" {
+		t.Errorf("status = %q, want the partial-enrichment note", got.status)
+	}
+	view := got.View()
+	if !strings.Contains(view, lipgloss.NewStyle().Foreground(colRed).Render("● github")) {
+		t.Errorf("header should render a red github dot\n%s", view)
+	}
+	if !strings.Contains(view, lipgloss.NewStyle().Foreground(colDim).Render(got.status)) {
+		t.Errorf("status note should render muted, not green/red\n%s", view)
+	}
+
+	// The initial scan can be degraded too: NewModel mirrors the rescan path.
+	init := NewModel(partial, "ajardin", "v0.0.1", 2, false, 0, time.Now(), nil, nil)
+	if init.githubHealthy {
+		t.Error("NewModel should start unhealthy when the initial scan was partial")
+	}
+
+	// A clean rescan clears both the dot and the note.
+	updated, _ = got.Update(rescanMsg{prs: samplePRs(), at: time.Now()})
+	got = updated.(Model)
+	if !got.githubHealthy {
+		t.Error("github should recover after a clean rescan")
+	}
+	if got.status != "" {
+		t.Errorf("status after clean rescan = %q, want empty", got.status)
+	}
+}
+
 func TestModel_JiraHealthDot(t *testing.T) {
 	t.Parallel()
 

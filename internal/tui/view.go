@@ -407,8 +407,11 @@ func (m Model) statusLineView() string {
 		return " " + lipgloss.NewStyle().Foreground(colCyan).Render(frame+" rescanning…")
 	case m.status != "":
 		col := colGreen
-		if m.statusErr {
+		switch {
+		case m.statusErr:
 			col = colRed
+		case m.statusDim:
+			col = colDim
 		}
 		return " " + lipgloss.NewStyle().Foreground(col).Render(m.status)
 	}
