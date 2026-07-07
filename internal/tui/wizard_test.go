@@ -184,6 +184,19 @@ func TestWizard_JiraValidationFails(t *testing.T) {
 	}
 }
 
+func TestWizard_TokenStepShowsLeastPrivilegeHint(t *testing.T) {
+	t.Parallel()
+
+	m := NewWizardModel(okValidator, okJiraValidator)
+	view := m.View()
+	if !strings.Contains(view, "fine-grained PAT") {
+		t.Errorf("token step view should hint at a fine-grained PAT, got %q", view)
+	}
+	if !strings.Contains(view, "Pull requests / Contents / Members") {
+		t.Errorf("token step view should list the read-only permissions, got %q", view)
+	}
+}
+
 func TestWizard_JiraTokenIsMasked(t *testing.T) {
 	t.Parallel()
 

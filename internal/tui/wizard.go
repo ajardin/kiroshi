@@ -367,7 +367,7 @@ func (m WizardModel) View() string {
 	var body string
 	switch m.step {
 	case stepToken:
-		body = m.fieldView("1/7", "GitHub token", maskValue(m.token), "scopes: repo, read:org", "")
+		body = m.fieldView("1/7", "GitHub token", maskValue(m.token), "fine-grained PAT, read-only: Pull requests / Contents / Members", "")
 	case stepSearch:
 		body = m.fieldView("2/7", "Search query", m.search, defaultSearch, "")
 	case stepMinReviews:

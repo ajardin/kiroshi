@@ -49,22 +49,43 @@ It prompts for the token, search query, `min_reviews`, an optional
 auto-refresh interval, and optional Jira credentials, validates the token
 against GitHub live, and writes the file
 (mode `0600`). kiroshi also launches the wizard automatically the first time
-you run it on a terminal with no config present. To write the file by hand
-instead:
+you run it on a terminal with no config present.
 
-kiroshi reads a TOML file from
+### GitHub token
+
+Create a [fine-grained personal access token](https://github.com/settings/personal-access-tokens) —
+kiroshi is strictly read-only, so the token never needs write access:
+
+- **Repository access** — the repositories (or organizations) your search
+  query covers.
+- **Repository permissions** — **Pull requests: Read-only** and
+  **Contents: Read-only** (**Metadata: Read-only** is granted automatically).
+- **Organization permissions** — **Members: Read-only** (only needed when
+  the search query relies on org membership).
+
+One caveat: a fine-grained PAT only sees the repositories it was explicitly
+granted, so `involves:@me` silently returns nothing for repos outside the
+grant. If results look incomplete, check the token's repository access first.
+
+If your organization restricts fine-grained PATs, fall back to a classic
+token with the `repo` and `read:org` scopes — note that this grants far
+broader access (including write) than kiroshi ever uses.
+
+### Config file
+
+To write the file by hand instead of running the wizard: kiroshi reads a
+TOML file from
 `$XDG_CONFIG_HOME/kiroshi/config.toml`
 (or `~/.config/kiroshi/config.toml` when `XDG_CONFIG_HOME` is unset).
 
 ```toml
 # ~/.config/kiroshi/config.toml
 
-# Personal access token used to call the GitHub REST API.
+# Personal access token used to call the GitHub REST API — see "GitHub
+# token" above for the recommended fine-grained, read-only permission set.
 # Can also be supplied via the GITHUB_TOKEN environment variable, which
-# takes precedence over this field. Required scopes:
-#   - repo        (read pull requests in private repos)
-#   - read:org    (resolve org membership for the search query)
-github_token = "ghp_xxxxxxxxxxxxxxxxxxxx"
+# takes precedence over this field.
+github_token = "github_pat_xxxxxxxxxxxxxxxxxxxx"
 
 # Any valid GitHub issues/search query. The advanced_search backend is
 # forced on automatically so boolean expressions work as expected.
