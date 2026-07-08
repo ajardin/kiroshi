@@ -276,6 +276,13 @@ var spinFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"
 
 const spinInterval = 120 * time.Millisecond
 
+// rescanTimeout bounds one full scan: search plus per-PR enrichment (up to 5
+// REST calls per PR through the enrichConcurrency pool), so it sits well
+// above gh.HTTPTimeout, which caps each individual request. Deliberately
+// built on context.Background(), not the CLI's signal context: ctrl+c tears
+// the whole program down anyway.
+const rescanTimeout = 30 * time.Second
+
 func tickCmd() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
@@ -690,7 +697,7 @@ func (m Model) bellCmd() tea.Cmd {
 func (m Model) rescanCmd() tea.Cmd {
 	refresh := m.refresh
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), rescanTimeout)
 		defer cancel()
 		prs, err := refresh(ctx)
 		return rescanMsg{prs: prs, err: err, at: time.Now()}
