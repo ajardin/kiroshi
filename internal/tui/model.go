@@ -265,6 +265,13 @@ var spinFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"
 
 const spinInterval = 120 * time.Millisecond
 
+// rescanTimeout bounds one full scan: search plus per-PR enrichment (up to 5
+// REST calls per PR through the enrichConcurrency pool), so it sits well
+// above gh.HTTPTimeout, which caps each individual request. Deliberately
+// built on context.Background(), not the CLI's signal context: ctrl+c tears
+// the whole program down anyway.
+const rescanTimeout = 30 * time.Second
+
 func tickCmd() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
@@ -437,7 +444,11 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 			return m, nil
 		}
 		m.refreshing = true
-		m.status = "rescanning..."
+		// Dead text otherwise: statusLineView shows the spinner while refreshing
+		// is true, masking m.status, and rescanMsg overwrites it once the scan
+		// lands. Cleared here (not left alone) so a leftover status from a
+		// previous action doesn't resurface after this scan finishes.
+		m.status = ""
 		m.statusErr = false
 		m.spinFrame = 0
 		return m, tea.Batch(m.rescanCmd(), spinnerCmd())
@@ -489,43 +500,55 @@ func (m Model) cyclePane() Model {
 	return m.clampCursor()
 }
 
+// selectedURL returns the URL of the PR under the cursor in the current
+// visible set, or "" when the cursor is out of range (e.g. an empty set).
+func (m Model) selectedURL() string {
+	if before := m.visiblePRs(); m.cursor < len(before) {
+		return before[m.cursor].URL
+	}
+	return ""
+}
+
+// followSelection repositions the cursor onto the PR carrying url in the
+// (already mutated) visible set and scrolls it into view. found reports
+// whether it was relocated, so callers can apply their own fallback when the
+// PR didn't survive the mutation (or url was "" to begin with).
+func (m Model) followSelection(url string) (Model, bool) {
+	if url == "" {
+		return m, false
+	}
+	for i, pr := range m.visiblePRs() {
+		if pr.URL == url {
+			m.cursor = i
+			return m.scrollIntoView(), true
+		}
+	}
+	return m, false
+}
+
 // cycleSort advances sort to the next mode (with wrap-around) and repositions
 // the cursor on the previously-selected PR's new index. Reset-to-zero would be
-// disorienting here: the set is identical, only the order changes.
+// disorienting here: the set is identical, only the order changes, so
+// followSelection always succeeds and the clampCursor fallback is near-dead.
 func (m Model) cycleSort() Model {
-	var selectedURL string
-	if before := m.visiblePRs(); m.cursor < len(before) {
-		selectedURL = before[m.cursor].URL
-	}
+	url := m.selectedURL()
 	m.sort = (m.sort + 1) % 3
-	if selectedURL != "" {
-		for i, pr := range m.visiblePRs() {
-			if pr.URL == selectedURL {
-				m.cursor = i
-				return m.scrollIntoView()
-			}
-		}
+	if nm, ok := m.followSelection(url); ok {
+		return nm
 	}
 	return m.clampCursor()
 }
 
 // cycleApproval advances the approval filter to the next state (with
 // wrap-around) and keeps the cursor on the previously-selected PR when it
-// survives the new filter. Unlike cycleSort the visible set can shrink, so we
-// fall back to clampCursor when the selected PR is filtered out.
+// survives the new filter. Unlike cycleSort the visible set can shrink, so
+// when the selected PR is filtered out we reset to the top rather than
+// holding a stale index.
 func (m Model) cycleApproval() Model {
-	var selectedURL string
-	if before := m.visiblePRs(); m.cursor < len(before) {
-		selectedURL = before[m.cursor].URL
-	}
+	url := m.selectedURL()
 	m.approval = (m.approval + 1) % 3
-	if selectedURL != "" {
-		for i, pr := range m.visiblePRs() {
-			if pr.URL == selectedURL {
-				m.cursor = i
-				return m.scrollIntoView()
-			}
-		}
+	if nm, ok := m.followSelection(url); ok {
+		return nm
 	}
 	m.cursor = 0
 	return m.clampCursor()
@@ -664,7 +687,7 @@ func (m Model) bellCmd() tea.Cmd {
 func (m Model) rescanCmd() tea.Cmd {
 	refresh := m.refresh
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), rescanTimeout)
 		defer cancel()
 		prs, err := refresh(ctx)
 		return rescanMsg{prs: prs, err: err, at: time.Now()}

@@ -171,11 +171,11 @@ func countNoun(n int, noun string) string {
 }
 
 func truncate(s string, maxW int) string {
-	if maxW <= 1 {
-		return "…"
-	}
 	if lipgloss.Width(s) <= maxW {
 		return s
+	}
+	if maxW <= 1 {
+		return "…"
 	}
 	// Accumulate runes until the next one would push the prefix past maxW-1
 	// display columns, reserving the final column for the ellipsis. Width is

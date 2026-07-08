@@ -1458,6 +1458,18 @@ func TestTruncate(t *testing.T) {
 	if got := truncate("日本語のタイトル", 5); got != "日本…" {
 		t.Errorf("truncate wide = %q, want 日本…", got)
 	}
+	// A string that already fits must survive intact even at a degenerate
+	// maxW=1 terminal column — the fits-check must run before the maxW<=1
+	// short-circuit, not after.
+	if got := truncate("a", 1); got != "a" {
+		t.Errorf("truncate fitting single-cell = %q, want %q", got, "a")
+	}
+	if got := truncate("ab", 1); got != "…" {
+		t.Errorf("truncate overflowing at maxW=1 = %q, want %q", got, "…")
+	}
+	if got := truncate("", 0); got != "" {
+		t.Errorf("truncate empty at maxW=0 = %q, want empty", got)
+	}
 }
 
 func TestModel_QuestionMarkTogglesHelp(t *testing.T) {
