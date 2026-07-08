@@ -117,33 +117,27 @@ func TestModel_EnterReportsOpenError(t *testing.T) {
 func TestModel_YKeyYanksSelectedPR(t *testing.T) {
 	t.Parallel()
 
-	var copied string
-	m := newTestModel(t, nil, nil).WithCopier(func(text string) error {
-		copied = text
-		return nil
-	})
+	m := newTestModel(t, nil, nil)
 
 	updated, cmd := m.Update(tea.KeyPressMsg{Text: "y"})
+	if cmd == nil {
+		t.Fatal("y should produce a cmd (tea.SetClipboard batched with the status)")
+	}
 	got := applyCmd(t, updated.(Model), cmd)
 
 	// Default sort is updated_at desc, so PR #43 (updated Apr 22) is at index 0.
+	// The clipboard write itself is internal to bubbletea (tea.SetClipboard) and
+	// not observable here; the status field is the externally visible contract.
 	want := "https://github.com/ajardin/kiroshi/pull/43"
-	if copied != want {
-		t.Errorf("copied = %q, want %q", copied, want)
-	}
-	if !strings.Contains(got.View().Content, "yanked "+want) {
-		t.Errorf("view missing status line for yanked URL\n%s", got.View().Content)
+	if got.status != "yanked "+want {
+		t.Errorf("status = %q, want %q", got.status, "yanked "+want)
 	}
 }
 
 func TestModel_YKeyYanksFromDetail(t *testing.T) {
 	t.Parallel()
 
-	var copied string
-	m := newTestModel(t, nil, nil).WithCopier(func(text string) error {
-		copied = text
-		return nil
-	})
+	m := newTestModel(t, nil, nil)
 	m.mode = modeDetail
 
 	updated, cmd := m.Update(tea.KeyPressMsg{Text: "y"})
@@ -151,39 +145,30 @@ func TestModel_YKeyYanksFromDetail(t *testing.T) {
 	if got.mode != modeDetail {
 		t.Error("y should keep the detail overlay open")
 	}
-	applyCmd(t, got, cmd)
-	if want := got.visiblePRs()[got.cursor].URL; copied != want {
-		t.Errorf("copied = %q, want %q", copied, want)
+	if cmd == nil {
+		t.Fatal("y should produce a cmd (tea.SetClipboard batched with the status)")
+	}
+	want := got.visiblePRs()[got.cursor].URL
+	got = applyCmd(t, got, cmd)
+	if got.status != "yanked "+want {
+		t.Errorf("status = %q, want %q", got.status, "yanked "+want)
 	}
 }
 
 func TestModel_YKeyNoopOnEmptyList(t *testing.T) {
 	t.Parallel()
 
-	m := NewModel(nil, "viewer", "v", 2, false, 0, time.Now(), nil, nil).
-		WithCopier(func(string) error {
-			t.Error("copier should not be called on an empty list")
-			return nil
-		})
+	m := NewModel(nil, "viewer", "v", 2, false, 0, time.Now(), nil, nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = updated.(Model)
 
-	_, cmd := m.Update(tea.KeyPressMsg{Text: "y"})
+	before := m.status
+	updated, cmd := m.Update(tea.KeyPressMsg{Text: "y"})
 	if cmd != nil {
 		t.Errorf("y on an empty list should produce no cmd, got %T", cmd())
 	}
-}
-
-func TestModel_YKeyReportsCopyError(t *testing.T) {
-	t.Parallel()
-
-	m := newTestModel(t, nil, nil).
-		WithCopier(func(string) error { return errors.New("no clipboard") })
-
-	updated, cmd := m.Update(tea.KeyPressMsg{Text: "y"})
-	got := applyCmd(t, updated.(Model), cmd)
-	if !strings.Contains(got.View().Content, "failed to yank") {
-		t.Errorf("expected failure status, got\n%s", got.View().Content)
+	if got := updated.(Model).status; got != before {
+		t.Errorf("y on an empty list should not change status, got %q", got)
 	}
 }
 
