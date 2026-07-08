@@ -12,7 +12,7 @@ import (
 	"context"
 	"io"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/ajardin/kiroshi/internal/gh"
@@ -45,8 +45,10 @@ type Refresher func(ctx context.Context) ([]gh.PullRequest, error)
 func Run(m Model, in io.Reader, out io.Writer) error {
 	// Wire the bell to the program's own output so a notify BEL reaches the
 	// terminal Bubble Tea renders to.
+	// The altscreen request moved out of the program options in Bubble Tea v2:
+	// it is declared on the tea.View returned by Model.View.
 	m.bell = out
-	p := tea.NewProgram(m, tea.WithInput(in), tea.WithOutput(out), tea.WithAltScreen())
+	p := tea.NewProgram(m, tea.WithInput(in), tea.WithOutput(out))
 	_, err := p.Run()
 	return err
 }

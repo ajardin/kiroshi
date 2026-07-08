@@ -140,7 +140,7 @@ func (m Model) detailView() string {
 	visible := m.visiblePRs()
 	if len(visible) == 0 {
 		m.mode = modeList
-		return m.View()
+		return m.render()
 	}
 	if m.cursor >= len(visible) {
 		m.cursor = len(visible) - 1

@@ -8,7 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/ajardin/kiroshi/internal/config"
@@ -156,23 +156,51 @@ func (m WizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.login = msg.login
 		m.step = stepDone
 		return m, tea.Quit
-	case tea.KeyMsg:
+	case tea.PasteMsg:
+		return m.handlePaste(msg.Content)
+	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
 	return m, nil
 }
 
-func (m WizardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyCtrlC, tea.KeyEsc:
+// handlePaste inserts pasted text into the active step's buffer. v1 delivered
+// bracketed paste as a runes KeyMsg, so pasting a token or URL just worked;
+// v2 emits a dedicated message. Non-input steps ignore paste.
+func (m WizardModel) handlePaste(text string) (tea.Model, tea.Cmd) {
+	switch m.step {
+	case stepToken:
+		m.token += text
+	case stepSearch:
+		m.search += text
+	case stepMinReviews:
+		m.minReviewsStr += text
+		m.errMsg = ""
+	case stepRefresh:
+		m.refreshStr += text
+		m.errMsg = ""
+	case stepJiraURL:
+		m.jiraURL += text
+		m.errMsg = ""
+	case stepJiraEmail:
+		m.jiraEmail += text
+	case stepJiraToken:
+		m.jiraToken += text
+	default:
+	}
+	return m, nil
+}
+
+func (m WizardModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c", "esc":
 		// Abort from anywhere: leave Completed false and quit.
 		return m, tea.Quit
-	default:
 	}
 
 	switch m.step {
 	case stepToken:
-		if msg.Type == tea.KeyEnter {
+		if msg.Code == tea.KeyEnter {
 			// Reconfigure: a blank entry keeps the stored token (it still goes
 			// through live validation, catching an expired token).
 			if strings.TrimSpace(m.token) == "" && m.existingToken != "" {
@@ -184,7 +212,7 @@ func (m WizardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.token = applyKey(m.token, msg)
 		return m, nil
 	case stepSearch:
-		if msg.Type == tea.KeyEnter {
+		if msg.Code == tea.KeyEnter {
 			m.step = stepMinReviews
 			return m, nil
 		}
@@ -195,7 +223,7 @@ func (m WizardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case stepRefresh:
 		return m.handleRefreshKey(msg)
 	case stepJiraURL:
-		if msg.Type == tea.KeyEnter {
+		if msg.Code == tea.KeyEnter {
 			trimmed := strings.TrimSpace(m.jiraURL)
 			if trimmed == "-" {
 				// "-" sentinel: drop the whole Jira trio (existing values too, so
@@ -234,14 +262,14 @@ func (m WizardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.errMsg = ""
 		return m, nil
 	case stepJiraEmail:
-		if msg.Type == tea.KeyEnter {
+		if msg.Code == tea.KeyEnter {
 			m.step = stepJiraToken
 			return m, nil
 		}
 		m.jiraEmail = applyKey(m.jiraEmail, msg)
 		return m, nil
 	case stepJiraToken:
-		if msg.Type == tea.KeyEnter {
+		if msg.Code == tea.KeyEnter {
 			// Reconfigure: blank keeps the stored Jira token (validated live,
 			// same as the GitHub one).
 			if strings.TrimSpace(m.jiraToken) == "" && m.existingJiraToken != "" {
@@ -275,22 +303,20 @@ func trimLastRune(s string) string {
 }
 
 // applyKey edits a plain text buffer in response to a keypress: backspace
-// trims the last rune, runes and space append. Anything else is a no-op.
-func applyKey(buf string, msg tea.KeyMsg) string {
-	switch msg.Type {
+// trims the last rune, printable input appends. Anything else is a no-op —
+// Key.Text is empty for special keys, so appending it covers that for free
+// (it carries the space too, v1's separate KeySpace case).
+func applyKey(buf string, msg tea.KeyPressMsg) string {
+	switch msg.Code {
 	case tea.KeyBackspace, tea.KeyDelete:
 		return trimLastRune(buf)
-	case tea.KeyRunes:
-		return buf + string(msg.Runes)
-	case tea.KeySpace:
-		return buf + " "
 	default:
-		return buf
+		return buf + msg.Text
 	}
 }
 
-func (m WizardModel) handleMinReviewsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
+func (m WizardModel) handleMinReviewsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.Code {
 	case tea.KeyEnter:
 		if _, err := m.parsedMinReviews(); err != nil {
 			m.errMsg = err.Error()
@@ -305,17 +331,19 @@ func (m WizardModel) handleMinReviewsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.errMsg = ""
 		}
 		return m, nil
-	case tea.KeyRunes:
-		m.minReviewsStr += string(msg.Runes)
-		m.errMsg = ""
-		return m, nil
 	default:
+		// Bare space excluded to match v1, where space arrived as KeySpace
+		// (not KeyRunes) and this handler dropped it.
+		if msg.Text != "" && msg.Text != " " {
+			m.minReviewsStr += msg.Text
+			m.errMsg = ""
+		}
 		return m, nil
 	}
 }
 
-func (m WizardModel) handleRefreshKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
+func (m WizardModel) handleRefreshKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.Code {
 	case tea.KeyEnter:
 		if _, err := m.parsedRefreshInterval(); err != nil {
 			m.errMsg = err.Error()
@@ -330,11 +358,12 @@ func (m WizardModel) handleRefreshKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.errMsg = ""
 		}
 		return m, nil
-	case tea.KeyRunes:
-		m.refreshStr += string(msg.Runes)
-		m.errMsg = ""
-		return m, nil
 	default:
+		// Same v1 space parity as handleMinReviewsKey.
+		if msg.Text != "" && msg.Text != " " {
+			m.refreshStr += msg.Text
+			m.errMsg = ""
+		}
 		return m, nil
 	}
 }
@@ -417,8 +446,16 @@ func (m WizardModel) result() WizardResult {
 	}
 }
 
-// View implements tea.Model.
-func (m WizardModel) View() string {
+// View implements tea.Model. Like the dashboard's View, it declares the
+// altscreen request on the returned view (a program option until v1).
+func (m WizardModel) View() tea.View {
+	v := tea.NewView(m.render())
+	v.AltScreen = true
+	return v
+}
+
+// render composes the wizard frame as a styled string.
+func (m WizardModel) render() string {
 	title := lipgloss.NewStyle().Foreground(colYellow).Bold(true).Render("kiroshi setup")
 	subText := "Let's create your config file."
 	if m.reconfigure {
@@ -508,7 +545,7 @@ func maskValue(s string) string {
 // the collected result. It mirrors Run, but recovers the final model so the
 // caller can read the values the user entered.
 func RunWizard(m WizardModel, in io.Reader, out io.Writer) (WizardResult, error) {
-	p := tea.NewProgram(m, tea.WithInput(in), tea.WithOutput(out), tea.WithAltScreen())
+	p := tea.NewProgram(m, tea.WithInput(in), tea.WithOutput(out))
 	final, err := p.Run()
 	if err != nil {
 		return WizardResult{}, err
