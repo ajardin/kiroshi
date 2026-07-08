@@ -1354,6 +1354,39 @@ func TestView_RendersMergeConflict(t *testing.T) {
 	}
 }
 
+func TestUnresolvedFragment(t *testing.T) {
+	t.Parallel()
+
+	if got := unresolvedFragment(gh.PullRequest{ThreadsKnown: true, UnresolvedThreads: 3}); got != "3 unresolved" {
+		t.Errorf("known 3 = %q, want \"3 unresolved\"", got)
+	}
+	if got := unresolvedFragment(gh.PullRequest{ThreadsKnown: true}); got != "" {
+		t.Errorf("known zero = %q, want empty (a resolved PR shows nothing)", got)
+	}
+	if got := unresolvedFragment(gh.PullRequest{UnresolvedThreads: 3}); got != "" {
+		t.Errorf("unknown = %q, want empty (unknown must not render as a count)", got)
+	}
+}
+
+func TestView_RendersUnresolvedThreads(t *testing.T) {
+	t.Parallel()
+
+	prs := samplePRs()
+	prs[0].ThreadsKnown = true
+	prs[0].UnresolvedThreads = 3
+	prs[1].ThreadsKnown = true // known zero: must render nothing
+
+	m := NewModel(prs, "ajardin", "v", 2, false, 0, time.Now(), nil, nil)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	view := updated.(Model).View().Content
+	if !strings.Contains(view, "3 unresolved") {
+		t.Errorf("view missing the unresolved-threads cell\n%s", view)
+	}
+	if got := strings.Count(view, "unresolved"); got != 1 {
+		t.Errorf("view shows %d unresolved cells, want 1 (zero/unknown must render nothing)\n%s", got, view)
+	}
+}
+
 func TestRenderDiff(t *testing.T) {
 	t.Parallel()
 	// Bare-bones styler: no background, no bold — we only care about the text
@@ -1520,11 +1553,12 @@ func detailModel(t *testing.T) Model {
 		CreatedAt: time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
 		UpdatedAt: time.Date(2026, 5, 2, 0, 0, 0, 0, time.UTC),
 		Additions: 200, Deletions: 12, ChangedFiles: 6, Commits: 4, Comments: 3, ReviewComments: 2,
-		Body:             "This is the description.\nSecond line.",
-		Approvals:        []string{"carol"},
-		ChangesRequested: []string{"dave"},
-		Commented:        []string{"erin"},
-		CIState:          gh.CIStateSuccess,
+		Body:              "This is the description.\nSecond line.",
+		Approvals:         []string{"carol"},
+		ChangesRequested:  []string{"dave"},
+		Commented:         []string{"erin"},
+		CIState:           gh.CIStateSuccess,
+		UnresolvedThreads: 2, ThreadsKnown: true,
 	}}
 	m := NewModel(prs, "viewer", "v0.0.1", 2, false, 0, time.Now(), nil, nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
@@ -1551,6 +1585,7 @@ func TestModel_DKeyOpensDetail(t *testing.T) {
 		"DESCRIPTION", "This is the description.",
 		"feature/detail -> main",             // branch line
 		"6 files", "4 commits", "5 comments", // counters (comments = 3 conv + 2 review)
+		"2 unresolved", // unresolved review threads in the meta line
 	} {
 		if !strings.Contains(view, want) {
 			t.Errorf("detail view missing %q\n%s", want, view)

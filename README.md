@@ -75,6 +75,10 @@ One caveat: a fine-grained PAT only sees the repositories it was explicitly
 granted, so `involves:@me` silently returns nothing for repos outside the
 grant. If results look incomplete, check the token's repository access first.
 
+The unresolved review-thread count uses the GraphQL API with the same token.
+If your token or organization restricts GraphQL, kiroshi silently omits that
+cell and everything else keeps working.
+
 If your organization restricts fine-grained PATs, fall back to a classic
 token with the `repo` and `read:org` scopes — note that this grants far
 broader access (including write) than kiroshi ever uses.
@@ -216,7 +220,10 @@ output instead of token-filtered.)
 `internal/cli` parses flags and wires the GitHub client to either the
 TUI or plain-text renderer. `internal/gh` is a narrow wrapper around
 [`go-github`](https://github.com/google/go-github) that adds REST
-enrichment (review state, CI checks, diff stats) in parallel across PRs.
+enrichment (review state, CI checks, diff stats) in parallel across PRs,
+plus one batched GraphQL query per ~20 PRs that counts unresolved review
+threads (shown as `N unresolved` in the listing and detail overlay — the
+REST API doesn't expose thread resolution).
 `internal/tui` is a custom Bubble Tea model — see `CLAUDE.md` for the
 locked color palette, bucket semantics, and CI-state aggregation rules.
 

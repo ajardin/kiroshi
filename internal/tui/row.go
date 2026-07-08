@@ -135,6 +135,11 @@ func (m Model) renderRow(pr gh.PullRequest, selected bool, cols rowCols) string 
 	if mergeText, mergeColor := mergeFragment(pr.MergeState); mergeText != "" {
 		line2Body += sep + st(mergeColor, false).Render(mergeText)
 	}
+	// Unresolved review threads: grouped with the merge cell (both are GitHub
+	// "why is this stuck?" signals), present only when known and > 0.
+	if u := unresolvedFragment(pr); u != "" {
+		line2Body += sep + st(colDim, false).Render(u)
+	}
 	// Jira cell: the status word alone (the key is dropped to cut noise on an
 	// already-dense line), colored by category. Present only when a key resolved.
 	if pr.JiraKey != "" {

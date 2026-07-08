@@ -210,6 +210,9 @@ func (m Model) detailView() string {
 	if mg, col := mergeFragment(pr.MergeState); mg != "" {
 		meta = append(meta, lipgloss.NewStyle().Foreground(col).Render(mg))
 	}
+	if u := unresolvedFragment(pr); u != "" {
+		meta = append(meta, lipgloss.NewStyle().Foreground(colDim).Render(u))
+	}
 	age := m.now.Sub(pr.CreatedAt)
 	meta = append(meta, lipgloss.NewStyle().Foreground(ageColor(age)).Render(humanAgo(age)))
 	metaLine := strings.Join(meta, dot)

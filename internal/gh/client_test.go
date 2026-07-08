@@ -2,10 +2,13 @@ package gh
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -297,6 +300,10 @@ func TestClient_SearchPullRequests(t *testing.T) {
 					    {"name":"test","status":"completed","conclusion":"success"}
 					  ]
 					}`)
+				case "/graphql":
+					fmt.Fprint(w, `{"data":{"pr0":{"pullRequest":{"reviewThreads":{"nodes":[
+					  {"isResolved":false},{"isResolved":true},{"isResolved":false}
+					]}}}}}`)
 				default:
 					t.Errorf("unexpected path %q", r.URL.Path)
 					http.NotFound(w, r)
@@ -324,6 +331,8 @@ func TestClient_SearchPullRequests(t *testing.T) {
 				Commits:            3,
 				Comments:           8,
 				ReviewComments:     2,
+				UnresolvedThreads:  2,
+				ThreadsKnown:       true,
 			},
 		},
 		{
@@ -407,6 +416,10 @@ func TestClient_SearchPullRequests(t *testing.T) {
 					if got.HeadRef != want.HeadRef || got.BaseRef != want.BaseRef {
 						t.Errorf("branches = %q->%q, want %q->%q", got.HeadRef, got.BaseRef, want.HeadRef, want.BaseRef)
 					}
+					if got.UnresolvedThreads != want.UnresolvedThreads || got.ThreadsKnown != want.ThreadsKnown {
+						t.Errorf("threads = %d (known=%t), want %d (known=%t)",
+							got.UnresolvedThreads, got.ThreadsKnown, want.UnresolvedThreads, want.ThreadsKnown)
+					}
 					if got.ChangedFiles != want.ChangedFiles || got.Commits != want.Commits ||
 						got.Comments != want.Comments || got.ReviewComments != want.ReviewComments {
 						t.Errorf("counts = files:%d commits:%d comments:%d review:%d, want files:%d commits:%d comments:%d review:%d",
@@ -445,6 +458,9 @@ func defaultEnrichmentHandler(t *testing.T) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		switch {
+		case path == "/graphql":
+			// Empty data: every PR degrades to ThreadsKnown=false.
+			fmt.Fprint(w, `{"data":{}}`)
 		case strings.HasSuffix(path, "/requested_reviewers"):
 			fmt.Fprint(w, `{"users":[],"teams":[]}`)
 		case strings.HasSuffix(path, "/reviews"):
@@ -705,6 +721,8 @@ func TestClient_SearchPullRequests_ReviewCache(t *testing.T) {
 			fmt.Fprint(w, `{"number":1,"head":{"sha":"sha-1","ref":"feature/x"}}`)
 		case "/repos/ajardin/repo-x/commits/sha-1/check-runs":
 			fmt.Fprint(w, `{"total_count":0,"check_runs":[]}`)
+		case "/graphql":
+			fmt.Fprint(w, `{"data":{}}`)
 		default:
 			t.Errorf("unexpected path %q", r.URL.Path)
 			http.NotFound(w, r)
@@ -826,6 +844,134 @@ func TestClient_SearchPullRequests_CacheEvictsDroppedPRs(t *testing.T) {
 	// PR 2 was evicted while absent, so its return pays the review calls again.
 	if got := count("/repos/ajardin/repo-x/pulls/2/reviews"); got != 2 {
 		t.Errorf("PR 2 reviews calls = %d, want 2 (entry should have been evicted)", got)
+	}
+}
+
+// TestClient_SearchPullRequests_UnresolvedThreadsBatched asserts the GraphQL
+// enrichment batches (≤ ceil(N/threadsBatchSize) requests per scan), fans the
+// aliases out to the right PRs and the counts back in, and leaves a PR whose
+// alias comes back null (partial response) unknown without failing the scan.
+func TestClient_SearchPullRequests_UnresolvedThreadsBatched(t *testing.T) {
+	t.Parallel()
+
+	const prCount = 45 // → 3 chunks of ≤ 20
+	aliasRe := regexp.MustCompile(`(pr\d+): repository\(owner: "([^"]+)", name: "([^"]+)"\) \{ pullRequest\(number: (\d+)\)`)
+	var (
+		mu       sync.Mutex
+		gqlCalls int
+	)
+	fallback := defaultEnrichmentHandler(t)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/search/issues":
+			fmt.Fprint(w, multiSearchBody(prCount, "ajardin", "repo-x"))
+		case "/graphql":
+			mu.Lock()
+			gqlCalls++
+			mu.Unlock()
+			var req struct {
+				Query string `json:"query"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Errorf("decode graphql request: %v", err)
+				return
+			}
+			matches := aliasRe.FindAllStringSubmatch(req.Query, -1)
+			if len(matches) == 0 || len(matches) > threadsBatchSize {
+				t.Errorf("chunk has %d aliases, want 1..%d", len(matches), threadsBatchSize)
+			}
+			parts := make([]string, 0, len(matches))
+			for _, m := range matches {
+				num, err := strconv.Atoi(m[4])
+				if err != nil {
+					t.Errorf("alias %q has non-numeric PR number %q", m[1], m[4])
+					continue
+				}
+				// PR 7's alias comes back null (repo unreadable, GraphQL
+				// "errors" would accompany it): it must stay unknown.
+				if num == 7 {
+					parts = append(parts, fmt.Sprintf("%q:null", m[1]))
+					continue
+				}
+				// num%3 unresolved threads plus one resolved, so the fan-in is
+				// asserted per PR rather than with one global count.
+				nodes := make([]string, 0, num%3+1)
+				for range num % 3 {
+					nodes = append(nodes, `{"isResolved":false}`)
+				}
+				nodes = append(nodes, `{"isResolved":true}`)
+				parts = append(parts, fmt.Sprintf(`%q:{"pullRequest":{"reviewThreads":{"nodes":[%s]}}}`, m[1], strings.Join(nodes, ",")))
+			}
+			fmt.Fprintf(w, `{"data":{%s}}`, strings.Join(parts, ","))
+		default:
+			fallback(w, r)
+		}
+	})
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	c := newClient("test-token", srv.URL+"/", nil)
+	prs, err := c.SearchPullRequests(t.Context(), "org:ajardin is:pr")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(prs) != prCount {
+		t.Fatalf("got %d PRs, want %d", len(prs), prCount)
+	}
+	if want := (prCount + threadsBatchSize - 1) / threadsBatchSize; gqlCalls != want {
+		t.Errorf("graphql requests = %d, want %d (batching is the point)", gqlCalls, want)
+	}
+	for _, pr := range prs {
+		if pr.Number == 7 {
+			if pr.ThreadsKnown {
+				t.Errorf("PR 7 ThreadsKnown = true, want false (null alias must degrade)")
+			}
+			continue
+		}
+		if !pr.ThreadsKnown {
+			t.Errorf("PR %d ThreadsKnown = false, want true", pr.Number)
+			continue
+		}
+		if want := pr.Number % 3; pr.UnresolvedThreads != want {
+			t.Errorf("PR %d UnresolvedThreads = %d, want %d", pr.Number, pr.UnresolvedThreads, want)
+		}
+	}
+}
+
+func TestClient_SearchPullRequests_ThreadsDegradeOnGraphQLFailure(t *testing.T) {
+	t.Parallel()
+
+	fallback := defaultEnrichmentHandler(t)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/search/issues":
+			fmt.Fprint(w, multiSearchBody(3, "ajardin", "repo-x"))
+		case "/graphql":
+			// Some tokens/orgs restrict GraphQL entirely.
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprint(w, `{"message":"GraphQL is disabled for this token"}`)
+		default:
+			fallback(w, r)
+		}
+	})
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	c := newClient("test-token", srv.URL+"/", nil)
+	prs, err := c.SearchPullRequests(t.Context(), "org:ajardin is:pr")
+	if err != nil {
+		t.Fatalf("err = %v, want nil (a GraphQL failure must not fail the scan)", err)
+	}
+	if len(prs) != 3 {
+		t.Fatalf("got %d PRs, want 3", len(prs))
+	}
+	for _, pr := range prs {
+		if pr.ThreadsKnown {
+			t.Errorf("PR %d ThreadsKnown = true, want false after a GraphQL failure", pr.Number)
+		}
+		if pr.EnrichPartial {
+			t.Errorf("PR %d flagged EnrichPartial, want clean (threads degrade silently, not as partial enrichment)", pr.Number)
+		}
 	}
 }
 
