@@ -12,8 +12,7 @@ type Bucket int
 // Pull request classification used by the status cards. The first three are
 // mutually exclusive review-state categories; BucketInFlight is the
 // "unclassified" default for PRs that don't fit any other (e.g. drafts, PRs
-// the viewer authored). Phase 1 puts every PR in BucketInFlight; Phase 2 will
-// populate the others based on the viewer's review state.
+// the viewer authored).
 // The comments below describe the incoming pane's review-state semantics
 // (bucketFor). The Mine pane reuses the same four values — and so the same
 // palette slots — with author-side meanings via mineBucketFor: WaitingOnYou =

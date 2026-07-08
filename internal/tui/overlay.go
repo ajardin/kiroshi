@@ -64,7 +64,7 @@ func (m Model) loadingView() string {
 
 // --- Help overlay --------------------------------------------------------
 
-// helpView renders the keybindings overlay as a centered modal box (Phase 4).
+// helpView renders the keybindings overlay as a centered modal box.
 // The `?` key toggles it; any key dismisses it. It replaces the dashboard for
 // the duration rather than compositing over it — lipgloss v1 can't cleanly
 // back-fill a box on top of already-rendered content (the same constraint that
