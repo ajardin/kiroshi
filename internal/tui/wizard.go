@@ -496,7 +496,11 @@ func (m WizardModel) render() string {
 		body = m.fieldView("7/7", "Jira API token", maskValue(m.jiraToken), jiraTokenHint, "")
 	case stepValidating:
 		frame := spinFrames[m.spinFrame%len(spinFrames)]
-		body = lipgloss.NewStyle().Foreground(colCyan).Render(frame + " Validating token with GitHub…")
+		label := "Validating token with GitHub…"
+		if strings.TrimSpace(m.jiraURL) != "" {
+			label = "Validating credentials with GitHub and Jira…"
+		}
+		body = lipgloss.NewStyle().Foreground(colCyan).Render(frame + " " + label)
 	case stepError:
 		head := lipgloss.NewStyle().Foreground(colRed).Bold(true).Render("✗ validation failed")
 		detail := lipgloss.NewStyle().Foreground(colText).Render(m.errMsg)

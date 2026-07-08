@@ -85,6 +85,11 @@ func TestWizard_HappyPath(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected a validation command")
 	}
+	if view := m.View().Content; !strings.Contains(view, "Validating token with GitHub…") {
+		t.Errorf("view = %q, want the GitHub-only validating label", view)
+	} else if strings.Contains(view, "Jira") {
+		t.Errorf("view = %q, should not mention Jira when it isn't configured", view)
+	}
 
 	// Run the validation command and feed its message back in.
 	m, _ = send(t, m, cmd())
@@ -127,6 +132,9 @@ func TestWizard_JiraConfigured(t *testing.T) {
 	m, cmd := enter(t, m) // -> validating
 	if m.step != stepValidating {
 		t.Fatalf("step = %v, want stepValidating", m.step)
+	}
+	if view := m.View().Content; !strings.Contains(view, "Validating credentials with GitHub and Jira…") {
+		t.Errorf("view = %q, want the GitHub+Jira validating label", view)
 	}
 	m, _ = send(t, m, cmd())
 
