@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/ajardin/kiroshi/internal/config"
 )
@@ -39,24 +39,24 @@ func send(t *testing.T, m WizardModel, msg tea.Msg) (WizardModel, tea.Cmd) {
 func TestApplyKey_BackspaceTrimsRuneNotByte(t *testing.T) {
 	t.Parallel()
 
-	got := applyKey("café", tea.KeyMsg{Type: tea.KeyBackspace})
+	got := applyKey("café", tea.KeyPressMsg{Code: tea.KeyBackspace})
 	if got != "caf" {
 		t.Errorf("applyKey backspace = %q, want %q (must trim the whole rune)", got, "caf")
 	}
-	if got = applyKey("", tea.KeyMsg{Type: tea.KeyBackspace}); got != "" {
+	if got = applyKey("", tea.KeyPressMsg{Code: tea.KeyBackspace}); got != "" {
 		t.Errorf("applyKey backspace on empty = %q, want empty", got)
 	}
 }
 
 func typeRunes(t *testing.T, m WizardModel, s string) WizardModel {
 	t.Helper()
-	m, _ = send(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)})
+	m, _ = send(t, m, tea.KeyPressMsg{Text: s})
 	return m
 }
 
 func enter(t *testing.T, m WizardModel) (WizardModel, tea.Cmd) {
 	t.Helper()
-	return send(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	return send(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 }
 
 func okValidator(string) (string, error) { return "octocat", nil }
@@ -154,7 +154,7 @@ func TestWizard_JiraURLRequiresHTTPS(t *testing.T) {
 	if !strings.Contains(m.errMsg, "https") {
 		t.Errorf("errMsg = %q, want an https hint", m.errMsg)
 	}
-	if !strings.Contains(m.View(), "https") {
+	if !strings.Contains(m.View().Content, "https") {
 		t.Error("view should surface the https error inline")
 	}
 }
@@ -190,7 +190,7 @@ func TestWizard_TokenStepShowsLeastPrivilegeHint(t *testing.T) {
 	t.Parallel()
 
 	m := NewWizardModel(okValidator, okJiraValidator)
-	view := m.View()
+	view := m.View().Content
 	if !strings.Contains(view, "fine-grained PAT") {
 		t.Errorf("token step view should hint at a fine-grained PAT, got %q", view)
 	}
@@ -205,7 +205,7 @@ func TestWizard_JiraTokenIsMasked(t *testing.T) {
 	m := NewWizardModel(okValidator, okJiraValidator)
 	m.step = stepJiraToken
 	m = typeRunes(t, m, "jira-secret")
-	view := m.View()
+	view := m.View().Content
 	if strings.Contains(view, "jira-secret") {
 		t.Error("raw Jira token leaked into the view")
 	}
@@ -317,7 +317,7 @@ func TestWizard_TokenRejectedRecovers(t *testing.T) {
 	}
 
 	// Any key returns to the token step to retry.
-	m, _ = send(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	m, _ = send(t, m, tea.KeyPressMsg{Text: "x"})
 	if m.step != stepToken {
 		t.Errorf("step = %v, want stepToken after retry", m.step)
 	}
@@ -328,7 +328,7 @@ func TestWizard_TokenRejectedRecovers(t *testing.T) {
 func backspaceAll(t *testing.T, m WizardModel, n int) WizardModel {
 	t.Helper()
 	for range n {
-		m, _ = send(t, m, tea.KeyMsg{Type: tea.KeyBackspace})
+		m, _ = send(t, m, tea.KeyPressMsg{Code: tea.KeyBackspace})
 	}
 	return m
 }
@@ -464,21 +464,21 @@ func TestWizard_ReconfigureHints(t *testing.T) {
 	t.Parallel()
 
 	m := NewWizardModel(okValidator, okJiraValidator).WithExistingConfig(existingConfig())
-	if view := m.View(); !strings.Contains(view, "keep the current token") {
+	if view := m.View().Content; !strings.Contains(view, "keep the current token") {
 		t.Errorf("token step should hint that blank keeps the token, got %q", view)
 	}
-	if view := m.View(); !strings.Contains(view, "update your config") {
+	if view := m.View().Content; !strings.Contains(view, "update your config") {
 		t.Errorf("subtitle should mention updating, got %q", view)
 	}
 
 	m.step = stepJiraURL
 	m.jiraURL = ""
-	if view := m.View(); !strings.Contains(view, `"-" to remove Jira`) {
+	if view := m.View().Content; !strings.Contains(view, `"-" to remove Jira`) {
 		t.Errorf("jira url step should document the removal sentinel, got %q", view)
 	}
 
 	m.step = stepJiraToken
-	if view := m.View(); !strings.Contains(view, "keep the current token") {
+	if view := m.View().Content; !strings.Contains(view, "keep the current token") {
 		t.Errorf("jira token step should hint that blank keeps the token, got %q", view)
 	}
 }
@@ -488,7 +488,7 @@ func TestWizard_EscAborts(t *testing.T) {
 
 	m := NewWizardModel(okValidator, okJiraValidator)
 	m = typeRunes(t, m, "tok")
-	m, cmd := send(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, cmd := send(t, m, tea.KeyPressMsg{Code: tea.KeyEsc})
 
 	if cmd == nil {
 		t.Error("esc should return tea.Quit")
@@ -503,7 +503,7 @@ func TestWizard_TokenIsMasked(t *testing.T) {
 
 	m := NewWizardModel(okValidator, okJiraValidator)
 	m = typeRunes(t, m, "secret")
-	view := m.View()
+	view := m.View().Content
 	if strings.Contains(view, "secret") {
 		t.Error("raw token leaked into the view")
 	}

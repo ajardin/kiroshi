@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/ajardin/kiroshi/internal/gh"
 )
@@ -353,14 +353,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.clampCursor()
 		return m, nil
 
-	case tea.KeyMsg:
+	case tea.PasteMsg:
+		// v1 delivered bracketed paste as a runes KeyMsg, so pasting into the
+		// filter just worked; v2 emits a dedicated message. Every other mode
+		// ignores paste, like v1 where multi-rune input matched no binding.
+		if m.mode == modeFilter && msg.Content != "" {
+			m.filter += msg.Content
+			m.cursor, m.offset = 0, 0
+		}
+		return m, nil
+
+	case tea.KeyPressMsg:
 		nm, cmd := m.handleKey(msg)
 		return nm, cmd
 	}
 	return m, nil
 }
 
-func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+func (m Model) handleKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	switch m.mode {
 	case modeLoading:
 		// Nothing to act on until the first batch lands; only let the user bail.
@@ -480,7 +490,7 @@ func (m Model) cycleApproval() Model {
 
 // handleHelpKey dismisses the keybindings overlay on any key. ctrl+c still
 // quits — it's the one chord users expect to escape the program from anywhere.
-func (m Model) handleHelpKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+func (m Model) handleHelpKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	if msg.String() == "ctrl+c" {
 		return m, tea.Quit
 	}
@@ -494,7 +504,7 @@ func (m Model) handleHelpKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 // current PR in the browser; y yanks its URL to the clipboard (the overlay is
 // where users inspect a PR, so it's a natural place to grab the link — and it
 // stays open, like enter/o); ctrl+c quits; any other key closes the overlay.
-func (m Model) handleDetailKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+func (m Model) handleDetailKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
 		return m, tea.Quit
@@ -511,7 +521,7 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) handleFilterKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+func (m Model) handleFilterKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
 		return m, tea.Quit
@@ -530,8 +540,11 @@ func (m Model) handleFilterKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		return m, nil
 	default:
-		if msg.Type == tea.KeyRunes && len(msg.Runes) > 0 {
-			m.filter += string(msg.Runes)
+		// Key.Text carries printable input only. The bare space is excluded to
+		// match v1, where space arrived as KeySpace (not KeyRunes) and the
+		// filter dropped it.
+		if msg.Text != "" && msg.Text != " " {
+			m.filter += msg.Text
 			// Reset the scroll window along with the cursor: a leftover offset
 			// from a scrolled list would render past the end of a shrunken set.
 			m.cursor, m.offset = 0, 0

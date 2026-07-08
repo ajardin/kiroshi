@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
@@ -76,7 +76,7 @@ func TestModel_EnterOpensSelectedPR(t *testing.T) {
 		return nil
 	}, nil)
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	got := applyCmd(t, updated.(Model), cmd)
 
 	// Default sort is updated_at desc, so PR #43 (updated Apr 22) is at index 0.
@@ -84,8 +84,8 @@ func TestModel_EnterOpensSelectedPR(t *testing.T) {
 	if opened != want {
 		t.Errorf("opened = %q, want %q", opened, want)
 	}
-	if !strings.Contains(got.View(), "opened "+want) {
-		t.Errorf("view missing status line for opened URL\n%s", got.View())
+	if !strings.Contains(got.View().Content, "opened "+want) {
+		t.Errorf("view missing status line for opened URL\n%s", got.View().Content)
 	}
 }
 
@@ -95,7 +95,7 @@ func TestModel_OKeyOpensSelectedPR(t *testing.T) {
 	var opened string
 	m := newTestModel(t, func(url string) error { opened = url; return nil }, nil)
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	updated, _ := m.Update(tea.KeyPressMsg{Text: "o"})
 	_ = updated.(Model)
 	if opened == "" {
 		t.Error("o key did not invoke opener")
@@ -107,10 +107,10 @@ func TestModel_EnterReportsOpenError(t *testing.T) {
 
 	m := newTestModel(t, func(string) error { return errors.New("no browser") }, nil)
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	got := applyCmd(t, updated.(Model), cmd)
-	if !strings.Contains(got.View(), "failed to open") {
-		t.Errorf("expected failure status, got\n%s", got.View())
+	if !strings.Contains(got.View().Content, "failed to open") {
+		t.Errorf("expected failure status, got\n%s", got.View().Content)
 	}
 }
 
@@ -123,7 +123,7 @@ func TestModel_YKeyYanksSelectedPR(t *testing.T) {
 		return nil
 	})
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	updated, cmd := m.Update(tea.KeyPressMsg{Text: "y"})
 	got := applyCmd(t, updated.(Model), cmd)
 
 	// Default sort is updated_at desc, so PR #43 (updated Apr 22) is at index 0.
@@ -131,8 +131,8 @@ func TestModel_YKeyYanksSelectedPR(t *testing.T) {
 	if copied != want {
 		t.Errorf("copied = %q, want %q", copied, want)
 	}
-	if !strings.Contains(got.View(), "yanked "+want) {
-		t.Errorf("view missing status line for yanked URL\n%s", got.View())
+	if !strings.Contains(got.View().Content, "yanked "+want) {
+		t.Errorf("view missing status line for yanked URL\n%s", got.View().Content)
 	}
 }
 
@@ -146,7 +146,7 @@ func TestModel_YKeyYanksFromDetail(t *testing.T) {
 	})
 	m.mode = modeDetail
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	updated, cmd := m.Update(tea.KeyPressMsg{Text: "y"})
 	got := updated.(Model)
 	if got.mode != modeDetail {
 		t.Error("y should keep the detail overlay open")
@@ -168,7 +168,7 @@ func TestModel_YKeyNoopOnEmptyList(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = updated.(Model)
 
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	_, cmd := m.Update(tea.KeyPressMsg{Text: "y"})
 	if cmd != nil {
 		t.Errorf("y on an empty list should produce no cmd, got %T", cmd())
 	}
@@ -180,20 +180,20 @@ func TestModel_YKeyReportsCopyError(t *testing.T) {
 	m := newTestModel(t, nil, nil).
 		WithCopier(func(string) error { return errors.New("no clipboard") })
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	updated, cmd := m.Update(tea.KeyPressMsg{Text: "y"})
 	got := applyCmd(t, updated.(Model), cmd)
-	if !strings.Contains(got.View(), "failed to yank") {
-		t.Errorf("expected failure status, got\n%s", got.View())
+	if !strings.Contains(got.View().Content, "failed to yank") {
+		t.Errorf("expected failure status, got\n%s", got.View().Content)
 	}
 }
 
 func TestModel_QuitKeysReturnQuitCmd(t *testing.T) {
 	t.Parallel()
 
-	cases := []tea.KeyMsg{
-		{Type: tea.KeyRunes, Runes: []rune("q")},
-		{Type: tea.KeyEsc},
-		{Type: tea.KeyCtrlC},
+	cases := []tea.KeyPressMsg{
+		{Text: "q"},
+		{Code: tea.KeyEsc},
+		{Code: 'c', Mod: tea.ModCtrl},
 	}
 	for _, key := range cases {
 		m := newTestModel(t, func(string) error { return nil }, nil)
@@ -214,11 +214,11 @@ func TestModel_NavigationMovesCursor(t *testing.T) {
 	if m.cursor != 0 {
 		t.Fatalf("initial cursor = %d, want 0", m.cursor)
 	}
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	if got := updated.(Model).cursor; got != 1 {
 		t.Errorf("after down cursor = %d, want 1", got)
 	}
-	updated, _ = updated.(Model).Update(tea.KeyMsg{Type: tea.KeyUp})
+	updated, _ = updated.(Model).Update(tea.KeyPressMsg{Code: tea.KeyUp})
 	if got := updated.(Model).cursor; got != 0 {
 		t.Errorf("after up cursor = %d, want 0", got)
 	}
@@ -229,7 +229,7 @@ func TestModel_ViKeysNoLongerMoveCursor(t *testing.T) {
 
 	m := newTestModel(t, nil, nil)
 	for _, r := range []rune{'j', 'k'} {
-		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		updated, _ := m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
 		if got := updated.(Model).cursor; got != 0 {
 			t.Errorf("after %q cursor = %d, want 0 (vi keys removed)", r, got)
 		}
@@ -241,14 +241,14 @@ func TestModel_FilterModeNarrowsList(t *testing.T) {
 
 	m := newTestModel(t, nil, nil)
 	// Activate filter mode.
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	updated, _ := m.Update(tea.KeyPressMsg{Text: "f"})
 	got := updated.(Model)
 	if got.mode != modeFilter {
 		t.Fatal("f should enter filter mode")
 	}
 	// Type "TUI" — only PR #43 matches.
 	for _, r := range "TUI" {
-		updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		updated, _ = got.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
 		got = updated.(Model)
 	}
 	visible := got.visiblePRs()
@@ -264,7 +264,7 @@ func TestModel_FilterBackspaceTrimsRuneNotByte(t *testing.T) {
 	m.mode = modeFilter
 	m.filter = "café"
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
 	got := updated.(Model)
 	if got.filter != "caf" {
 		t.Errorf("filter = %q, want %q (backspace must trim the whole rune)", got.filter, "caf")
@@ -278,7 +278,7 @@ func TestModel_FilterTypingResetsScrollOffset(t *testing.T) {
 	m.mode = modeFilter
 	m.offset = 5 // leftover scroll from before filtering
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	updated, _ := m.Update(tea.KeyPressMsg{Text: "t"})
 	got := updated.(Model)
 	if got.cursor != 0 || got.offset != 0 {
 		t.Errorf("after typing: cursor=%d offset=%d, want 0/0", got.cursor, got.offset)
@@ -292,7 +292,7 @@ func TestModel_FilterModeSwallowsNavigation(t *testing.T) {
 	m := newTestModel(t, func(string) error { opened = true; return nil }, nil)
 	m.mode = modeFilter
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if got := updated.(Model); got.mode == modeFilter {
 		t.Error("enter should exit filter mode")
 	}
@@ -303,13 +303,13 @@ func TestModel_FilterModeSwallowsNavigation(t *testing.T) {
 
 func pressKey(t *testing.T, m Model, r rune) Model {
 	t.Helper()
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
 	return updated.(Model)
 }
 
 func pressDown(t *testing.T, m Model) Model {
 	t.Helper()
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	return updated.(Model)
 }
 
@@ -492,7 +492,7 @@ func TestModel_ApprovalCyclePreservesSelectionWhenVisible(t *testing.T) {
 func TestView_RendersApprovalMarker(t *testing.T) {
 	t.Parallel()
 
-	view := approvalModel(t).View()
+	view := approvalModel(t).View().Content
 	if !strings.Contains(view, approvalFragment()) {
 		t.Errorf("view missing approval marker %q\nview=\n%s", approvalFragment(), view)
 	}
@@ -500,7 +500,7 @@ func TestView_RendersApprovalMarker(t *testing.T) {
 	// appear when the viewer approved nothing.
 	none := NewModel(samplePRs(), "nobody", "v", 2, false, 0, time.Now(), nil, nil)
 	upd, _ := none.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	if strings.Contains(upd.(Model).View(), approvalFragment()) {
+	if strings.Contains(upd.(Model).View().Content, approvalFragment()) {
 		t.Error("approval marker shown when viewer approved nothing")
 	}
 }
@@ -522,7 +522,7 @@ func TestModel_RescanRunsRefresh(t *testing.T) {
 	}
 	m := newTestModel(t, nil, refresh)
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	updated, cmd := m.Update(tea.KeyPressMsg{Text: "r"})
 	if !updated.(Model).refreshing {
 		t.Error("refreshing flag should be set")
 	}
@@ -544,8 +544,8 @@ func TestModel_RescanRunsRefresh(t *testing.T) {
 	if got.status != "" {
 		t.Errorf("status after successful rescan = %q, want empty", got.status)
 	}
-	if !strings.Contains(got.View(), "scanned") {
-		t.Errorf("header should show scan recency\n%s", got.View())
+	if !strings.Contains(got.View().Content, "scanned") {
+		t.Errorf("header should show scan recency\n%s", got.View().Content)
 	}
 }
 
@@ -556,13 +556,13 @@ func TestModel_RescanReportsError(t *testing.T) {
 		return nil, errors.New("boom")
 	}
 	m := newTestModel(t, nil, refresh)
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	updated, cmd := m.Update(tea.KeyPressMsg{Text: "r"})
 	got := applyCmd(t, updated.(Model), cmd)
 	if !got.statusErr {
 		t.Error("statusErr should be true on rescan failure")
 	}
-	if !strings.Contains(got.View(), "scan failed") {
-		t.Errorf("view missing scan failure\n%s", got.View())
+	if !strings.Contains(got.View().Content, "scan failed") {
+		t.Errorf("view missing scan failure\n%s", got.View().Content)
 	}
 }
 
@@ -570,7 +570,7 @@ func TestModel_RescanIgnoredWhenNoRefresh(t *testing.T) {
 	t.Parallel()
 
 	m := newTestModel(t, nil, nil)
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	_, cmd := m.Update(tea.KeyPressMsg{Text: "r"})
 	if cmd != nil {
 		t.Errorf("expected no cmd when refresh is nil, got %v", cmd)
 	}
@@ -598,8 +598,8 @@ func TestModel_NotifyBellsOnNewWaitingOnYou(t *testing.T) {
 	if bell.String() != "\a" {
 		t.Errorf("bell output = %q, want exactly one BEL", bell.String())
 	}
-	if !strings.Contains(got.View(), "1 new waiting on you") {
-		t.Errorf("view missing notify status note\n%s", got.View())
+	if !strings.Contains(got.View().Content, "1 new waiting on you") {
+		t.Errorf("view missing notify status note\n%s", got.View().Content)
 	}
 }
 
@@ -708,7 +708,7 @@ func TestModel_LoadingViewShowsDecryptSplash(t *testing.T) {
 	if m.mode != modeLoading {
 		t.Fatal("NewLoadingModel should start in the loading state")
 	}
-	plain := ansi.Strip(m.View())
+	plain := ansi.Strip(m.View().Content)
 	if !strings.Contains(plain, "SYNCING OPTICS") {
 		t.Errorf("loading view should show the decrypt splash\n%s", plain)
 	}
@@ -724,13 +724,13 @@ func TestModel_LoadingDecryptResolvesWithFrames(t *testing.T) {
 
 	// Frame 0: nothing resolved yet — the brand word is still scrambled. The
 	// noise pool excludes I and O, so the exact word cannot appear by chance.
-	if got := ansi.Strip(m.View()); strings.Contains(got, "KIROSHI") {
+	if got := ansi.Strip(m.View().Content); strings.Contains(got, "KIROSHI") {
 		t.Errorf("frame 0 should not have resolved the word yet\n%s", got)
 	}
 
 	// Past the full reveal, the word locks into KIROSHI under the brand mark.
 	m.spinFrame = len(loadingTarget)*decryptFramesPerChar + 1
-	if got := ansi.Strip(m.View()); !strings.Contains(got, "▲ KIROSHI") {
+	if got := ansi.Strip(m.View().Content); !strings.Contains(got, "▲ KIROSHI") {
 		t.Errorf("a late frame should resolve to the brand word\n%s", got)
 	}
 }
@@ -756,8 +756,8 @@ func TestModel_InitialScanPopulatesDashboard(t *testing.T) {
 	if len(got.prs) != len(samplePRs()) {
 		t.Errorf("prs after initial load = %d, want %d", len(got.prs), len(samplePRs()))
 	}
-	if !strings.Contains(got.View(), "Add PR search") {
-		t.Errorf("dashboard should render after the load completes\n%s", got.View())
+	if !strings.Contains(got.View().Content, "Add PR search") {
+		t.Errorf("dashboard should render after the load completes\n%s", got.View().Content)
 	}
 }
 
@@ -772,8 +772,8 @@ func TestModel_InitialScanErrorLeavesLoadingWithStatus(t *testing.T) {
 	if got.mode == modeLoading {
 		t.Error("loading should clear even when the initial scan fails")
 	}
-	if !got.statusErr || !strings.Contains(got.View(), "scan failed") {
-		t.Errorf("a failed initial scan should surface a red status line\n%s", got.View())
+	if !got.statusErr || !strings.Contains(got.View().Content, "scan failed") {
+		t.Errorf("a failed initial scan should surface a red status line\n%s", got.View().Content)
 	}
 }
 
@@ -788,12 +788,12 @@ func TestModel_KeysSuppressedWhileLoading(t *testing.T) {
 
 	// 'r' must not launch a second scan while the initial load is in flight.
 	m := newLoadingModel(t, refresh, 0)
-	if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")}); cmd != nil {
+	if _, cmd := m.Update(tea.KeyPressMsg{Text: "r"}); cmd != nil {
 		t.Errorf("'r' during loading should be a no-op, got %v", cmd)
 	}
 
 	// 'q' still quits.
-	_, qcmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	_, qcmd := m.Update(tea.KeyPressMsg{Text: "q"})
 	if qcmd == nil {
 		t.Fatal("'q' during loading should still quit")
 	}
@@ -907,7 +907,7 @@ func TestFooter_ShowsAutoRefreshIndicator(t *testing.T) {
 
 	m := NewModel(samplePRs(), "ajardin", "v", 2, false, 5*time.Minute, time.Now(), nil, nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	if view := updated.(Model).View(); !strings.Contains(view, "auto 5m") {
+	if view := updated.(Model).View().Content; !strings.Contains(view, "auto 5m") {
 		t.Errorf("footer missing auto-refresh indicator\n%s", view)
 	}
 }
@@ -916,7 +916,7 @@ func TestView_RendersHeaderCardsAndKeys(t *testing.T) {
 	t.Parallel()
 
 	m := newTestModel(t, nil, nil)
-	view := m.View()
+	view := m.View().Content
 
 	for _, want := range []string{
 		"KIROSHI", "v0.0.1", "@ajardin",
@@ -966,7 +966,7 @@ func TestView_JiraEnabledIndicator(t *testing.T) {
 
 	m := NewModel(prs, "ajardin", "v0.0.1", 2, true, 0, time.Now(), nil, nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	view := updated.(Model).View()
+	view := updated.(Model).View().Content
 
 	if !strings.Contains(view, "● jira") {
 		t.Errorf("expected active jira indicator, view=\n%s", view)
@@ -986,8 +986,8 @@ func TestView_TerminalTooSmall(t *testing.T) {
 
 	m := NewModel(samplePRs(), "u", "v", 2, false, 0, time.Now(), nil, nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 40, Height: 10})
-	if !strings.Contains(updated.(Model).View(), "Terminal too small") {
-		t.Errorf("expected too-small message, got\n%s", updated.(Model).View())
+	if !strings.Contains(updated.(Model).View().Content, "Terminal too small") {
+		t.Errorf("expected too-small message, got\n%s", updated.(Model).View().Content)
 	}
 }
 
@@ -1001,7 +1001,7 @@ func TestView_NarrowDegradesNoOverflow(t *testing.T) {
 	const width = 60
 	m := NewModel(samplePRs(), "ajardin", "v0.0.1", 2, true, 5*time.Minute, time.Now(), nil, nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 30})
-	view := updated.(Model).View()
+	view := updated.(Model).View().Content
 
 	if strings.Contains(view, "Terminal too small") {
 		t.Fatalf("width %d should still render, got too-small message:\n%s", width, view)
@@ -1031,7 +1031,7 @@ func TestView_TallListNeverExceedsTerminalHeight(t *testing.T) {
 		for height := 14; height <= 40; height++ {
 			m := NewModel(prs, "ajardin", "v1.4.0 (e677d65, built 2026-06-09)", 2, true, 5*time.Minute, time.Now(), nil, nil)
 			updated, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: height})
-			view := updated.(Model).View()
+			view := updated.(Model).View().Content
 
 			if strings.Contains(view, "Terminal too small") {
 				continue
@@ -1072,7 +1072,7 @@ func TestModel_ActiveTabUnderlined(t *testing.T) {
 
 	m := newTestModel(t, nil, nil) // starts on the incoming pane
 	active := lipgloss.NewStyle().Foreground(colBright).Bold(true).Underline(true).Render("INCOMING")
-	view := m.View()
+	view := m.View().Content
 	if !strings.Contains(view, active) {
 		t.Errorf("active tab should be underlined+bright\n%s", view)
 	}
@@ -1096,7 +1096,7 @@ func TestModel_GitHubHealthDot(t *testing.T) {
 	if got.githubHealthy {
 		t.Error("github should be unhealthy after a failed rescan")
 	}
-	if view := got.View(); !strings.Contains(view, lipgloss.NewStyle().Foreground(colRed).Render("● github")) {
+	if view := got.View().Content; !strings.Contains(view, lipgloss.NewStyle().Foreground(colRed).Render("● github")) {
 		t.Errorf("header should render a red github dot\n%s", view)
 	}
 
@@ -1125,7 +1125,7 @@ func TestModel_PartialEnrichmentDegradesGitHubDot(t *testing.T) {
 	if got.status != "1 pull request(s) partially enriched" {
 		t.Errorf("status = %q, want the partial-enrichment note", got.status)
 	}
-	view := got.View()
+	view := got.View().Content
 	if !strings.Contains(view, lipgloss.NewStyle().Foreground(colRed).Render("● github")) {
 		t.Errorf("header should render a red github dot\n%s", view)
 	}
@@ -1164,7 +1164,7 @@ func TestModel_JiraHealthDot(t *testing.T) {
 	if got.jiraHealthy {
 		t.Error("jira should be unhealthy when a PR's lookup failed")
 	}
-	if view := got.View(); !strings.Contains(view, lipgloss.NewStyle().Foreground(colRed).Render("● jira")) {
+	if view := got.View().Content; !strings.Contains(view, lipgloss.NewStyle().Foreground(colRed).Render("● jira")) {
 		t.Errorf("header should render a red jira dot\n%s", view)
 	}
 
@@ -1349,7 +1349,7 @@ func TestView_RendersMergeConflict(t *testing.T) {
 	}}
 	m := NewModel(prs, "ajardin", "v", 2, false, 0, time.Now(), nil, nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	if view := updated.(Model).View(); !strings.Contains(view, "conflict") {
+	if view := updated.(Model).View().Content; !strings.Contains(view, "conflict") {
 		t.Errorf("view missing the merge-conflict cell\n%s", view)
 	}
 }
@@ -1412,7 +1412,7 @@ func TestView_RendersCIStateForEachRow(t *testing.T) {
 	}
 	m := NewModel(prs, "viewer", "v0.0.1", 2, false, 0, time.Now(), nil, nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 50})
-	view := updated.(Model).View()
+	view := updated.(Model).View().Content
 	// The "ci:" prefix is dropped now that CI is a fixed aligned column; the
 	// none/"—" state isn't asserted here because the diff column also renders
 	// "—" (covered distinctly by TestCIFragment).
@@ -1450,16 +1450,16 @@ func TestModel_QuestionMarkTogglesHelp(t *testing.T) {
 		t.Fatal("help should be closed initially")
 	}
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
+	updated, _ := m.Update(tea.KeyPressMsg{Text: "?"})
 	got := updated.(Model)
 	if got.mode != modeHelp {
 		t.Fatal("? should open the help overlay")
 	}
-	if !strings.Contains(got.View(), "KEYBINDINGS") {
-		t.Errorf("help view missing title\n%s", got.View())
+	if !strings.Contains(got.View().Content, "KEYBINDINGS") {
+		t.Errorf("help view missing title\n%s", got.View().Content)
 	}
 	// The overlay replaces the dashboard, so the section header is gone.
-	if strings.Contains(got.View(), "ITEM(S)") {
+	if strings.Contains(got.View().Content, "ITEM(S)") {
 		t.Error("dashboard should be hidden while help is open")
 	}
 }
@@ -1472,7 +1472,7 @@ func TestModel_HelpDismissedByAnyKey(t *testing.T) {
 	m.mode = modeHelp
 
 	// A key that would otherwise open a PR ("o") just closes help instead.
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	updated, cmd := m.Update(tea.KeyPressMsg{Text: "o"})
 	got := updated.(Model)
 	if got.mode == modeHelp {
 		t.Error("any key should dismiss the help overlay")
@@ -1488,7 +1488,7 @@ func TestModel_CtrlCQuitsFromHelp(t *testing.T) {
 	m := newTestModel(t, nil, nil)
 	m.mode = modeHelp
 
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	if cmd == nil {
 		t.Fatal("ctrl+c from help should return a quit cmd")
 	}
@@ -1501,7 +1501,7 @@ func TestModel_FooterAdvertisesHelp(t *testing.T) {
 	t.Parallel()
 
 	m := newTestModel(t, nil, nil)
-	if !strings.Contains(m.View(), "help") {
+	if !strings.Contains(m.View().Content, "help") {
 		t.Errorf("footer should advertise the ? help hint\n%s", m.footerView())
 	}
 }
@@ -1539,13 +1539,13 @@ func TestModel_DKeyOpensDetail(t *testing.T) {
 		t.Fatal("detail should be closed initially")
 	}
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	updated, _ := m.Update(tea.KeyPressMsg{Text: "d"})
 	got := updated.(Model)
 	if got.mode != modeDetail {
 		t.Fatal("d should open the detail overlay")
 	}
 
-	view := got.View()
+	view := got.View().Content
 	for _, want := range []string{
 		"ajardin/kiroshi #99", "Add detail overlay", "@alice", "carol", "dave", "erin",
 		"DESCRIPTION", "This is the description.",
@@ -1569,7 +1569,7 @@ func TestModel_DKeyNoopOnEmptyList(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = updated.(Model)
 
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	updated, _ = m.Update(tea.KeyPressMsg{Text: "d"})
 	if updated.(Model).mode == modeDetail {
 		t.Error("d on an empty list should not open the detail overlay")
 	}
@@ -1589,7 +1589,7 @@ func TestModel_DetailClosesWhenRescanEmptiesList(t *testing.T) {
 	if got.mode == modeDetail {
 		t.Error("an empty rescan should close the detail overlay")
 	}
-	_ = got.View() // must not panic on the emptied list
+	_ = got.View().Content // must not panic on the emptied list
 }
 
 func TestModel_DetailDismissedByOtherKey(t *testing.T) {
@@ -1598,7 +1598,7 @@ func TestModel_DetailDismissedByOtherKey(t *testing.T) {
 	m := detailModel(t)
 	m.mode = modeDetail
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	updated, cmd := m.Update(tea.KeyPressMsg{Text: "x"})
 	got := updated.(Model)
 	if got.mode == modeDetail {
 		t.Error("a non-navigation key should dismiss the detail overlay")
@@ -1618,7 +1618,7 @@ func TestModel_DetailNavigatesBetweenPRs(t *testing.T) {
 		t.Fatalf("setup: detail should start on PR #43, got #%d", got)
 	}
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	got := updated.(Model)
 	if got.mode != modeDetail {
 		t.Error("down should keep the detail overlay open")
@@ -1626,11 +1626,11 @@ func TestModel_DetailNavigatesBetweenPRs(t *testing.T) {
 	if n := got.visiblePRs()[got.cursor].Number; n != 42 {
 		t.Errorf("after down, detail PR = #%d, want #42", n)
 	}
-	if !strings.Contains(got.View(), "Add PR search") {
-		t.Errorf("detail view should show PR #42's title after navigating\n%s", got.View())
+	if !strings.Contains(got.View().Content, "Add PR search") {
+		t.Errorf("detail view should show PR #42's title after navigating\n%s", got.View().Content)
 	}
 
-	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyUp})
+	updated, _ = got.Update(tea.KeyPressMsg{Code: tea.KeyUp})
 	got = updated.(Model)
 	if got.mode != modeDetail {
 		t.Error("up should keep the detail overlay open")
@@ -1647,9 +1647,9 @@ func TestModel_DetailOpensSelectedInBrowser(t *testing.T) {
 	m := newTestModel(t, func(url string) error { opened = url; return nil }, nil)
 	m.mode = modeDetail
 
-	for _, key := range []tea.KeyMsg{
-		{Type: tea.KeyEnter},
-		{Type: tea.KeyRunes, Runes: []rune("o")},
+	for _, key := range []tea.KeyPressMsg{
+		{Code: tea.KeyEnter},
+		{Text: "o"},
 	} {
 		updated, cmd := m.Update(key)
 		got := updated.(Model)
@@ -1670,7 +1670,7 @@ func TestModel_CtrlCQuitsFromDetail(t *testing.T) {
 	m := detailModel(t)
 	m.mode = modeDetail
 
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	if cmd == nil {
 		t.Fatal("ctrl+c from detail should return a quit cmd")
 	}
@@ -1685,7 +1685,7 @@ func TestModel_CtrlCQuitsFromFilterMode(t *testing.T) {
 	m := newTestModel(t, nil, nil)
 	m.mode = modeFilter
 
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	if cmd == nil {
 		t.Fatal("ctrl+c from filter mode should return a quit cmd")
 	}
@@ -1698,7 +1698,7 @@ func TestModel_FooterAdvertisesDetail(t *testing.T) {
 	t.Parallel()
 
 	m := newTestModel(t, nil, nil)
-	if !strings.Contains(m.View(), "detail") {
+	if !strings.Contains(m.View().Content, "detail") {
 		t.Errorf("footer should advertise the d detail hint\n%s", m.footerView())
 	}
 }
@@ -1722,8 +1722,8 @@ func TestModel_DetailTruncatesLongBody(t *testing.T) {
 	m = updated.(Model)
 	m.mode = modeDetail
 
-	if !strings.Contains(m.View(), "more lines") {
-		t.Errorf("a body taller than the panel should show a truncation indicator\n%s", m.View())
+	if !strings.Contains(m.View().Content, "more lines") {
+		t.Errorf("a body taller than the panel should show a truncation indicator\n%s", m.View().Content)
 	}
 }
 
@@ -1779,7 +1779,7 @@ func TestRenderReviewers(t *testing.T) {
 
 func pressTab(t *testing.T, m Model) Model {
 	t.Helper()
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	return updated.(Model)
 }
 
@@ -1865,7 +1865,7 @@ func TestView_MinePaneRelabelsCards(t *testing.T) {
 	t.Parallel()
 
 	m := pressTab(t, paneModel(t)) // switch to mine
-	view := m.View()
+	view := m.View().Content
 	for _, want := range []string{"NEEDS YOU", "IN REVIEW", "READY", "DRAFT"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("mine pane view missing card %q\nview=\n%s", want, view)
@@ -1886,7 +1886,7 @@ func TestView_PaneEmptyStateIsPaneAware(t *testing.T) {
 	m := NewModel(prs, "ajardin", "v", 2, false, 0, time.Now(), nil, nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = pressTab(t, updated.(Model))
-	if !strings.Contains(m.View(), "authored by you") {
-		t.Errorf("empty mine pane should explain it has no authored PRs\n%s", m.View())
+	if !strings.Contains(m.View().Content, "authored by you") {
+		t.Errorf("empty mine pane should explain it has no authored PRs\n%s", m.View().Content)
 	}
 }

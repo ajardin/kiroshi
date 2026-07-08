@@ -4,12 +4,21 @@ import (
 	"fmt"
 	"strings"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 )
 
-// View composes the full dashboard.
-func (m Model) View() string {
+// View implements tea.Model: the composed frame plus the altscreen request,
+// which Bubble Tea v2 moved from the program options onto the returned view.
+func (m Model) View() tea.View {
+	v := tea.NewView(m.render())
+	v.AltScreen = true
+	return v
+}
+
+// render composes the full dashboard frame as a styled string.
+func (m Model) render() string {
 	if m.width == 0 || m.height == 0 {
 		return ""
 	}

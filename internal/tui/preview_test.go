@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/ajardin/kiroshi/internal/gh"
 	"github.com/ajardin/kiroshi/internal/jira"
@@ -72,23 +72,23 @@ func TestPreview(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 36})
 	incoming := updated.(Model)
 	fmt.Println()
-	fmt.Println(incoming.View())
+	fmt.Println(incoming.View().Content)
 
 	// Toggle to the Mine pane (author == viewer) and render that too.
-	mine, _ := incoming.Update(tea.KeyMsg{Type: tea.KeyTab})
+	mine, _ := incoming.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	fmt.Println()
-	fmt.Println(mine.(Model).View())
+	fmt.Println(mine.(Model).View().Content)
 
 	// Narrow terminal: cards fall back to a 2×2 grid and the header drops its
 	// status badges + clock.
 	narrow, _ := incoming.Update(tea.WindowSizeMsg{Width: 60, Height: 30})
 	fmt.Println()
-	fmt.Println(narrow.(Model).View())
+	fmt.Println(narrow.(Model).View().Content)
 
 	// Detail overlay on the first PR: branch line + commit/comment/file counters.
-	detail, _ := incoming.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	detail, _ := incoming.Update(tea.KeyPressMsg{Text: "d"})
 	fmt.Println()
-	fmt.Println(detail.(Model).View())
+	fmt.Println(detail.(Model).View().Content)
 
 	// Loading splash at three frames so the decrypt reveal is visible: scrambled
 	// → mid-reveal → fully resolved.
@@ -98,6 +98,6 @@ func TestPreview(t *testing.T) {
 	for _, frame := range []int{0, len(loadingTarget), len(loadingTarget) * decryptFramesPerChar} {
 		lm.spinFrame = frame
 		fmt.Println()
-		fmt.Println(lm.View())
+		fmt.Println(lm.View().Content)
 	}
 }
