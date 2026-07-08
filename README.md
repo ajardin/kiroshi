@@ -133,14 +133,20 @@ jira_token    = "xxxxxxxxxxxxxxxxxxxx"
 # OSS, a specific team) from one dashboard. The top-level `search` above is
 # always the profile named "default" (that name is reserved); each
 # [[profiles]] entry adds one more, with a unique non-empty name and a
-# non-empty query. Cycle through them in the TUI with the `p` key (the
-# header shows the active profile), or pick one on the command line with
-# `-profile <name>`. Omit the blocks entirely to keep a single search.
+# non-empty query. Declare as many as you need — one profile is active at a
+# time, and the `p` key cycles through them in file order (default → oss →
+# team → back to default below), rescanning with the new query; the header
+# shows the active profile's name. You can also start on a given profile
+# with `-profile <name>`. Omit the blocks entirely to keep a single search.
 # Note: [[profiles]] blocks must stay at the end of the file — in TOML,
 # every key after a table header belongs to that table.
 [[profiles]]
 name   = "oss"
 search = "is:pr is:open involves:@me user:some-org"
+
+[[profiles]]
+name   = "team"
+search = "is:pr is:open team-review-requested:acme/core"
 ```
 
 Both token fields are redacted from structured logs (see
