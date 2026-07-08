@@ -276,7 +276,12 @@ func newClient(token, baseURL string, jiraClient jira.Lookup) *Client {
 	}
 	ghClient := github.NewClient(httpClient).WithAuthToken(token)
 	if baseURL != "" {
-		u, _ := url.Parse(baseURL)
+		u, err := url.Parse(baseURL)
+		if err != nil {
+			// This path is test-only (prod always passes ""): fail loud at
+			// construction instead of a nil-deref panic on the first API call.
+			panic(fmt.Sprintf("gh: invalid base URL %q: %v", baseURL, err))
+		}
 		ghClient.BaseURL = u
 		ghClient.UploadURL = u
 	}
