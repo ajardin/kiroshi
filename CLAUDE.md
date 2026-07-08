@@ -1,7 +1,7 @@
 # kiroshi — Claude working notes
 
 CLI + TUI that surfaces GitHub pull requests.
-Go 1.25, Bubble Tea v1, lipgloss, golangci-lint v2.
+Go 1.25, Bubble Tea v2, lipgloss, golangci-lint v2.
 
 This file captures decisions that aren't obvious from the code. For *what*
 the code does, read the code; for *why* it looks the way it does, read here.
