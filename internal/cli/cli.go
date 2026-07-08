@@ -294,7 +294,6 @@ func run(ctx context.Context, logger *slog.Logger, client gh.API, cfg *config.Co
 		}
 		model := tui.NewLoadingModel(user.Login, version.String(), cfg.MinReviews, cfg.JiraBaseURL != "", cfg.RefreshInterval, tui.OpenURL, refresherFor(search)).
 			WithProfiles(tuiProfiles, activeProfile).
-			WithCopier(tui.CopyToClipboard).
 			WithNotify(cfg.Notify)
 		if err := runTUI(model); err != nil {
 			return fmt.Errorf("run tui: %w", err)

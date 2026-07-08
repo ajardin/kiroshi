@@ -49,7 +49,6 @@ const (
 // Model is the Bubble Tea model backing the dashboard.
 type Model struct {
 	open    Opener
-	copier  Copier
 	refresh Refresher
 	login   string
 	version string
@@ -173,18 +172,8 @@ func NewLoadingModel(login, version string, minReviews int, jiraEnabled bool, re
 	}
 }
 
-// WithCopier returns a copy of the model with its clipboard copier set. A
-// chainable setter rather than a tenth constructor parameter: only the CLI
-// wires a real copier (CopyToClipboard) and only clipboard tests need a fake,
-// so widening NewModel/NewLoadingModel would ripple nil through every other
-// call site for nothing. nil (the default) makes `y` a no-op.
-func (m Model) WithCopier(c Copier) Model {
-	m.copier = c
-	return m
-}
-
 // WithNotify returns a copy of the model with bell notifications enabled or
-// disabled. A chainable setter like WithCopier, for the same reason: only the
+// disabled. A chainable setter, for the same reason as WithProfiles: only the
 // CLI wires it (from the config's notify flag), so widening the constructors
 // would ripple a parameter through every other call site for nothing.
 func (m Model) WithNotify(enabled bool) Model {
@@ -194,7 +183,7 @@ func (m Model) WithNotify(enabled bool) Model {
 
 // WithProfiles returns a copy of the model with the switchable search-profile
 // list set and the profile at active selected (its Refresh replaces the
-// model's refresher). A chainable setter like WithCopier: only the CLI wires
+// model's refresher). A chainable setter like WithNotify: only the CLI wires
 // profiles, and most configs have none. An out-of-range active is ignored.
 func (m Model) WithProfiles(profiles []Profile, active int) Model {
 	m.profiles = profiles
@@ -619,19 +608,20 @@ func (m Model) openSelected() (Model, tea.Cmd) {
 	return m, info("opened " + url)
 }
 
-// yankSelected copies the selected PR's URL to the clipboard. Like
+// yankSelected copies the selected PR's URL to the clipboard via Bubble Tea
+// v2's native tea.SetClipboard, which routes the OSC 52 sequence through the
+// renderer instead of writing os.Stdout directly from Update — no risk of
+// interleaving with a frame flush. OSC 52 is fire-and-forget (the terminal
+// silently ignores it if unsupported), so there is no error path. Like
 // openSelected it never touches the mode, so yanking from the detail overlay
 // leaves the overlay open.
 func (m Model) yankSelected() (Model, tea.Cmd) {
 	visible := m.visiblePRs()
-	if m.cursor >= len(visible) || m.copier == nil {
+	if m.cursor >= len(visible) {
 		return m, nil
 	}
 	url := visible[m.cursor].URL
-	if err := m.copier(url); err != nil {
-		return m, warn(fmt.Sprintf("failed to yank %s: %v", url, err))
-	}
-	return m, info("yanked " + url)
+	return m, tea.Batch(tea.SetClipboard(url), info("yanked "+url))
 }
 
 // newlyWaitingOnYou counts the PRs classified WaitingOnYou in next that were
