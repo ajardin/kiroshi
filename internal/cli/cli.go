@@ -111,7 +111,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, opts ...O
 	if err != nil {
 		// No config on an interactive terminal: offer setup instead of failing.
 		// Stays on the error path for pipes / CI / -no-tui so scripts behave.
-		if errors.Is(err, config.ErrNotFound) && !noTUI && (ro.runWizard != nil || isTerminal(stdout)) {
+		if errors.Is(err, config.ErrNotFound) && !noTUI && (ro.runWizard != nil || (isTerminal(stdout) && stdinIsTerminal())) {
 			return runWizard(ctx, configPath, stdout, ro)
 		}
 		return err
@@ -146,7 +146,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, opts ...O
 		}
 	}
 
-	useTUI := !noTUI && (ro.runTUI != nil || isTerminal(stdout))
+	useTUI := !noTUI && (ro.runTUI != nil || (isTerminal(stdout) && stdinIsTerminal()))
 	runTUI := ro.runTUI
 	if runTUI == nil {
 		runTUI = func(m tui.Model) error { return tui.Run(m, os.Stdin, stdout) }
@@ -164,6 +164,17 @@ func isTerminal(w io.Writer) bool {
 		return false
 	}
 	stat, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return (stat.Mode() & os.ModeCharDevice) != 0
+}
+
+// stdinIsTerminal mirrors isTerminal for the input side: the TUI and the
+// wizard both read keys from os.Stdin, so a piped stdin must fall back to
+// plain text even when stdout is a TTY.
+func stdinIsTerminal() bool {
+	stat, err := os.Stdin.Stat()
 	if err != nil {
 		return false
 	}
@@ -201,7 +212,7 @@ func runWizard(ctx context.Context, configPath string, stdout io.Writer, ro runO
 
 	runWiz := ro.runWizard
 	if runWiz == nil {
-		if !isTerminal(stdout) {
+		if !isTerminal(stdout) || !stdinIsTerminal() {
 			return fmt.Errorf("kiroshi -init requires an interactive terminal")
 		}
 		runWiz = func(m tui.WizardModel) (tui.WizardResult, error) {
