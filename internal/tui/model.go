@@ -504,43 +504,55 @@ func (m Model) cyclePane() Model {
 	return m.clampCursor()
 }
 
+// selectedURL returns the URL of the PR under the cursor in the current
+// visible set, or "" when the cursor is out of range (e.g. an empty set).
+func (m Model) selectedURL() string {
+	if before := m.visiblePRs(); m.cursor < len(before) {
+		return before[m.cursor].URL
+	}
+	return ""
+}
+
+// followSelection repositions the cursor onto the PR carrying url in the
+// (already mutated) visible set and scrolls it into view. found reports
+// whether it was relocated, so callers can apply their own fallback when the
+// PR didn't survive the mutation (or url was "" to begin with).
+func (m Model) followSelection(url string) (Model, bool) {
+	if url == "" {
+		return m, false
+	}
+	for i, pr := range m.visiblePRs() {
+		if pr.URL == url {
+			m.cursor = i
+			return m.scrollIntoView(), true
+		}
+	}
+	return m, false
+}
+
 // cycleSort advances sort to the next mode (with wrap-around) and repositions
 // the cursor on the previously-selected PR's new index. Reset-to-zero would be
-// disorienting here: the set is identical, only the order changes.
+// disorienting here: the set is identical, only the order changes, so
+// followSelection always succeeds and the clampCursor fallback is near-dead.
 func (m Model) cycleSort() Model {
-	var selectedURL string
-	if before := m.visiblePRs(); m.cursor < len(before) {
-		selectedURL = before[m.cursor].URL
-	}
+	url := m.selectedURL()
 	m.sort = (m.sort + 1) % 3
-	if selectedURL != "" {
-		for i, pr := range m.visiblePRs() {
-			if pr.URL == selectedURL {
-				m.cursor = i
-				return m.scrollIntoView()
-			}
-		}
+	if nm, ok := m.followSelection(url); ok {
+		return nm
 	}
 	return m.clampCursor()
 }
 
 // cycleApproval advances the approval filter to the next state (with
 // wrap-around) and keeps the cursor on the previously-selected PR when it
-// survives the new filter. Unlike cycleSort the visible set can shrink, so we
-// fall back to clampCursor when the selected PR is filtered out.
+// survives the new filter. Unlike cycleSort the visible set can shrink, so
+// when the selected PR is filtered out we reset to the top rather than
+// holding a stale index.
 func (m Model) cycleApproval() Model {
-	var selectedURL string
-	if before := m.visiblePRs(); m.cursor < len(before) {
-		selectedURL = before[m.cursor].URL
-	}
+	url := m.selectedURL()
 	m.approval = (m.approval + 1) % 3
-	if selectedURL != "" {
-		for i, pr := range m.visiblePRs() {
-			if pr.URL == selectedURL {
-				m.cursor = i
-				return m.scrollIntoView()
-			}
-		}
+	if nm, ok := m.followSelection(url); ok {
+		return nm
 	}
 	m.cursor = 0
 	return m.clampCursor()
