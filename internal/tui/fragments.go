@@ -79,6 +79,20 @@ func mergeFragment(s gh.MergeState) (string, lipgloss.Color) {
 	}
 }
 
+// unresolvedFragment renders the unresolved-review-threads cell ("3
+// unresolved") — the strongest "why is this stuck?" signal for an approved
+// but unmerged PR. A flowing-tail item like the merge and Jira cells: empty
+// when the count is zero or unknown (GraphQL unavailable), so most rows show
+// nothing. Callers render it in colDim — an informational nudge, not an
+// error; no new accent, no glyph (palette and width rules are locked, see
+// CLAUDE.md).
+func unresolvedFragment(pr gh.PullRequest) string {
+	if !pr.ThreadsKnown || pr.UnresolvedThreads == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d unresolved", pr.UnresolvedThreads)
+}
+
 // jiraColor maps a Jira statusCategory to the palette, reusing the CI semantics
 // rather than introducing a new accent: done = green (ships, like CI passing),
 // indeterminate (in progress) = cyan (the project's "in progress elsewhere" hue,

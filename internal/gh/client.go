@@ -132,9 +132,16 @@ type PullRequest struct {
 	Commits            int
 	Comments           int // conversation comments
 	ReviewComments     int // inline review comments
-	JiraKey            string
-	JiraStatus         string
-	JiraCategory       string
+	// UnresolvedThreads is the number of unresolved review threads, resolved
+	// in a batched GraphQL pass after the REST enrichment (the REST API does
+	// not expose thread resolution). ThreadsKnown distinguishes a genuine
+	// zero from "unknown" (GraphQL failed or is restricted for this token) —
+	// both leave the count at zero. Counts above threadsPerPR undercount.
+	UnresolvedThreads int
+	ThreadsKnown      bool
+	JiraKey           string
+	JiraStatus        string
+	JiraCategory      string
 	// JiraLookupFailed is set when a Jira key was found but the lookup errored
 	// (auth/network/404). It distinguishes a genuine failure from "no ticket"
 	// so the header can flag Jira health without failing the scan.
@@ -356,7 +363,9 @@ func (c *Client) AuthenticatedUser(ctx context.Context) (User, error) {
 // requested reviewers, review state, head-SHA + diff stats, and CI state
 // (four additional REST calls per PR — list reviewers, list reviews, pull
 // request detail, list check runs), plus an optional fifth Jira issue lookup
-// when the client was built with NewWithJira. Enrichment runs in parallel across PRs
+// when the client was built with NewWithJira, and a batched GraphQL pass that
+// counts unresolved review threads (~1 extra request per 20 PRs, degrading to
+// "unknown" on any GraphQL error). Enrichment runs in parallel across PRs
 // with a worker pool of enrichConcurrency; the order of the returned slice
 // matches the search response order regardless. A 401 is translated into
 // ErrInvalidToken.
@@ -398,6 +407,7 @@ func (c *Client) SearchPullRequests(ctx context.Context, query string) ([]PullRe
 	if err := g.Wait(); err != nil {
 		return nil, err
 	}
+	c.enrichUnresolvedThreads(ctx, out)
 	return out, nil
 }
 

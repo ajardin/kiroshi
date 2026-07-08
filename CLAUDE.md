@@ -56,6 +56,23 @@ stays live too (different service, own quota). Entries for PRs that leave the
 search results are evicted each scan (`pruneCache`). Internal optimization —
 no config knob.
 
+**Unresolved review threads (GraphQL).** The REST API doesn't expose review
+thread resolution, so `enrichUnresolvedThreads` (`internal/gh/graphql.go`)
+runs after the REST errgroup as a batch step over the full result slice: one
+hand-rolled aliased GraphQL POST per `threadsBatchSize` (20) PRs — batching
+is the point, ~1–2 extra requests per scan, no GraphQL client dependency.
+`reviewThreads(first: 100)` is a cap, not pagination: >100 threads
+undercounts, accepted (dashboard signal, not an audit). Like Jira it
+degrades and never fails: any error (one chunk, a null alias in a partial
+response, or the whole endpoint — some tokens/orgs restrict GraphQL) leaves
+`ThreadsKnown` false and does **not** mark `EnrichPartial` or touch the
+github health dot. `ThreadsKnown` exists to distinguish "0 unresolved" from
+"unknown"; the UI (`unresolvedFragment`) renders `N unresolved` in `colDim`
+only when known and > 0 — a flowing-tail item grouped after the merge cell
+(both are GitHub "why is this stuck?" signals), also in `detailView`'s meta
+line. No caching: resolving a thread doesn't reliably bump `updated_at`, and
+the batch is cheap anyway.
+
 **Error semantics.** Per-PR degradation for the GitHub enrichers — an
 enricher error marks that one PR `EnrichPartial` and the chain moves on, so
 the PR keeps whatever was enriched before the failure and the scan still
