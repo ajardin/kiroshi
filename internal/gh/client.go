@@ -276,7 +276,12 @@ func newClient(token, baseURL string, jiraClient jira.Lookup) *Client {
 	}
 	ghClient := github.NewClient(httpClient).WithAuthToken(token)
 	if baseURL != "" {
-		u, _ := url.Parse(baseURL)
+		u, err := url.Parse(baseURL)
+		if err != nil {
+			// This path is test-only (prod always passes ""): fail loud at
+			// construction instead of a nil-deref panic on the first API call.
+			panic(fmt.Sprintf("gh: invalid base URL %q: %v", baseURL, err))
+		}
 		ghClient.BaseURL = u
 		ghClient.UploadURL = u
 	}
@@ -448,10 +453,14 @@ func (c *Client) enrichPullRequest(ctx context.Context, pr *PullRequest) error {
 //
 // It is a no-op when Jira is unconfigured (c.jira == nil) or no issue key is
 // present. Unlike the other enrichers it never returns an error: Jira is an
-// optional decoration, so a failed lookup (auth, network, 404) leaves all
-// three fields empty and the row falls back to a muted "no ticket" cell rather
-// than failing the whole GitHub scan. A failed lookup (key found, but the call
-// errored) sets pr.JiraLookupFailed so the header can flag Jira health.
+// optional decoration, so any failure leaves all three fields empty and the
+// row falls back to a muted "no ticket" cell rather than failing the whole
+// GitHub scan. The two failure modes are distinguished, though: a 404
+// (jira.ErrIssueNotFound) means the extracted key never pointed at a real
+// ticket — a false-positive regex match or a deleted issue — which is not a
+// Jira problem, so pr.JiraLookupFailed stays untouched. Any other error
+// (auth, network) is an actual lookup failure and sets pr.JiraLookupFailed so
+// the header can flag Jira health.
 func (c *Client) enrichJiraStatus(ctx context.Context, pr *PullRequest) error {
 	if c.jira == nil {
 		return nil
@@ -461,6 +470,9 @@ func (c *Client) enrichJiraStatus(ctx context.Context, pr *PullRequest) error {
 		return nil
 	}
 	st, err := c.jira.Issue(ctx, key)
+	if errors.Is(err, jira.ErrIssueNotFound) {
+		return nil // no ticket: leave all Jira fields empty, health untouched.
+	}
 	if err != nil {
 		pr.JiraLookupFailed = true
 		return nil //nolint:nilerr // Jira is optional: degrade to an empty cell, never fail the scan.

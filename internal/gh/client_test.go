@@ -85,7 +85,7 @@ func TestEnrichJiraStatus(t *testing.T) {
 		}
 	})
 
-	t.Run("lookup error degrades gracefully", func(t *testing.T) {
+	t.Run("404 is no ticket, not a health failure", func(t *testing.T) {
 		t.Parallel()
 		fake := &fakeJira{err: jira.ErrIssueNotFound}
 		c := &Client{jira: fake}
@@ -93,17 +93,19 @@ func TestEnrichJiraStatus(t *testing.T) {
 		if err := c.enrichJiraStatus(context.Background(), pr); err != nil {
 			t.Fatalf("err = %v, want nil (graceful degradation)", err)
 		}
-		// A failed lookup leaves all Jira fields empty so the cell renders "—".
+		// A 404 leaves all Jira fields empty so the cell renders "—".
 		if pr.JiraKey != "" || pr.JiraStatus != "" || pr.JiraCategory != "" {
-			t.Errorf("expected all Jira fields empty on failed lookup, got %+v", pr)
+			t.Errorf("expected all Jira fields empty on a 404, got %+v", pr)
 		}
-		// ...but the failure is recorded so the header can flag Jira health.
-		if !pr.JiraLookupFailed {
-			t.Error("JiraLookupFailed should be true after a failed lookup")
+		// ...and it is NOT a Jira failure: the key just never pointed at a
+		// real ticket (false-positive regex match or a deleted issue), so
+		// the header's health dot must stay green.
+		if pr.JiraLookupFailed {
+			t.Error("JiraLookupFailed should stay false on a 404 (no ticket, not a failure)")
 		}
 	})
 
-	t.Run("auth error also degrades", func(t *testing.T) {
+	t.Run("auth error degrades and flags health", func(t *testing.T) {
 		t.Parallel()
 		fake := &fakeJira{err: jira.ErrInvalidToken}
 		c := &Client{jira: fake}
@@ -114,8 +116,25 @@ func TestEnrichJiraStatus(t *testing.T) {
 		if pr.JiraKey != "" || pr.JiraStatus != "" {
 			t.Errorf("expected empty Jira fields, got %+v", pr)
 		}
+		// Unlike a 404, this is a genuine lookup failure and must flag health.
 		if !pr.JiraLookupFailed {
 			t.Error("JiraLookupFailed should be true after an auth failure")
+		}
+	})
+
+	t.Run("network error also degrades and flags health", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeJira{err: errors.New("connection reset by peer")}
+		c := &Client{jira: fake}
+		pr := &PullRequest{HeadRef: "feature/PROJ-7-foo"}
+		if err := c.enrichJiraStatus(context.Background(), pr); err != nil {
+			t.Fatalf("err = %v, want nil (graceful degradation)", err)
+		}
+		if pr.JiraKey != "" || pr.JiraStatus != "" {
+			t.Errorf("expected empty Jira fields, got %+v", pr)
+		}
+		if !pr.JiraLookupFailed {
+			t.Error("JiraLookupFailed should be true after a network failure")
 		}
 	})
 

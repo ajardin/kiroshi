@@ -85,11 +85,14 @@ health dot (red while any PR is partial) plus a muted (`colDim`, not red —
 warning, not error) status note `N pull request(s) partially enriched`.
 Partial PRs are never cached: `storeReviewState` only runs after both review
 calls succeed, so the next scan retries them live. Jira keeps its own
-degradation: `enrichJiraStatus` swallows every
-error (auth, network, 404) and degrades to an omitted cell rather than failing
-the scan; it's also a full no-op under `gh.New` (vs `gh.NewWithJira`). Key
-extraction is `jira.ExtractKey` (branch → title → body, regex
-`[A-Z][A-Z0-9]+-\d+`, first match wins). Config is the
+degradation: `enrichJiraStatus` distinguishes a 404 (`jira.ErrIssueNotFound`)
+— the extracted key never pointed at a real ticket, so this leaves
+`JiraLookupFailed` untouched and just omits the cell — from any other error
+(auth, network), which does set `JiraLookupFailed` so the header's Jira
+health dot can flag it; either way the scan never fails, degrading to an
+omitted cell instead. It's also a full no-op under `gh.New` (vs
+`gh.NewWithJira`). Key extraction is `jira.ExtractKey` (branch → title →
+body, regex `[A-Z][A-Z0-9]+-\d+`, first match wins). Config is the
 `jira_base_url`/`jira_email`/`jira_token` trio (env override `JIRA_API_TOKEN`);
 all three or none.
 
