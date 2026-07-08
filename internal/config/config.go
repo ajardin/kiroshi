@@ -39,6 +39,18 @@ const DefaultMinReviews = 2
 // interactive setup wizard instead of failing outright.
 var ErrNotFound = errors.New("config not found")
 
+// DefaultProfileName is the name of the implicit profile backed by the
+// top-level search key. It is reserved: a [[profiles]] entry may not reuse it.
+const DefaultProfileName = "default"
+
+// Profile is a named search query the TUI can switch to at runtime. The
+// top-level search key is always the implicit profile named
+// DefaultProfileName; [[profiles]] entries add more.
+type Profile struct {
+	Name   string
+	Search string
+}
+
 // Config is the runtime kiroshi configuration.
 //
 // The three Jira fields are optional and travel together: Jira enrichment is
@@ -59,6 +71,17 @@ type Config struct {
 	JiraBaseURL string
 	JiraEmail   string
 	JiraToken   string
+	// Profiles holds the optional extra search profiles from [[profiles]].
+	// Search itself is always the implicit "default" profile; use AllProfiles
+	// for the full switchable list.
+	Profiles []Profile
+}
+
+// AllProfiles returns every switchable profile: the implicit default (backed
+// by the top-level search key) first, then the [[profiles]] entries in file
+// order. It always has at least one element.
+func (c *Config) AllProfiles() []Profile {
+	return append([]Profile{{Name: DefaultProfileName, Search: c.Search}}, c.Profiles...)
 }
 
 // LogValue implements slog.LogValuer to prevent the tokens from leaking into
@@ -73,6 +96,7 @@ func (c *Config) LogValue() slog.Value {
 		slog.String("jira_base_url", c.JiraBaseURL),
 		slog.String("jira_email", c.JiraEmail),
 		slog.String("jira_token", "<redacted>"),
+		slog.Int("profiles", len(c.Profiles)),
 	)
 }
 
@@ -87,6 +111,14 @@ type fileConfig struct {
 	JiraBaseURL     string `toml:"jira_base_url"`
 	JiraEmail       string `toml:"jira_email"`
 	JiraToken       string `toml:"jira_token"`
+	// Profiles is last on purpose: TOML array-of-tables must be encoded after
+	// the plain keys, or Save would fold them into the first [[profiles]] block.
+	Profiles []fileProfile `toml:"profiles"`
+}
+
+type fileProfile struct {
+	Name   string `toml:"name"`
+	Search string `toml:"search"`
 }
 
 // Load reads the TOML configuration at path. When path is empty, the default
@@ -140,6 +172,12 @@ func Load(path string) (*Config, error) {
 		JiraBaseURL:     strings.TrimSpace(fc.JiraBaseURL),
 		JiraEmail:       strings.TrimSpace(fc.JiraEmail),
 		JiraToken:       jiraToken,
+	}
+	for _, p := range fc.Profiles {
+		cfg.Profiles = append(cfg.Profiles, Profile{
+			Name:   strings.TrimSpace(p.Name),
+			Search: strings.TrimSpace(p.Search),
+		})
 	}
 	if err := cfg.validate(); err != nil {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
@@ -209,6 +247,9 @@ func Save(path string, c *Config) error {
 		JiraEmail:       c.JiraEmail,
 		JiraToken:       c.JiraToken,
 	}
+	for _, p := range c.Profiles {
+		fc.Profiles = append(fc.Profiles, fileProfile(p))
+	}
 	if err := toml.NewEncoder(f).Encode(fc); err != nil {
 		_ = f.Close()
 		_ = os.Remove(tmp)
@@ -244,8 +285,34 @@ func (c *Config) validate() error {
 	if c.RefreshInterval < 0 {
 		return fmt.Errorf("refresh_interval must be >= 0, got %s", c.RefreshInterval)
 	}
+	if err := c.validateProfiles(); err != nil {
+		return err
+	}
 	if err := c.validateJira(); err != nil {
 		return err
+	}
+	return nil
+}
+
+// validateProfiles enforces the [[profiles]] rules: non-empty unique names,
+// non-empty queries. DefaultProfileName is reserved for the implicit profile
+// backed by the top-level search key, so an entry may not reuse it.
+func (c *Config) validateProfiles() error {
+	seen := map[string]bool{DefaultProfileName: true}
+	for i, p := range c.Profiles {
+		if p.Name == "" {
+			return fmt.Errorf("profiles[%d]: name is required", i)
+		}
+		if p.Search == "" {
+			return fmt.Errorf("profiles[%d] (%q): search is required", i, p.Name)
+		}
+		if p.Name == DefaultProfileName {
+			return fmt.Errorf("profiles[%d]: name %q is reserved for the top-level search key", i, p.Name)
+		}
+		if seen[p.Name] {
+			return fmt.Errorf("profiles[%d]: duplicate name %q", i, p.Name)
+		}
+		seen[p.Name] = true
 	}
 	return nil
 }

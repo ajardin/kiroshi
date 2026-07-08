@@ -128,6 +128,25 @@ notify = true
 jira_base_url = "https://your-org.atlassian.net"
 jira_email    = "you@your-org.com"
 jira_token    = "xxxxxxxxxxxxxxxxxxxx"
+
+# Optional named search profiles for juggling several contexts (work org,
+# OSS, a specific team) from one dashboard. The top-level `search` above is
+# always the profile named "default" (that name is reserved); each
+# [[profiles]] entry adds one more, with a unique non-empty name and a
+# non-empty query. Declare as many as you need — one profile is active at a
+# time, and the `p` key cycles through them in file order (default → oss →
+# team → back to default below), rescanning with the new query; the header
+# shows the active profile's name. You can also start on a given profile
+# with `-profile <name>`. Omit the blocks entirely to keep a single search.
+# Note: [[profiles]] blocks must stay at the end of the file — in TOML,
+# every key after a table header belongs to that table.
+[[profiles]]
+name   = "oss"
+search = "is:pr is:open involves:@me user:some-org"
+
+[[profiles]]
+name   = "team"
+search = "is:pr is:open team-review-requested:acme/core"
 ```
 
 Both token fields are redacted from structured logs (see
@@ -139,6 +158,7 @@ Both token fields are redacted from structured logs (see
 kiroshi                       # interactive TUI when stdout is a terminal
 kiroshi -init                 # interactively create or update the config file and exit
 kiroshi -no-tui               # plain text, always
+kiroshi -profile oss          # start on a named search profile (TUI or plain text)
 kiroshi -config ./my.toml     # override the config path
 kiroshi -verbose              # debug-level slog output on stderr
 kiroshi -version              # print build metadata and exit
@@ -161,6 +181,7 @@ automatically — TTY detection lives in `cli.isTerminal`.
 | f or /     | filter the visible list         |
 | s          | cycle sort order                |
 | a          | cycle approval filter           |
+| p          | cycle search profiles (when configured) |
 | ?          | toggle the keybindings overlay  |
 | q / esc    | quit                            |
 

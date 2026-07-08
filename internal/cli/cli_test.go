@@ -29,13 +29,18 @@ type fakeClient struct {
 	err       error
 	prs       []gh.PullRequest
 	searchErr error
+	// gotSearch, when set, captures the query passed to SearchPullRequests.
+	gotSearch *string
 }
 
 func (f fakeClient) AuthenticatedUser(context.Context) (gh.User, error) {
 	return f.user, f.err
 }
 
-func (f fakeClient) SearchPullRequests(context.Context, string) ([]gh.PullRequest, error) {
+func (f fakeClient) SearchPullRequests(_ context.Context, query string) ([]gh.PullRequest, error) {
+	if f.gotSearch != nil {
+		*f.gotSearch = query
+	}
 	return f.prs, f.searchErr
 }
 
@@ -195,6 +200,80 @@ In Flight (1)
 `
 	if got := stdout.String(); got != want {
 		t.Errorf("stdout mismatch:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestRun_ProfileFlagSelectsQuery(t *testing.T) {
+	t.Parallel()
+
+	cfgPath := writeConfig(t, `github_token = "t"
+search = "default-query"
+
+[[profiles]]
+name   = "oss"
+search = "oss-query"`)
+
+	var gotSearch string
+	var stdout, stderr bytes.Buffer
+	err := Run(t.Context(), []string{"-no-tui", "-profile", "oss", "-config", cfgPath}, &stdout, &stderr,
+		WithGitHubClient(fakeClient{user: gh.User{Login: "ajardin"}, gotSearch: &gotSearch}))
+	if err != nil {
+		t.Fatalf("unexpected err: %v (stderr=%q)", err, stderr.String())
+	}
+	if gotSearch != "oss-query" {
+		t.Errorf("search query = %q, want the oss profile's query", gotSearch)
+	}
+	if !strings.Contains(stdout.String(), `search="oss-query"`) {
+		t.Errorf("stdout = %q, want the active profile's search echoed", stdout.String())
+	}
+}
+
+func TestRun_ProfileFlagUnknownNameErrors(t *testing.T) {
+	t.Parallel()
+
+	cfgPath := writeConfig(t, `github_token = "t"
+search = "s"
+
+[[profiles]]
+name   = "oss"
+search = "q"`)
+
+	var stdout, stderr bytes.Buffer
+	err := Run(t.Context(), []string{"-no-tui", "-profile", "nope", "-config", cfgPath}, &stdout, &stderr,
+		WithGitHubClient(fakeClient{user: gh.User{Login: "ajardin"}}))
+	if err == nil {
+		t.Fatal("expected error for unknown profile, got nil")
+	}
+	if !strings.Contains(err.Error(), `"nope"`) || !strings.Contains(err.Error(), "default, oss") {
+		t.Errorf("err = %v, want the unknown name and the available list", err)
+	}
+}
+
+func TestRun_ProfileFlagSelectsTUIStartProfile(t *testing.T) {
+	t.Parallel()
+
+	cfgPath := writeConfig(t, `github_token = "t"
+search = "s"
+
+[[profiles]]
+name   = "oss"
+search = "q"`)
+
+	var active string
+	runner := func(m tui.Model) error {
+		active = m.ActiveProfile()
+		return nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	err := Run(t.Context(), []string{"-profile", "oss", "-config", cfgPath}, &stdout, &stderr,
+		WithGitHubClient(fakeClient{user: gh.User{Login: "ajardin"}}),
+		WithTUIRunner(runner))
+	if err != nil {
+		t.Fatalf("unexpected err: %v (stderr=%q)", err, stderr.String())
+	}
+	if active != "oss" {
+		t.Errorf("TUI start profile = %q, want oss", active)
 	}
 }
 
@@ -386,7 +465,7 @@ func TestRun_InitWithExistingConfigReconfigures(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("JIRA_API_TOKEN", "")
 	cfgPath := filepath.Join(t.TempDir(), "config.toml")
-	original := []byte("github_token = \"keep-me\"\nsearch = \"is:pr\"\nnotify = true\n")
+	original := []byte("github_token = \"keep-me\"\nsearch = \"is:pr\"\nnotify = true\n\n[[profiles]]\nname = \"oss\"\nsearch = \"q\"\n")
 	if err := os.WriteFile(cfgPath, original, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -421,6 +500,9 @@ func TestRun_InitWithExistingConfigReconfigures(t *testing.T) {
 	}
 	if !cfg.Notify {
 		t.Error("notify is hand-edit only and must survive a reconfigure")
+	}
+	if len(cfg.Profiles) != 1 || cfg.Profiles[0].Name != "oss" {
+		t.Errorf("profiles are hand-edit only and must survive a reconfigure, got %+v", cfg.Profiles)
 	}
 }
 

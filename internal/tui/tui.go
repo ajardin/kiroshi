@@ -40,6 +40,14 @@ type Copier func(text string) error
 // Refresher re-fetches the pull requests displayed in the dashboard.
 type Refresher func(ctx context.Context) ([]gh.PullRequest, error)
 
+// Profile is a named search the dashboard can switch to with the `p` key.
+// Each profile carries its own Refresher closure (the CLI bakes the query in),
+// so the model never handles GitHub query strings.
+type Profile struct {
+	Name    string
+	Refresh Refresher
+}
+
 // Run executes the TUI to completion against the given input/output. Use
 // os.Stdin/os.Stdout in production; tests can pass pipes to drive it.
 func Run(m Model, in io.Reader, out io.Writer) error {
