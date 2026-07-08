@@ -74,12 +74,14 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, opts ...O
 		noTUI       bool
 		initMode    bool
 		configPath  string
+		profileName string
 	)
 	fs.BoolVar(&showVersion, "version", false, "print version and exit")
 	fs.BoolVar(&verbose, "verbose", false, "enable verbose logging")
 	fs.BoolVar(&noTUI, "no-tui", false, "disable the interactive TUI and print plain text")
 	fs.BoolVar(&initMode, "init", false, "interactively create or update the config file and exit")
 	fs.StringVar(&configPath, "config", "", "path to config file (default: $XDG_CONFIG_HOME/kiroshi/config.toml)")
+	fs.StringVar(&profileName, "profile", "", "search profile to use (default: the top-level search)")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -115,6 +117,26 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, opts ...O
 		return err
 	}
 
+	// Resolve the profile before touching GitHub so an unknown name fails fast.
+	profiles := cfg.AllProfiles()
+	activeProfile := 0
+	if profileName != "" {
+		activeProfile = -1
+		for i, p := range profiles {
+			if p.Name == profileName {
+				activeProfile = i
+				break
+			}
+		}
+		if activeProfile < 0 {
+			names := make([]string, len(profiles))
+			for i, p := range profiles {
+				names[i] = p.Name
+			}
+			return fmt.Errorf("unknown profile %q (available: %s)", profileName, strings.Join(names, ", "))
+		}
+	}
+
 	client := ro.githubClient
 	if client == nil {
 		if cfg.JiraBaseURL != "" {
@@ -130,7 +152,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, opts ...O
 		runTUI = func(m tui.Model) error { return tui.Run(m, os.Stdin, stdout) }
 	}
 
-	return run(ctx, logger, client, cfg, stdout, useTUI, runTUI)
+	return run(ctx, logger, client, cfg, activeProfile, stdout, useTUI, runTUI)
 }
 
 // isTerminal reports whether w is a character device, used to decide whether
@@ -228,9 +250,11 @@ func runWizard(ctx context.Context, configPath string, stdout io.Writer, ro runO
 		JiraToken:       res.JiraToken,
 	}
 	if existing != nil {
-		// Notify is hand-edit only (the wizard never asks for it), so a
-		// reconfigure must carry it over instead of silently resetting it.
+		// Notify and Profiles are hand-edit only (the wizard never asks for
+		// them), so a reconfigure must carry them over instead of silently
+		// dropping them.
 		cfg.Notify = existing.Notify
+		cfg.Profiles = existing.Profiles
 	}
 	if err := config.Save(path, cfg); err != nil {
 		return fmt.Errorf("save config: %w", err)
@@ -240,7 +264,7 @@ func runWizard(ctx context.Context, configPath string, stdout io.Writer, ro runO
 	return err
 }
 
-func run(ctx context.Context, logger *slog.Logger, client gh.API, cfg *config.Config, stdout io.Writer, useTUI bool, runTUI func(tui.Model) error) error {
+func run(ctx context.Context, logger *slog.Logger, client gh.API, cfg *config.Config, activeProfile int, stdout io.Writer, useTUI bool, runTUI func(tui.Model) error) error {
 	logger.DebugContext(ctx, "loaded config", "config", cfg)
 
 	user, err := client.AuthenticatedUser(ctx)
@@ -249,15 +273,27 @@ func run(ctx context.Context, logger *slog.Logger, client gh.API, cfg *config.Co
 	}
 	logger.DebugContext(ctx, "authenticated", "login", user.Login)
 
+	// One refresher per profile, each with its query baked in: the TUI switches
+	// profiles by swapping closures, so it never handles query strings itself.
+	profiles := cfg.AllProfiles()
+	refresherFor := func(query string) tui.Refresher {
+		return func(ctx context.Context) ([]gh.PullRequest, error) {
+			return client.SearchPullRequests(ctx, query)
+		}
+	}
+	search := profiles[activeProfile].Search
+
 	// The TUI fetches its first batch from inside the program (Init → refresh)
 	// so the multi-second search+enrichment runs behind the decrypt splash
 	// instead of blocking on a frozen-looking terminal. The plain-text path keeps
 	// the blocking search below (and its non-zero exit on failure).
 	if useTUI {
-		refresh := func(ctx context.Context) ([]gh.PullRequest, error) {
-			return client.SearchPullRequests(ctx, cfg.Search)
+		tuiProfiles := make([]tui.Profile, len(profiles))
+		for i, p := range profiles {
+			tuiProfiles[i] = tui.Profile{Name: p.Name, Refresh: refresherFor(p.Search)}
 		}
-		model := tui.NewLoadingModel(user.Login, version.String(), cfg.MinReviews, cfg.JiraBaseURL != "", cfg.RefreshInterval, tui.OpenURL, refresh).
+		model := tui.NewLoadingModel(user.Login, version.String(), cfg.MinReviews, cfg.JiraBaseURL != "", cfg.RefreshInterval, tui.OpenURL, refresherFor(search)).
+			WithProfiles(tuiProfiles, activeProfile).
 			WithCopier(tui.CopyToClipboard).
 			WithNotify(cfg.Notify)
 		if err := runTUI(model); err != nil {
@@ -266,14 +302,14 @@ func run(ctx context.Context, logger *slog.Logger, client gh.API, cfg *config.Co
 		return nil
 	}
 
-	prs, err := client.SearchPullRequests(ctx, cfg.Search)
+	prs, err := client.SearchPullRequests(ctx, search)
 	if err != nil {
 		return fmt.Errorf("search pull requests: %w", err)
 	}
 	logger.DebugContext(ctx, "searched pull requests", "count", len(prs))
 
 	lines := []string{
-		fmt.Sprintf("kiroshi ready as @%s (search=%q)", user.Login, cfg.Search),
+		fmt.Sprintf("kiroshi ready as @%s (search=%q)", user.Login, search),
 		"",
 	}
 	if len(prs) == 0 {

@@ -124,6 +124,32 @@ the same path as the `r` key**, skipping when a scan is already in flight (no
 stacking). Footer shows a cyan `● auto <interval>` (`shortDuration`). Not
 surfaced in `helpView` — it's config-driven, not a key binding.
 
+**Search profiles.** The top-level `search` is always the implicit profile
+named `default` (the name is reserved — a `[[profiles]]` entry may not reuse
+it; that rule beats "shadowing" because validation can state it in one line).
+`config.AllProfiles` centralizes the ordering (default first, then file
+order). In the TUI each `tui.Profile` carries its own `Refresher` closure —
+the CLI bakes the query in — so the `Refresher` type is unchanged and the
+model never sees query strings; `cycleProfile` (the `p` key) swaps
+`m.refresh` in place, which makes the `r` key and auto-refresh follow the
+active profile for free. The switch resets cursor *and* text filter (unlike
+`tab`, which keeps the filter: panes share one result set, profiles don't)
+and is ignored while a rescan is in flight, so an old profile's results can
+never land under the new profile's name. On a failed switch the previous
+profile's results stay up (same semantics as a failed manual rescan) — the
+header then shows the new profile over the old list, accepted as the lesser
+evil vs blanking the dashboard. The header tag, footer hint, and help row
+only appear with >1 profile (`p` is a no-op otherwise). `-profile <name>`
+resolves before the first GitHub call (unknown name fails fast, listing the
+valid names) and selects the query in plain-text mode / the starting profile
+in TUI mode. Profiles are hand-edit only: the wizard never asks, and a
+reconfigure carries them over like `notify`. `[[profiles]]` must sit at the
+end of the TOML file (keys after a table header belong to the table) —
+`fileConfig.Profiles` is last in the struct for the same reason on the Save
+path. The rescan cache is keyed per PR and survives switches; `pruneCache`
+evicts the inactive profile's entries on the next scan, so a switch-back
+re-enriches live (a cost, not a staleness bug).
+
 **Merge state is read-only by design** — no approve/merge from the TUI. Render
 details live in "Color palette" / "Row line-2 layout".
 
@@ -463,7 +489,8 @@ Common commands (`make help` lists all targets):
 - `make fmt` / `make tidy` — `golangci-lint fmt` / `go mod tidy && verify`.
 - `make all` — lint + test + build (the pre-push gate).
 
-CLI flags: `-version`, `-verbose`, `-no-tui`, `-init`, `-config <path>`.
+CLI flags: `-version`, `-verbose`, `-no-tui`, `-init`, `-config <path>`,
+`-profile <name>`.
 
 - `make lint` runs golangci-lint v2. The repo enables revive's `exported`,
   `var-naming`, and `package-comments` rules — every exported symbol and

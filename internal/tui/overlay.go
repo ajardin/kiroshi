@@ -75,7 +75,8 @@ func (m Model) helpView() string {
 	// lipgloss and the terminal disagree on their cell count and the modal
 	// box's right border would drift. Arrow / Home / End all work too; the
 	// words carry that without the layout risk.
-	bindings := []struct{ keys, desc string }{
+	type binding struct{ keys, desc string }
+	bindings := []binding{
 		{"up / down", "move selection"},
 		{"tab", "switch incoming / mine view"},
 		{"g / G", "jump to top / bottom"},
@@ -86,9 +87,15 @@ func (m Model) helpView() string {
 		{"f / /", "filter by repo, title, author"},
 		{"s", "cycle sort (updated / oldest / newest)"},
 		{"a", "cycle approval filter"},
-		{"?", "toggle this help"},
-		{"q / esc", "quit"},
 	}
+	// Like the footer, only advertise `p` when there is something to cycle.
+	if len(m.profiles) > 1 {
+		bindings = append(bindings, binding{"p", "cycle search profile"})
+	}
+	bindings = append(bindings,
+		binding{"?", "toggle this help"},
+		binding{"q / esc", "quit"},
+	)
 
 	keyW := 0
 	for _, b := range bindings {

@@ -94,6 +94,13 @@ type Model struct {
 	sort          sortMode
 	approval      approvalFilter
 	pane          paneView
+	// profiles is the switchable search-profile list (empty when the config
+	// defines only the default search); profile indexes the active one. The
+	// active profile's Refresh IS m.refresh — cycleProfile swaps it in place,
+	// so every rescan path (r key, auto-refresh) follows the active profile
+	// for free.
+	profiles []Profile
+	profile  int
 }
 
 // uiMode enumerates the mutually-exclusive UI modes. handleKey and View both
@@ -183,6 +190,29 @@ func (m Model) WithCopier(c Copier) Model {
 func (m Model) WithNotify(enabled bool) Model {
 	m.notify = enabled
 	return m
+}
+
+// WithProfiles returns a copy of the model with the switchable search-profile
+// list set and the profile at active selected (its Refresh replaces the
+// model's refresher). A chainable setter like WithCopier: only the CLI wires
+// profiles, and most configs have none. An out-of-range active is ignored.
+func (m Model) WithProfiles(profiles []Profile, active int) Model {
+	m.profiles = profiles
+	if active >= 0 && active < len(profiles) {
+		m.profile = active
+		m.refresh = profiles[active].Refresh
+	}
+	return m
+}
+
+// ActiveProfile returns the active search profile's name, or "" when no
+// profiles are wired. Exported as a test seam for the CLI wiring (the same
+// idea as WithTUIRunner: cli tests assert on the prepared model).
+func (m Model) ActiveProfile() string {
+	if len(m.profiles) == 0 {
+		return ""
+	}
+	return m.profiles[m.profile].Name
 }
 
 // anyJiraFailure reports whether any PR's Jira lookup failed during enrichment
@@ -432,8 +462,32 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		return m.cycleApproval(), nil
 	case "tab":
 		return m.cyclePane(), nil
+	case "p":
+		return m.cycleProfile()
 	}
 	return m, nil
+}
+
+// cycleProfile advances to the next search profile (with wrap-around) and
+// rescans through the same path as the `r` key. The whole result set is about
+// to be replaced by a different query, so the cursor AND the text filter reset
+// (unlike `tab`, which keeps the filter: the panes share one result set, a
+// profile switch does not). Ignored while a rescan is in flight — an old
+// profile's results landing after the switch would be labelled with the new
+// profile's name.
+func (m Model) cycleProfile() (Model, tea.Cmd) {
+	if len(m.profiles) < 2 || m.refreshing {
+		return m, nil
+	}
+	m.profile = (m.profile + 1) % len(m.profiles)
+	m.refresh = m.profiles[m.profile].Refresh
+	m.filter = ""
+	m.cursor, m.offset = 0, 0
+	m.refreshing = true
+	m.status = ""
+	m.statusErr = false
+	m.spinFrame = 0
+	return m, tea.Batch(m.rescanCmd(), spinnerCmd())
 }
 
 // cyclePane toggles between the incoming and mine panes. The visible set swaps

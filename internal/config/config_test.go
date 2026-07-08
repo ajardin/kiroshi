@@ -251,6 +251,10 @@ func TestSaveRoundTrip(t *testing.T) {
 		JiraBaseURL:     "https://acme.atlassian.net",
 		JiraEmail:       "me@acme.com",
 		JiraToken:       "jira-tok",
+		Profiles: []Profile{
+			{Name: "oss", Search: "is:pr user:some-org"},
+			{Name: "team", Search: "is:pr team:acme/core"},
+		},
 	}
 	if err := Save(path, want); err != nil {
 		t.Fatalf("Save() err = %v", err)
@@ -285,6 +289,9 @@ func TestSaveRoundTrip(t *testing.T) {
 	}
 	if got.Notify != want.Notify {
 		t.Errorf("notify round-trip = %v, want %v", got.Notify, want.Notify)
+	}
+	if len(got.Profiles) != 2 || got.Profiles[0] != want.Profiles[0] || got.Profiles[1] != want.Profiles[1] {
+		t.Errorf("profiles round-trip = %+v, want %+v", got.Profiles, want.Profiles)
 	}
 }
 
@@ -370,6 +377,75 @@ search = "s"`)
 			t.Error("notify = true, want false by default")
 		}
 	})
+}
+
+func TestLoadProfiles(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+
+	t.Run("no profiles yields the default alone", func(t *testing.T) {
+		p := writeConfig(t, `github_token = "t"
+search = "s"`)
+
+		cfg, err := Load(p)
+		if err != nil {
+			t.Fatalf("Load() err = %v", err)
+		}
+		got := cfg.AllProfiles()
+		if len(got) != 1 || got[0].Name != DefaultProfileName || got[0].Search != "s" {
+			t.Errorf("AllProfiles() = %+v, want just the default", got)
+		}
+	})
+
+	t.Run("profiles parse in file order after the default", func(t *testing.T) {
+		p := writeConfig(t, `github_token = "t"
+search = "s"
+
+[[profiles]]
+name   = "  oss  "
+search = "  is:pr user:some-org  "
+
+[[profiles]]
+name   = "team"
+search = "is:pr team:acme/core"`)
+
+		cfg, err := Load(p)
+		if err != nil {
+			t.Fatalf("Load() err = %v", err)
+		}
+		got := cfg.AllProfiles()
+		want := []Profile{
+			{Name: DefaultProfileName, Search: "s"},
+			{Name: "oss", Search: "is:pr user:some-org"}, // trimmed
+			{Name: "team", Search: "is:pr team:acme/core"},
+		}
+		if len(got) != len(want) {
+			t.Fatalf("AllProfiles() = %+v, want %+v", got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("AllProfiles()[%d] = %+v, want %+v", i, got[i], want[i])
+			}
+		}
+	})
+
+	rejected := []struct {
+		name, body, wantErr string
+	}{
+		{"empty name", "[[profiles]]\nsearch = \"q\"", "name is required"},
+		{"empty search", "[[profiles]]\nname = \"oss\"", "search is required"},
+		{"duplicate name", "[[profiles]]\nname = \"oss\"\nsearch = \"a\"\n\n[[profiles]]\nname = \"oss\"\nsearch = \"b\"", "duplicate name"},
+		{"reserved default name", "[[profiles]]\nname = \"default\"\nsearch = \"q\"", "reserved"},
+	}
+	for _, tt := range rejected {
+		t.Run(tt.name+" is rejected", func(t *testing.T) {
+			p := writeConfig(t, "github_token = \"t\"\nsearch = \"s\"\n\n"+tt.body)
+
+			_, err := Load(p)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("err = %v, want substring %q", err, tt.wantErr)
+			}
+		})
+	}
 }
 
 func TestConfigLogValue(t *testing.T) {

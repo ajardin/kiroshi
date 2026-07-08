@@ -93,7 +93,15 @@ func (m Model) headerView() string {
 	} else {
 		build += " (" + scanned + ")"
 	}
-	left := logo + " " + lipgloss.NewStyle().Foreground(colCyan).Render(build)
+	// Active search profile, shown only when there is more than one to switch
+	// between (a single-profile config would just repeat "default" forever).
+	// Cyan bold: it is chrome-adjacent context like the version, not an alert.
+	var profileTag string
+	if len(m.profiles) > 1 {
+		profileTag = lipgloss.NewStyle().Foreground(colMuted).Render(" · ") +
+			lipgloss.NewStyle().Foreground(colCyan).Bold(true).Render(m.profiles[m.profile].Name)
+	}
+	left := logo + " " + lipgloss.NewStyle().Foreground(colCyan).Render(build) + profileTag
 
 	// Wider whitespace between clusters; a uniform " · " everywhere reads cramped.
 	gap := "      "
@@ -129,11 +137,16 @@ func (m Model) headerView() string {
 	overflows := func() bool {
 		return lipgloss.Width(left)+lipgloss.Width(right)+3 > m.width // 2 margins + min pad
 	}
+	// Drop the build parenthetical but keep the profile tag: the profile decides
+	// what the dashboard shows, the build is trivia.
 	if overflows() {
-		left = logo
+		left = logo + profileTag
 	}
 	if overflows() {
 		right = user
+	}
+	if overflows() {
+		left = logo
 	}
 
 	pad := m.width - lipgloss.Width(left) - lipgloss.Width(right) - 2
@@ -342,9 +355,15 @@ func (m Model) footerView() string {
 		keyHint("f", "filter"),
 		keyHint("s", "sort"),
 		keyHint("a", "approved"),
+	}
+	// `p` is a no-op with a single profile, so only advertise it when it works.
+	if len(m.profiles) > 1 {
+		keys = append(keys, keyHint("p", "profile"))
+	}
+	keys = append(keys,
 		keyHint("?", "help"),
 		keyHint("q", "quit"),
-	}
+	)
 	sep := lipgloss.NewStyle().Foreground(colMuted).Render(" · ")
 
 	var b strings.Builder

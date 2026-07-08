@@ -1890,3 +1890,151 @@ func TestView_PaneEmptyStateIsPaneAware(t *testing.T) {
 		t.Errorf("empty mine pane should explain it has no authored PRs\n%s", m.View().Content)
 	}
 }
+
+// --- Search profiles -------------------------------------------------------
+
+// profileFixture wires a two-profile model: "default" serves samplePRs, "oss"
+// serves only PR #42. calls records which profile's refresher ran.
+func profileFixture(t *testing.T, calls *[]string) Model {
+	t.Helper()
+	mk := func(name string, prs []gh.PullRequest, err error) Profile {
+		return Profile{Name: name, Refresh: func(context.Context) ([]gh.PullRequest, error) {
+			*calls = append(*calls, name)
+			return prs, err
+		}}
+	}
+	return newTestModel(t, nil, nil).WithProfiles([]Profile{
+		mk("default", samplePRs(), nil),
+		mk("oss", []gh.PullRequest{samplePRs()[0]}, nil),
+	}, 0)
+}
+
+func TestModel_PKeyCyclesProfilesAndRescans(t *testing.T) {
+	t.Parallel()
+
+	var calls []string
+	m := profileFixture(t, &calls)
+	m.filter = "tui"
+	m.cursor = 1
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Text: "p"})
+	got := updated.(Model)
+	if got.ActiveProfile() != "oss" {
+		t.Errorf("active profile = %q, want oss", got.ActiveProfile())
+	}
+	if !got.refreshing {
+		t.Error("profile switch should start a rescan")
+	}
+	if got.filter != "" || got.cursor != 0 {
+		t.Errorf("filter/cursor = %q/%d, want reset", got.filter, got.cursor)
+	}
+	got = applyCmd(t, got, cmd)
+	if len(calls) != 1 || calls[0] != "oss" {
+		t.Errorf("refresh calls = %v, want the oss profile's refresher", calls)
+	}
+	if len(got.prs) != 1 || got.prs[0].Number != 42 {
+		t.Errorf("prs after switch = %+v, want the oss profile's single PR", got.prs)
+	}
+
+	// The manual rescan now follows the active profile.
+	updated, cmd = got.Update(tea.KeyPressMsg{Text: "r"})
+	applyCmd(t, updated.(Model), cmd)
+	if len(calls) != 2 || calls[1] != "oss" {
+		t.Errorf("refresh calls after r = %v, want a second oss call", calls)
+	}
+
+	// Wrap-around back to the default profile.
+	updated, cmd = got.Update(tea.KeyPressMsg{Text: "p"})
+	got = applyCmd(t, updated.(Model), cmd)
+	if got.ActiveProfile() != "default" {
+		t.Errorf("active profile after wrap = %q, want default", got.ActiveProfile())
+	}
+}
+
+func TestModel_PKeyNoopWithoutMultipleProfiles(t *testing.T) {
+	t.Parallel()
+
+	// No profiles wired at all.
+	m := newTestModel(t, nil, nil)
+	updated, cmd := m.Update(tea.KeyPressMsg{Text: "p"})
+	if cmd != nil || updated.(Model).refreshing {
+		t.Error("p should be a no-op without profiles")
+	}
+
+	// A single profile: nothing to cycle to.
+	single := newTestModel(t, nil, nil).WithProfiles([]Profile{
+		{Name: "default", Refresh: func(context.Context) ([]gh.PullRequest, error) {
+			t.Error("single-profile p press must not rescan")
+			return nil, nil
+		}},
+	}, 0)
+	updated, cmd = single.Update(tea.KeyPressMsg{Text: "p"})
+	if cmd != nil || updated.(Model).refreshing {
+		t.Error("p should be a no-op with a single profile")
+	}
+}
+
+func TestModel_PKeyIgnoredWhileRefreshing(t *testing.T) {
+	t.Parallel()
+
+	var calls []string
+	m := profileFixture(t, &calls)
+	m.refreshing = true
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Text: "p"})
+	if cmd != nil {
+		t.Error("p during an in-flight rescan should not start another")
+	}
+	if got := updated.(Model); got.ActiveProfile() != "default" {
+		t.Errorf("active profile = %q, want unchanged default", got.ActiveProfile())
+	}
+}
+
+func TestView_HeaderShowsProfileOnlyWhenMultiple(t *testing.T) {
+	t.Parallel()
+
+	var calls []string
+	multi := profileFixture(t, &calls)
+	updated, cmd := multi.Update(tea.KeyPressMsg{Text: "p"})
+	got := applyCmd(t, updated.(Model), cmd)
+	if view := got.View().Content; !strings.Contains(view, "oss") {
+		t.Errorf("header should show the active profile name\n%s", view)
+	}
+	// The footer and help overlay advertise the key only when it works.
+	if view := got.View().Content; !strings.Contains(view, "profile") {
+		t.Errorf("footer should hint the p key\n%s", view)
+	}
+	help, _ := got.Update(tea.KeyPressMsg{Text: "?"})
+	if view := help.(Model).View().Content; !strings.Contains(view, "cycle search profile") {
+		t.Errorf("help overlay should list the p key\n%s", view)
+	}
+
+	single := newTestModel(t, nil, nil).WithProfiles([]Profile{
+		{Name: "solo", Refresh: func(context.Context) ([]gh.PullRequest, error) { return nil, nil }},
+	}, 0)
+	if view := single.View().Content; strings.Contains(view, "solo") || strings.Contains(view, "profile") {
+		t.Errorf("single profile must not surface in header or footer\n%s", view)
+	}
+}
+
+func TestModel_ProfileSwitchScanFailureKeepsUIUsable(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(t, nil, nil).WithProfiles([]Profile{
+		{Name: "default", Refresh: func(context.Context) ([]gh.PullRequest, error) { return samplePRs(), nil }},
+		{Name: "broken", Refresh: func(context.Context) ([]gh.PullRequest, error) { return nil, errors.New("boom") }},
+	}, 0)
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Text: "p"})
+	got := applyCmd(t, updated.(Model), cmd)
+	if !got.statusErr || !strings.Contains(got.View().Content, "scan failed") {
+		t.Errorf("failed profile scan should surface on the status line\n%s", got.View().Content)
+	}
+	if got.refreshing {
+		t.Error("refreshing flag should clear after the failed scan")
+	}
+	// Same semantics as a failed manual rescan: the previous results stay up.
+	if len(got.prs) != 2 {
+		t.Errorf("prs after failed switch = %d, want the previous set kept", len(got.prs))
+	}
+}
