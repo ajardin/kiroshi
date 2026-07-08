@@ -448,7 +448,11 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 			return m, nil
 		}
 		m.refreshing = true
-		m.status = "rescanning..."
+		// Dead text otherwise: statusLineView shows the spinner while refreshing
+		// is true, masking m.status, and rescanMsg overwrites it once the scan
+		// lands. Cleared here (not left alone) so a leftover status from a
+		// previous action doesn't resurface after this scan finishes.
+		m.status = ""
 		m.statusErr = false
 		m.spinFrame = 0
 		return m, tea.Batch(m.rescanCmd(), spinnerCmd())
