@@ -75,7 +75,11 @@ type Model struct {
 	// statusDim renders the status line in colDim instead of green/red: used
 	// for the partial-enrichment note, a warning that is neither a success
 	// nor an error.
-	statusDim  bool
+	statusDim bool
+	// statusSeq is bumped on every status write. A transient status arms a
+	// statusClearCmd carrying the current seq; the clear only fires if the seq
+	// still matches, so a stale timer can never wipe a newer message.
+	statusSeq  int
 	refreshing bool
 	// mode is the mutually-exclusive UI mode (list, loading, filter, help,
 	// detail). refreshing is deliberately not a mode: it overlays a spinner on
@@ -245,8 +249,15 @@ type (
 	statusMsg struct {
 		text string
 		err  bool
+		// transient marks a status that auto-dismisses after statusTTL (yank,
+		// open, "new waiting on you"). Errors and the partial-enrichment note
+		// stay put — they describe a durable state the user must see.
+		transient bool
 	}
-	rescanMsg struct {
+	// statusClearMsg carries the statusSeq that armed it; the handler clears the
+	// status only if it still matches (a newer message bumped seq otherwise).
+	statusClearMsg int
+	rescanMsg      struct {
 		prs []gh.PullRequest
 		err error
 		at  time.Time
@@ -291,8 +302,16 @@ func autoRefreshCmd(d time.Duration) tea.Cmd {
 	return tea.Tick(d, func(t time.Time) tea.Msg { return autoRefreshMsg(t) })
 }
 
-func info(s string) tea.Cmd { return func() tea.Msg { return statusMsg{text: s} } }
+func info(s string) tea.Cmd { return func() tea.Msg { return statusMsg{text: s, transient: true} } }
 func warn(s string) tea.Cmd { return func() tea.Msg { return statusMsg{text: s, err: true} } }
+
+// statusTTL is how long a transient status lingers before it auto-dismisses.
+const statusTTL = 4 * time.Second
+
+// statusClearCmd schedules a status dismissal tagged with the seq that armed it.
+func statusClearCmd(seq int) tea.Cmd {
+	return tea.Tick(statusTTL, func(time.Time) tea.Msg { return statusClearMsg(seq) })
+}
 
 // Update routes messages to the right handler.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -313,10 +332,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = msg.text
 		m.statusErr = msg.err
 		m.statusDim = false
+		m.statusSeq++
+		if msg.transient {
+			return m, statusClearCmd(m.statusSeq)
+		}
+		return m, nil
+
+	case statusClearMsg:
+		if int(msg) == m.statusSeq {
+			m.status = ""
+			m.statusErr = false
+			m.statusDim = false
+		}
 		return m, nil
 
 	case rescanMsg:
 		m.refreshing = false
+		// Invalidate any pending transient timer: a message set below (scan
+		// failed / partially enriched) is persistent and must not be wiped by a
+		// dismiss armed before the scan.
+		m.statusSeq++
 		wasLoading := m.mode == modeLoading
 		if wasLoading {
 			m.mode = modeList
@@ -815,6 +850,6 @@ func (m Model) listAreaHeight() int {
 		cardLines = 8
 	}
 	fixed += cardLines
-	fixed += strings.Count(m.footerView(), "\n") + 1 // footer (incl. optional status line)
+	fixed += strings.Count(m.footerView(), "\n") + 1 // footer (always incl. the reserved status line)
 	return m.height - fixed
 }
