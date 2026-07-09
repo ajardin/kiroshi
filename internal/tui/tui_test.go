@@ -172,6 +172,85 @@ func TestModel_YKeyNoopOnEmptyList(t *testing.T) {
 	}
 }
 
+func TestModel_TransientStatusAutoDismisses(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(t, nil, nil)
+
+	updated, cmd := m.Update(statusMsg{text: "yanked x", transient: true})
+	got := updated.(Model)
+	if got.status != "yanked x" {
+		t.Fatalf("status = %q, want it set", got.status)
+	}
+	if cmd == nil {
+		t.Fatal("a transient status should arm a clear timer")
+	}
+	// Simulate the timer firing (avoids actually waiting statusTTL).
+	updated, _ = got.Update(statusClearMsg(got.statusSeq))
+	if s := updated.(Model).status; s != "" {
+		t.Errorf("status = %q, want cleared after dismiss", s)
+	}
+}
+
+func TestModel_StaleStatusDismissLeavesNewerMessage(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(t, nil, nil)
+
+	updated, _ := m.Update(statusMsg{text: "first", transient: true})
+	first := updated.(Model)
+	staleSeq := first.statusSeq
+
+	updated, _ = first.Update(statusMsg{text: "second", transient: true})
+	second := updated.(Model)
+
+	updated, _ = second.Update(statusClearMsg(staleSeq))
+	if s := updated.(Model).status; s != "second" {
+		t.Errorf("stale dismiss wiped newer status: got %q, want %q", s, "second")
+	}
+}
+
+func TestModel_PersistentStatusNotAutoDismissed(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(t, nil, nil)
+
+	updated, cmd := m.Update(statusMsg{text: "failed to open", err: true})
+	got := updated.(Model)
+	if cmd != nil {
+		t.Errorf("an error status should not arm a clear timer, got %T", cmd())
+	}
+	// A dismiss armed by an earlier transient must not wipe the persistent error.
+	updated, _ = got.Update(statusClearMsg(got.statusSeq - 1))
+	if s := updated.(Model).status; s != "failed to open" {
+		t.Errorf("stale dismiss wiped persistent error: got %q", s)
+	}
+}
+
+func TestModel_StatusLineIcons(t *testing.T) {
+	t.Parallel()
+
+	base := newTestModel(t, nil, nil)
+	tests := []struct {
+		name string
+		set  func(m Model) Model
+		icon string
+	}{
+		{"success", func(m Model) Model { m.status = "yanked x"; return m }, "✓"},
+		{"error", func(m Model) Model { m.status = "scan failed"; m.statusErr = true; return m }, "✗"},
+		{"warning", func(m Model) Model { m.status = "1 partially enriched"; m.statusDim = true; return m }, "⚠"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			m := tc.set(base)
+			if !strings.Contains(m.View().Content, tc.icon+" ") {
+				t.Errorf("view missing %q icon\n%s", tc.icon, m.View().Content)
+			}
+		})
+	}
+}
+
 func TestModel_QuitKeysReturnQuitCmd(t *testing.T) {
 	t.Parallel()
 

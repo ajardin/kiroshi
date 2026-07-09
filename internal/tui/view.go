@@ -415,11 +415,12 @@ func (m Model) footerView() string {
 	b.WriteString(anchor)
 	bottom := centerLine(b.String(), m.width)
 
-	statusLine := m.statusLineView()
-	if statusLine == "" {
-		return bottom
-	}
-	return statusLine + "\n" + bottom
+	// The status line is a permanently reserved slot (blank when there is no
+	// notification), so the hint line never shifts up/down as a notification
+	// appears or dismisses — the footer stays a constant two lines. This also
+	// keeps listAreaHeight (which counts footer lines) stable, so the row count
+	// doesn't jump either.
+	return m.statusLineView() + "\n" + bottom
 }
 
 // centerLine left-pads a styled line so it sits centered in width columns.
@@ -440,14 +441,18 @@ func (m Model) statusLineView() string {
 		hint := lipgloss.NewStyle().Foreground(colMuted).Render("(enter to confirm · esc to clear)")
 		return " " + label + " " + value + "  " + hint
 	case m.status != "":
-		col := colGreen
+		// Semantic icon derived from the same three-way state that picks the
+		// color, then centered to align with the hint line below (the leading-
+		// space left-align read as just more footer text next to the shortcuts).
+		col, icon := colGreen, "✓"
 		switch {
 		case m.statusErr:
-			col = colRed
+			col, icon = colRed, "✗"
 		case m.statusDim:
-			col = colDim
+			col, icon = colDim, "⚠"
 		}
-		return " " + lipgloss.NewStyle().Foreground(col).Render(m.status)
+		line := lipgloss.NewStyle().Foreground(col).Render(icon + " " + m.status)
+		return centerLine(line, m.width)
 	}
 	return ""
 }
