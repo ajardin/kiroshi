@@ -313,6 +313,23 @@ func (m Model) sectionHeaderView() string {
 // --- List ----------------------------------------------------------------
 
 func (m Model) listView() string {
+	content := m.listContent()
+	if m.refreshing {
+		// Show the in-flight indicator in place of the rows, padded to the height
+		// the outgoing rows occupy (m.prs isn't replaced until rescanMsg lands) so
+		// the footer — which hugs the list, not the screen bottom — does not jump
+		// when the scan starts or finishes.
+		frame := spinFrames[m.spinFrame%len(spinFrames)]
+		ind := lipgloss.NewStyle().Foreground(colCyan).Render(frame + " rescanning…")
+		return lipgloss.Place(m.width, lipgloss.Height(content),
+			lipgloss.Center, lipgloss.Center, ind)
+	}
+	return content
+}
+
+// listContent renders the PR rows, or an empty-state message when nothing is
+// visible.
+func (m Model) listContent() string {
 	visible := m.visiblePRs()
 	if len(visible) == 0 {
 		msg := "No pull requests match the search."
@@ -345,35 +362,58 @@ func (m Model) listView() string {
 // --- Footer --------------------------------------------------------------
 
 func (m Model) footerView() string {
-	keys := []string{
+	sep := lipgloss.NewStyle().Foreground(colMuted).Render(" · ")
+
+	// Always visible: [?] help anchors the full modal (which lists every
+	// binding), [q] quit. They survive truncation on any width, so the footer
+	// can drop the rest without stranding the user. `p` joins the anchor when it
+	// works (>1 profile) — a headline action worth keeping visible, mirroring the
+	// header's profile tag; it's a no-op with a single profile, so drop it then.
+	anchor := keyHint("?", "help") + sep + keyHint("q", "quit")
+	if len(m.profiles) > 1 {
+		anchor = keyHint("p", "profile") + sep + anchor
+	}
+
+	// Priority-ordered teasers, most-used first so the least useful drop first
+	// when the terminal is too narrow to fit them all on one line.
+	hints := []string{
 		keyHint("↑↓", "navigate"),
 		keyHint("tab", "switch view"),
 		keyHint("o", "open"),
-		keyHint("y", "yank"),
-		keyHint("d", "detail"),
 		keyHint("r", "rescan"),
 		keyHint("f", "filter"),
+		keyHint("d", "detail"),
 		keyHint("s", "sort"),
 		keyHint("a", "approved"),
+		keyHint("y", "yank"),
 	}
-	// `p` is a no-op with a single profile, so only advertise it when it works.
-	if len(m.profiles) > 1 {
-		keys = append(keys, keyHint("p", "profile"))
-	}
-	keys = append(keys,
-		keyHint("?", "help"),
-		keyHint("q", "quit"),
-	)
-	sep := lipgloss.NewStyle().Foreground(colMuted).Render(" · ")
 
+	// Greedily include leading hints while they fit on ONE line alongside the
+	// reserved anchor (width measured with lipgloss.Width — segments are styled).
+	sepW := lipgloss.Width(sep)
+	anchorW := lipgloss.Width(anchor)
+	budget := m.width - 2
 	var b strings.Builder
-	for i, line := range packSegments(keys, sep, m.width-2) {
-		if i > 0 {
-			b.WriteByte('\n')
+	curW := 0
+	for _, h := range hints {
+		add := lipgloss.Width(h)
+		if curW > 0 {
+			add += sepW
 		}
-		b.WriteString(centerLine(line, m.width))
+		if curW+add+sepW+anchorW > budget {
+			break
+		}
+		if curW > 0 {
+			b.WriteString(sep)
+		}
+		b.WriteString(h)
+		curW += add
 	}
-	bottom := b.String()
+	if curW > 0 {
+		b.WriteString(sep)
+	}
+	b.WriteString(anchor)
+	bottom := centerLine(b.String(), m.width)
 
 	statusLine := m.statusLineView()
 	if statusLine == "" {
@@ -392,37 +432,6 @@ func centerLine(s string, width int) string {
 	return strings.Repeat(" ", gap/2) + s
 }
 
-// packSegments greedily fills lines with atomic segments joined by sep, each
-// line within width display columns. Segments carry ANSI styling, so width is
-// measured with lipgloss.Width, never len. An over-wide segment takes its own
-// line (it can't be split).
-func packSegments(segs []string, sep string, width int) []string {
-	sepW := lipgloss.Width(sep)
-	var lines []string
-	var cur strings.Builder
-	curW := 0
-	for _, s := range segs {
-		w := lipgloss.Width(s)
-		switch {
-		case curW == 0:
-			cur.WriteString(s)
-			curW = w
-		case curW+sepW+w > width:
-			lines = append(lines, cur.String())
-			cur.Reset()
-			cur.WriteString(s)
-			curW = w
-		default:
-			cur.WriteString(sep + s)
-			curW += sepW + w
-		}
-	}
-	if curW > 0 {
-		lines = append(lines, cur.String())
-	}
-	return lines
-}
-
 func (m Model) statusLineView() string {
 	switch {
 	case m.mode == modeFilter:
@@ -430,9 +439,6 @@ func (m Model) statusLineView() string {
 		value := lipgloss.NewStyle().Foreground(colText).Render(m.filter + "_")
 		hint := lipgloss.NewStyle().Foreground(colMuted).Render("(enter to confirm · esc to clear)")
 		return " " + label + " " + value + "  " + hint
-	case m.refreshing:
-		frame := spinFrames[m.spinFrame%len(spinFrames)]
-		return " " + lipgloss.NewStyle().Foreground(colCyan).Render(frame+" rescanning…")
 	case m.status != "":
 		col := colGreen
 		switch {
