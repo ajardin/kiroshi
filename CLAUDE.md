@@ -23,6 +23,12 @@ the code does, read the code; for *why* it looks the way it does, read here.
   with different auth, and keeping it out keeps the go-github wrapper and its
   test harness clean. `gh` imports it (one-directional); `gh.NewWithJira`
   wires it in. Also home to `ExtractKey` (PR → issue key).
+- `internal/deploy` — local deployment-branch preparation (git orchestration).
+  Its own package so `internal/tui` never grows an `os/exec` dependency (the
+  browser launcher stays the TUI's only exec) and `internal/gh` stays
+  GitHub-only. Imports only `gh` (for `PullRequest`); the CLI converts
+  `config.Repo` → `deploy.Target`, so `deploy` never sees config. The
+  `GitRunner` interface over exec is the test seam (`ExecRunner` in prod).
 - `internal/config`, `internal/version` — self-explanatory.
 
 TTY detection lives in `cli.isTerminal` and uses `os.ModeCharDevice`. Any
@@ -169,6 +175,47 @@ end of the TOML file (keys after a table header belong to the table) —
 path. The rescan cache is keyed per PR and survives switches; `pruneCache`
 evicts the inactive profile's entries on the next scan, so a switch-back
 re-enriches live (a cost, not a staleness bug).
+
+**Deployment branches.** `space` toggles a PR into the deployment selection
+(keyed by `pr.URL`, the TUI's per-PR identity; a one-cell yellow `*` slot
+after the bar — ASCII, accent reuse, rendered only when the feature is wired
+so rows never shift otherwise); `b` prompts for a branch name
+(`modeBranchPrompt`, the filter's hand-rolled input; default from
+`deploy_branch_pattern`, sole token `{date}`; validated by
+`deploy.ValidateBranchName` on enter — invalid keeps the prompt with an
+inline error) and launches `Model.build`, a `Builder` closure the CLI bakes
+`config.Repo → deploy.Target` mappings into, so the model never touches git
+or config. `building` mirrors `refreshing` (in-flight bool, **not** a
+uiMode); `r`/auto-refresh/`p`/`b` are gated both ways, and `buildCmd`
+snapshots the selection from `m.prs` (not `visiblePRs` — selection spans
+panes/filters) under `prepareTimeout` (5m). The outcome lands in `modeReport`
+(`reportView`, modalBox chrome, dismiss-on-any-key; dismissal clears the
+selection — job done). Selection lifecycle: pruned to surviving URLs on every
+rescan, cleared on profile switch (new query, same rationale as the filter
+reset), kept by `tab`/`f`/`s`/`a` and by esc from the prompt (cancelling the
+name is not cancelling the picks). Locked git sequence per repo
+(`deploy.prepareRepo`): refuse dirty tree (tracked changes only —
+`--untracked-files=no`), fetch origin, `checkout --no-track -B` from
+`origin/<base>` (**recreate policy**: a same-name local branch is rebuilt
+from scratch, destructive by explicit user choice — same-day reruns with the
+date pattern beat safety here; `--no-track` so a later manual push under
+`push.default=upstream` can't hit the base), then per PR `merge --no-ff -m
+"kiroshi: merge PR #N (<ref>)" refs/remotes/origin/<ref>` with
+skip-and-report degradation (best-effort `merge --abort`, reason from the
+CONFLICT/fatal/error output line, remaining PRs continue), finally restore
+the original branch (SHA when detached) — abort/restore run on
+`context.WithoutCancel` so a timeout can't strand the clone. **No push,
+ever** — the branch is handed back for review. Fork PRs are pre-skipped via
+`HeadIsFork` (set in `enrichDetail` by comparing `head.repo.full_name` to the
+base repo; a nil head repo — deleted fork — counts as fork), enrichment-bare
+PRs (`HeadRef == ""`) likewise. Degradation mirrors enrichment: `Builder`
+returns a `Report` with no error — failures live per repo
+(`RepoResult.Err`) and per PR (`Skip.Reason`), so one bad repo never blanks
+the others. Config is `[[repos]]` (name exactly `owner/repo`, path, base —
+all required, names case-insensitively unique, paths unique) plus
+`deploy_branch_pattern`; hand-edit only (the wizard carries both over like
+`notify`), array-of-tables at the end of the TOML file alongside
+`[[profiles]]`. TUI-only: the plain-text path never wires it.
 
 **Merge state is read-only by design** — no approve/merge from the TUI. Render
 details live in "Color palette" / "Row line-2 layout".

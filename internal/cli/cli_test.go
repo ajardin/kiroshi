@@ -277,6 +277,44 @@ search = "q"`)
 	}
 }
 
+func TestRun_ReposConfigEnablesDeploy(t *testing.T) {
+	t.Parallel()
+
+	withRepos := writeConfig(t, `github_token = "t"
+search = "s"
+
+[[repos]]
+name = "acme/api"
+path = "/src/api"
+base = "master"`)
+	without := writeConfig(t, `github_token = "t"
+search = "s"`)
+
+	deployEnabled := func(cfgPath string) bool {
+		t.Helper()
+		var enabled bool
+		runner := func(m tui.Model) error {
+			enabled = m.DeployEnabled()
+			return nil
+		}
+		var stdout, stderr bytes.Buffer
+		err := Run(t.Context(), []string{"-config", cfgPath}, &stdout, &stderr,
+			WithGitHubClient(fakeClient{user: gh.User{Login: "ajardin"}}),
+			WithTUIRunner(runner))
+		if err != nil {
+			t.Fatalf("unexpected err: %v (stderr=%q)", err, stderr.String())
+		}
+		return enabled
+	}
+
+	if !deployEnabled(withRepos) {
+		t.Error("deploy must be wired when [[repos]] is configured")
+	}
+	if deployEnabled(without) {
+		t.Error("deploy must stay off without [[repos]]")
+	}
+}
+
 func TestRun_GitHubErrorPreservesInvalidToken(t *testing.T) {
 	t.Parallel()
 
@@ -465,7 +503,7 @@ func TestRun_InitWithExistingConfigReconfigures(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("JIRA_API_TOKEN", "")
 	cfgPath := filepath.Join(t.TempDir(), "config.toml")
-	original := []byte("github_token = \"keep-me\"\nsearch = \"is:pr\"\nnotify = true\n\n[[profiles]]\nname = \"oss\"\nsearch = \"q\"\n")
+	original := []byte("github_token = \"keep-me\"\nsearch = \"is:pr\"\nnotify = true\ndeploy_branch_pattern = \"release/{date}\"\n\n[[profiles]]\nname = \"oss\"\nsearch = \"q\"\n\n[[repos]]\nname = \"acme/api\"\npath = \"/src/api\"\nbase = \"master\"\n")
 	if err := os.WriteFile(cfgPath, original, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -503,6 +541,12 @@ func TestRun_InitWithExistingConfigReconfigures(t *testing.T) {
 	}
 	if len(cfg.Profiles) != 1 || cfg.Profiles[0].Name != "oss" {
 		t.Errorf("profiles are hand-edit only and must survive a reconfigure, got %+v", cfg.Profiles)
+	}
+	if len(cfg.Repos) != 1 || cfg.Repos[0].Name != "acme/api" {
+		t.Errorf("repos are hand-edit only and must survive a reconfigure, got %+v", cfg.Repos)
+	}
+	if cfg.DeployBranchPattern != "release/{date}" {
+		t.Errorf("deploy_branch_pattern is hand-edit only and must survive a reconfigure, got %q", cfg.DeployBranchPattern)
 	}
 }
 

@@ -133,6 +133,21 @@ jira_base_url = "https://your-org.atlassian.net"
 jira_email    = "you@your-org.com"
 jira_token    = "xxxxxxxxxxxxxxxxxxxx"
 
+# Optional deployment-branch preparation (see "Deployment branches" below).
+# deploy_branch_pattern seeds the branch-name prompt; {date} expands to the
+# current date (defaults to "deploy/{date}"). Each [[repos]] entry maps a
+# GitHub repository to a local clone: `name` is exactly "owner/repo", `path`
+# is the clone directory (a leading ~/ is expanded), and `base` is the branch
+# the deployment branch is created from (via origin/<base>). All three keys
+# are required; omit the blocks entirely to disable the feature. Like
+# [[profiles]], [[repos]] blocks must stay at the end of the file.
+deploy_branch_pattern = "deploy/{date}"
+
+[[repos]]
+name = "acme/api"
+path = "~/src/api"
+base = "master"
+
 # Optional named search profiles for juggling several contexts (work org,
 # OSS, a specific team) from one dashboard. The top-level `search` above is
 # always the profile named "default" (that name is reserved); each
@@ -185,9 +200,25 @@ automatically — TTY detection lives in `cli.isTerminal`.
 | f or /     | filter the visible list         |
 | s          | cycle sort order                |
 | a          | cycle approval filter           |
+| space      | select PR for deployment (when configured) |
+| b          | prepare deployment branches (when configured) |
 | p          | cycle search profiles (when configured) |
 | ?          | toggle the keybindings overlay  |
 | q / esc    | quit                            |
+
+### Deployment branches
+
+With `[[repos]]` configured, kiroshi can assemble a local deployment branch
+from the dashboard: toggle the pull requests to include with `space` (a
+yellow `*` marks them), then press `b`, confirm or edit the proposed branch
+name, and kiroshi builds one branch per repository involved — in the mapped
+local clone, it fetches origin, recreates the branch from `origin/<base>`,
+and merges each selected PR's head branch as a labelled merge commit. A
+branch that fails to merge (conflict, fork, deleted head) is skipped and the
+rest continue; a final report lists what landed and what was left out, with
+reasons. Nothing is ever pushed — reviewing and pushing the branch stays
+your move. Clones with uncommitted tracked changes are refused, and the
+originally checked-out branch is restored when the run ends.
 
 ## Development
 

@@ -29,6 +29,8 @@ func (m Model) render() string {
 		return m.helpView()
 	case modeDetail:
 		return m.detailView()
+	case modeReport:
+		return m.reportView()
 	}
 	// Below fullCardsW the four cards no longer fit on one row; cardsView falls
 	// back to a 2×2 grid down to minW (two cards wide). Below that we give up.
@@ -307,7 +309,15 @@ func (m Model) sectionHeaderView() string {
 		text += " · not approved by you"
 	}
 	dash := lipgloss.NewStyle().Foreground(colDim).Bold(true).Render(" — " + text)
-	return " " + tabs + dash
+	line := " " + tabs + dash
+	// Deployment-selection count, in the marker's yellow. It counts the whole
+	// selection (not just this pane/filter's slice), so PRs selected but
+	// currently filtered out stay visible in the tally.
+	if n := len(m.selected); n > 0 {
+		line += lipgloss.NewStyle().Foreground(colMuted).Render(" · ") +
+			lipgloss.NewStyle().Foreground(colYellow).Bold(true).Render(fmt.Sprintf("%d selected", n))
+	}
+	return line
 }
 
 // --- List ----------------------------------------------------------------
@@ -380,13 +390,19 @@ func (m Model) footerView() string {
 		keyHint("↑↓", "navigate"),
 		keyHint("tab", "switch view"),
 		keyHint("o", "open"),
+	}
+	// Like `p` in the anchor: only advertise the deployment keys when wired.
+	if m.build != nil {
+		hints = append(hints, keyHint("space", "select"), keyHint("b", "deploy"))
+	}
+	hints = append(hints,
 		keyHint("r", "rescan"),
 		keyHint("f", "filter"),
 		keyHint("d", "detail"),
 		keyHint("s", "sort"),
 		keyHint("a", "approved"),
 		keyHint("y", "yank"),
-	}
+	)
 
 	// Greedily include leading hints while they fit on ONE line alongside the
 	// reserved anchor (width measured with lipgloss.Width — segments are styled).
@@ -440,6 +456,21 @@ func (m Model) statusLineView() string {
 		value := lipgloss.NewStyle().Foreground(colText).Render(m.filter + "_")
 		hint := lipgloss.NewStyle().Foreground(colMuted).Render("(enter to confirm · esc to clear)")
 		return " " + label + " " + value + "  " + hint
+	case m.mode == modeBranchPrompt:
+		label := lipgloss.NewStyle().Foreground(colYellow).Bold(true).Render("branch:")
+		value := lipgloss.NewStyle().Foreground(colText).Render(m.branchInput + "_")
+		hint := lipgloss.NewStyle().Foreground(colMuted).Render("(enter to prepare · esc to cancel)")
+		if m.branchErr != "" {
+			hint = lipgloss.NewStyle().Foreground(colRed).Render(m.branchErr)
+		}
+		return " " + label + " " + value + "  " + hint
+	case m.building:
+		// The rows aren't changing (unlike a rescan, which swaps the list for
+		// its indicator), so the progress lives in the reserved status slot —
+		// zero layout shift.
+		frame := spinFrames[m.spinFrame%len(spinFrames)]
+		line := lipgloss.NewStyle().Foreground(colCyan).Render(frame + " preparing deployment branches…")
+		return centerLine(line, m.width)
 	case m.status != "":
 		// Semantic icon derived from the same three-way state that picks the
 		// color, then centered to align with the hint line below (the leading-

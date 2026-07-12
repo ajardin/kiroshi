@@ -123,15 +123,20 @@ type PullRequest struct {
 	HeadSHA            string
 	HeadRef            string
 	BaseRef            string
-	Body               string
-	CIState            CIState
-	MergeState         MergeState
-	Additions          int
-	Deletions          int
-	ChangedFiles       int
-	Commits            int
-	Comments           int // conversation comments
-	ReviewComments     int // inline review comments
+	// HeadIsFork reports whether the head branch lives in a different
+	// repository than the base (a fork PR) — its ref does not exist on origin,
+	// so local deployment merges must skip it. Also set when the head repo is
+	// unknown (deleted fork).
+	HeadIsFork     bool
+	Body           string
+	CIState        CIState
+	MergeState     MergeState
+	Additions      int
+	Deletions      int
+	ChangedFiles   int
+	Commits        int
+	Comments       int // conversation comments
+	ReviewComments int // inline review comments
 	// UnresolvedThreads is the number of unresolved review threads, resolved
 	// in a batched GraphQL pass after the REST enrichment (the REST API does
 	// not expose thread resolution). ThreadsKnown distinguishes a genuine
@@ -613,6 +618,11 @@ func (c *Client) enrichDetail(ctx context.Context, pr *PullRequest) error {
 	if head := detail.GetHead(); head != nil {
 		pr.HeadSHA = head.GetSHA()
 		pr.HeadRef = head.GetRef()
+		if hr := head.GetRepo(); hr != nil {
+			pr.HeadIsFork = !strings.EqualFold(hr.GetFullName(), pr.Owner+"/"+pr.Repo)
+		} else {
+			pr.HeadIsFork = true // deleted fork
+		}
 	}
 	pr.BaseRef = detail.GetBase().GetRef()
 	pr.Body = detail.GetBody()
