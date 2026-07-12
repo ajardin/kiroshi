@@ -502,7 +502,13 @@ deploy_branch_pattern = "release/{date}"`)
 
 	t.Run("expands leading tilde in path", func(t *testing.T) {
 		home := t.TempDir()
-		t.Setenv("HOME", home)
+		// os.UserHomeDir reads a platform-specific variable; HOME alone would
+		// leave Windows CI expanding to the real runner profile.
+		homeVar := "HOME"
+		if runtime.GOOS == "windows" {
+			homeVar = "USERPROFILE"
+		}
+		t.Setenv(homeVar, home)
 		p := writeConfig(t, `github_token = "t"
 search = "s"
 
