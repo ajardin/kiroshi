@@ -465,7 +465,7 @@ func TestRun_InitWithExistingConfigReconfigures(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("JIRA_API_TOKEN", "")
 	cfgPath := filepath.Join(t.TempDir(), "config.toml")
-	original := []byte("github_token = \"keep-me\"\nsearch = \"is:pr\"\nnotify = true\n\n[[profiles]]\nname = \"oss\"\nsearch = \"q\"\n")
+	original := []byte("github_token = \"keep-me\"\nsearch = \"is:pr\"\nnotify = true\ndeploy_branch_pattern = \"release/{date}\"\n\n[[profiles]]\nname = \"oss\"\nsearch = \"q\"\n\n[[repos]]\nname = \"acme/api\"\npath = \"/src/api\"\nbase = \"master\"\n")
 	if err := os.WriteFile(cfgPath, original, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -503,6 +503,12 @@ func TestRun_InitWithExistingConfigReconfigures(t *testing.T) {
 	}
 	if len(cfg.Profiles) != 1 || cfg.Profiles[0].Name != "oss" {
 		t.Errorf("profiles are hand-edit only and must survive a reconfigure, got %+v", cfg.Profiles)
+	}
+	if len(cfg.Repos) != 1 || cfg.Repos[0].Name != "acme/api" {
+		t.Errorf("repos are hand-edit only and must survive a reconfigure, got %+v", cfg.Repos)
+	}
+	if cfg.DeployBranchPattern != "release/{date}" {
+		t.Errorf("deploy_branch_pattern is hand-edit only and must survive a reconfigure, got %q", cfg.DeployBranchPattern)
 	}
 }
 

@@ -43,6 +43,22 @@ var ErrNotFound = errors.New("config not found")
 // top-level search key. It is reserved: a [[profiles]] entry may not reuse it.
 const DefaultProfileName = "default"
 
+// DefaultDeployBranchPattern is the fallback for the deploy_branch_pattern
+// field when the user does not set it explicitly in the config file.
+const DefaultDeployBranchPattern = "deploy/{date}"
+
+// Repo maps a GitHub repository to a local clone used for deployment-branch
+// preparation. All three fields are required; entries live under [[repos]].
+type Repo struct {
+	// Name is the GitHub identifier, exactly "owner/repo".
+	Name string
+	// Path is the local clone directory (a leading ~/ is expanded on load).
+	Path string
+	// Base is the branch the deployment branch is created from (via
+	// origin/<base>).
+	Base string
+}
+
 // Profile is a named search query the TUI can switch to at runtime. The
 // top-level search key is always the implicit profile named
 // DefaultProfileName; [[profiles]] entries add more.
@@ -75,6 +91,13 @@ type Config struct {
 	// Search itself is always the implicit "default" profile; use AllProfiles
 	// for the full switchable list.
 	Profiles []Profile
+	// DeployBranchPattern names the deployment branches prepared from the TUI
+	// ({date} expands to the current date); DefaultDeployBranchPattern applies
+	// when the key is absent. Hand-edit only (not offered by the setup wizard).
+	DeployBranchPattern string
+	// Repos holds the optional [[repos]] clone mappings that enable
+	// deployment-branch preparation. Hand-edit only.
+	Repos []Repo
 }
 
 // AllProfiles returns every switchable profile: the implicit default (backed
@@ -97,28 +120,39 @@ func (c *Config) LogValue() slog.Value {
 		slog.String("jira_email", c.JiraEmail),
 		slog.String("jira_token", "<redacted>"),
 		slog.Int("profiles", len(c.Profiles)),
+		slog.String("deploy_branch_pattern", c.DeployBranchPattern),
+		slog.Int("repos", len(c.Repos)),
 	)
 }
 
 // fileConfig mirrors the TOML schema. MinReviews is a pointer so we can tell
 // "absent" (apply DefaultMinReviews) from "explicitly set to 0".
 type fileConfig struct {
-	GitHubToken     string `toml:"github_token"`
-	Search          string `toml:"search"`
-	MinReviews      *int   `toml:"min_reviews"`
-	RefreshInterval string `toml:"refresh_interval"`
-	Notify          bool   `toml:"notify"`
-	JiraBaseURL     string `toml:"jira_base_url"`
-	JiraEmail       string `toml:"jira_email"`
-	JiraToken       string `toml:"jira_token"`
-	// Profiles is last on purpose: TOML array-of-tables must be encoded after
-	// the plain keys, or Save would fold them into the first [[profiles]] block.
+	GitHubToken         string `toml:"github_token"`
+	Search              string `toml:"search"`
+	MinReviews          *int   `toml:"min_reviews"`
+	RefreshInterval     string `toml:"refresh_interval"`
+	Notify              bool   `toml:"notify"`
+	JiraBaseURL         string `toml:"jira_base_url"`
+	JiraEmail           string `toml:"jira_email"`
+	JiraToken           string `toml:"jira_token"`
+	DeployBranchPattern string `toml:"deploy_branch_pattern"`
+	// The array-of-tables fields are last on purpose: TOML tables must be
+	// encoded after the plain keys, or Save would fold subsequent plain keys
+	// into the first [[profiles]]/[[repos]] block.
 	Profiles []fileProfile `toml:"profiles"`
+	Repos    []fileRepo    `toml:"repos"`
 }
 
 type fileProfile struct {
 	Name   string `toml:"name"`
 	Search string `toml:"search"`
+}
+
+type fileRepo struct {
+	Name string `toml:"name"`
+	Path string `toml:"path"`
+	Base string `toml:"base"`
 }
 
 // Load reads the TOML configuration at path. When path is empty, the default
@@ -179,10 +213,38 @@ func Load(path string) (*Config, error) {
 			Search: strings.TrimSpace(p.Search),
 		})
 	}
+	cfg.DeployBranchPattern = strings.TrimSpace(fc.DeployBranchPattern)
+	if cfg.DeployBranchPattern == "" {
+		cfg.DeployBranchPattern = DefaultDeployBranchPattern
+	}
+	for _, r := range fc.Repos {
+		repoPath, perr := expandPath(strings.TrimSpace(r.Path))
+		if perr != nil {
+			return nil, fmt.Errorf("invalid config %s: repos path %q: %w", path, r.Path, perr)
+		}
+		cfg.Repos = append(cfg.Repos, Repo{
+			Name: strings.TrimSpace(r.Name),
+			Path: repoPath,
+			Base: strings.TrimSpace(r.Base),
+		})
+	}
 	if err := cfg.validate(); err != nil {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
 	return cfg, nil
+}
+
+// expandPath expands a leading ~/ to the user's home directory so [[repos]]
+// paths can be written portably. A bare ~ or ~user form is left untouched.
+func expandPath(p string) (string, error) {
+	if !strings.HasPrefix(p, "~/") {
+		return p, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory: %w", err)
+	}
+	return filepath.Join(home, p[2:]), nil
 }
 
 // resolveSecret returns the env var's value when set, otherwise the file
@@ -238,17 +300,21 @@ func Save(path string, c *Config) error {
 		refresh = c.RefreshInterval.String()
 	}
 	fc := fileConfig{
-		GitHubToken:     c.GitHubToken,
-		Search:          c.Search,
-		MinReviews:      &mr,
-		RefreshInterval: refresh,
-		Notify:          c.Notify,
-		JiraBaseURL:     c.JiraBaseURL,
-		JiraEmail:       c.JiraEmail,
-		JiraToken:       c.JiraToken,
+		GitHubToken:         c.GitHubToken,
+		Search:              c.Search,
+		MinReviews:          &mr,
+		RefreshInterval:     refresh,
+		Notify:              c.Notify,
+		JiraBaseURL:         c.JiraBaseURL,
+		JiraEmail:           c.JiraEmail,
+		JiraToken:           c.JiraToken,
+		DeployBranchPattern: c.DeployBranchPattern,
 	}
 	for _, p := range c.Profiles {
 		fc.Profiles = append(fc.Profiles, fileProfile(p))
+	}
+	for _, r := range c.Repos {
+		fc.Repos = append(fc.Repos, fileRepo(r))
 	}
 	if err := toml.NewEncoder(f).Encode(fc); err != nil {
 		_ = f.Close()
@@ -288,6 +354,9 @@ func (c *Config) validate() error {
 	if err := c.validateProfiles(); err != nil {
 		return err
 	}
+	if err := c.validateRepos(); err != nil {
+		return err
+	}
 	if err := c.validateJira(); err != nil {
 		return err
 	}
@@ -313,6 +382,38 @@ func (c *Config) validateProfiles() error {
 			return fmt.Errorf("profiles[%d]: duplicate name %q", i, p.Name)
 		}
 		seen[p.Name] = true
+	}
+	return nil
+}
+
+// validateRepos enforces the [[repos]] rules: name must be exactly
+// "owner/repo" and unique (case-insensitively — GitHub is), path and base are
+// required, and paths must be unique across entries — two names sharing one
+// clone would collide on the same deployment branch.
+func (c *Config) validateRepos() error {
+	names := map[string]bool{}
+	paths := map[string]bool{}
+	for i, r := range c.Repos {
+		owner, repo, ok := strings.Cut(r.Name, "/")
+		if !ok || owner == "" || repo == "" || strings.Contains(repo, "/") {
+			return fmt.Errorf("repos[%d]: name must be \"owner/repo\", got %q", i, r.Name)
+		}
+		name := strings.ToLower(r.Name)
+		if names[name] {
+			return fmt.Errorf("repos[%d]: duplicate name %q", i, r.Name)
+		}
+		names[name] = true
+		if r.Path == "" {
+			return fmt.Errorf("repos[%d] (%q): path is required", i, r.Name)
+		}
+		cleaned := filepath.Clean(r.Path)
+		if paths[cleaned] {
+			return fmt.Errorf("repos[%d] (%q): duplicate path %q", i, r.Name, r.Path)
+		}
+		paths[cleaned] = true
+		if r.Base == "" {
+			return fmt.Errorf("repos[%d] (%q): base is required", i, r.Name)
+		}
 	}
 	return nil
 }

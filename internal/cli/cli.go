@@ -261,11 +261,13 @@ func runWizard(ctx context.Context, configPath string, stdout io.Writer, ro runO
 		JiraToken:       res.JiraToken,
 	}
 	if existing != nil {
-		// Notify and Profiles are hand-edit only (the wizard never asks for
-		// them), so a reconfigure must carry them over instead of silently
-		// dropping them.
+		// Notify, Profiles, Repos and DeployBranchPattern are hand-edit only
+		// (the wizard never asks for them), so a reconfigure must carry them
+		// over instead of silently dropping them.
 		cfg.Notify = existing.Notify
 		cfg.Profiles = existing.Profiles
+		cfg.Repos = existing.Repos
+		cfg.DeployBranchPattern = existing.DeployBranchPattern
 	}
 	if err := config.Save(path, cfg); err != nil {
 		return fmt.Errorf("save config: %w", err)

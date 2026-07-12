@@ -255,6 +255,11 @@ func TestSaveRoundTrip(t *testing.T) {
 			{Name: "oss", Search: "is:pr user:some-org"},
 			{Name: "team", Search: "is:pr team:acme/core"},
 		},
+		DeployBranchPattern: "deploy/squad-{date}",
+		Repos: []Repo{
+			{Name: "acme/api", Path: "/src/api", Base: "master"},
+			{Name: "acme/web", Path: "/src/web", Base: "main"},
+		},
 	}
 	if err := Save(path, want); err != nil {
 		t.Fatalf("Save() err = %v", err)
@@ -292,6 +297,14 @@ func TestSaveRoundTrip(t *testing.T) {
 	}
 	if len(got.Profiles) != 2 || got.Profiles[0] != want.Profiles[0] || got.Profiles[1] != want.Profiles[1] {
 		t.Errorf("profiles round-trip = %+v, want %+v", got.Profiles, want.Profiles)
+	}
+	if got.DeployBranchPattern != want.DeployBranchPattern {
+		t.Errorf("deploy_branch_pattern round-trip = %q, want %q", got.DeployBranchPattern, want.DeployBranchPattern)
+	}
+	// Repos after Profiles in the same file proves the array-of-tables encode
+	// order keeps both sections intact.
+	if len(got.Repos) != 2 || got.Repos[0] != want.Repos[0] || got.Repos[1] != want.Repos[1] {
+		t.Errorf("repos round-trip = %+v, want %+v", got.Repos, want.Repos)
 	}
 }
 
@@ -435,6 +448,88 @@ search = "is:pr team:acme/core"`)
 		{"empty search", "[[profiles]]\nname = \"oss\"", "search is required"},
 		{"duplicate name", "[[profiles]]\nname = \"oss\"\nsearch = \"a\"\n\n[[profiles]]\nname = \"oss\"\nsearch = \"b\"", "duplicate name"},
 		{"reserved default name", "[[profiles]]\nname = \"default\"\nsearch = \"q\"", "reserved"},
+	}
+	for _, tt := range rejected {
+		t.Run(tt.name+" is rejected", func(t *testing.T) {
+			p := writeConfig(t, "github_token = \"t\"\nsearch = \"s\"\n\n"+tt.body)
+
+			_, err := Load(p)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("err = %v, want substring %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestLoadRepos(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+
+	t.Run("parses entries and applies the default pattern", func(t *testing.T) {
+		p := writeConfig(t, `github_token = "t"
+search = "s"
+
+[[repos]]
+name = "  acme/api  "
+path = "  /src/api  "
+base = "  master  "`)
+
+		cfg, err := Load(p)
+		if err != nil {
+			t.Fatalf("Load() err = %v", err)
+		}
+		want := Repo{Name: "acme/api", Path: "/src/api", Base: "master"} // trimmed
+		if len(cfg.Repos) != 1 || cfg.Repos[0] != want {
+			t.Errorf("repos = %+v, want [%+v]", cfg.Repos, want)
+		}
+		if cfg.DeployBranchPattern != DefaultDeployBranchPattern {
+			t.Errorf("deploy_branch_pattern = %q, want default %q", cfg.DeployBranchPattern, DefaultDeployBranchPattern)
+		}
+	})
+
+	t.Run("custom pattern survives", func(t *testing.T) {
+		p := writeConfig(t, `github_token = "t"
+search = "s"
+deploy_branch_pattern = "release/{date}"`)
+
+		cfg, err := Load(p)
+		if err != nil {
+			t.Fatalf("Load() err = %v", err)
+		}
+		if cfg.DeployBranchPattern != "release/{date}" {
+			t.Errorf("deploy_branch_pattern = %q, want %q", cfg.DeployBranchPattern, "release/{date}")
+		}
+	})
+
+	t.Run("expands leading tilde in path", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		p := writeConfig(t, `github_token = "t"
+search = "s"
+
+[[repos]]
+name = "acme/api"
+path = "~/src/api"
+base = "master"`)
+
+		cfg, err := Load(p)
+		if err != nil {
+			t.Fatalf("Load() err = %v", err)
+		}
+		if want := filepath.Join(home, "src", "api"); cfg.Repos[0].Path != want {
+			t.Errorf("path = %q, want %q", cfg.Repos[0].Path, want)
+		}
+	})
+
+	rejected := []struct {
+		name, body, wantErr string
+	}{
+		{"name without slash", "[[repos]]\nname = \"acme\"\npath = \"/x\"\nbase = \"master\"", `name must be "owner/repo"`},
+		{"name with empty owner", "[[repos]]\nname = \"/api\"\npath = \"/x\"\nbase = \"master\"", `name must be "owner/repo"`},
+		{"name with extra slash", "[[repos]]\nname = \"acme/api/v2\"\npath = \"/x\"\nbase = \"master\"", `name must be "owner/repo"`},
+		{"duplicate name ignoring case", "[[repos]]\nname = \"acme/api\"\npath = \"/x\"\nbase = \"master\"\n\n[[repos]]\nname = \"Acme/API\"\npath = \"/y\"\nbase = \"master\"", "duplicate name"},
+		{"missing path", "[[repos]]\nname = \"acme/api\"\nbase = \"master\"", "path is required"},
+		{"duplicate path", "[[repos]]\nname = \"acme/api\"\npath = \"/x\"\nbase = \"master\"\n\n[[repos]]\nname = \"acme/web\"\npath = \"/x\"\nbase = \"master\"", "duplicate path"},
+		{"missing base", "[[repos]]\nname = \"acme/api\"\npath = \"/x\"", "base is required"},
 	}
 	for _, tt := range rejected {
 		t.Run(tt.name+" is rejected", func(t *testing.T) {
