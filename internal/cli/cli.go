@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/ajardin/kiroshi/internal/config"
+	"github.com/ajardin/kiroshi/internal/deploy"
 	"github.com/ajardin/kiroshi/internal/gh"
 	"github.com/ajardin/kiroshi/internal/jira"
 	"github.com/ajardin/kiroshi/internal/tui"
@@ -308,6 +309,20 @@ func run(ctx context.Context, logger *slog.Logger, client gh.API, cfg *config.Co
 		model := tui.NewLoadingModel(user.Login, version.String(), cfg.MinReviews, cfg.JiraBaseURL != "", cfg.RefreshInterval, tui.OpenURL, refresherFor(search)).
 			WithProfiles(tuiProfiles, activeProfile).
 			WithNotify(cfg.Notify)
+		// Deployment-branch preparation, enabled only when [[repos]] maps
+		// clones. The closure bakes the targets in, so the model never touches
+		// config or git — same idea as the profile refreshers above. TUI-only
+		// by construction: the plain-text path below never wires it.
+		if len(cfg.Repos) > 0 {
+			targets := make(map[string]deploy.Target, len(cfg.Repos))
+			for _, r := range cfg.Repos {
+				targets[strings.ToLower(r.Name)] = deploy.Target{Path: r.Path, Base: r.Base}
+			}
+			builder := func(ctx context.Context, branch string, prs []gh.PullRequest) deploy.Report {
+				return deploy.Prepare(ctx, deploy.ExecRunner{}, branch, prs, targets)
+			}
+			model = model.WithDeploy(builder, cfg.DeployBranchPattern)
+		}
 		if err := runTUI(model); err != nil {
 			return fmt.Errorf("run tui: %w", err)
 		}

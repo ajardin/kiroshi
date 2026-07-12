@@ -277,6 +277,44 @@ search = "q"`)
 	}
 }
 
+func TestRun_ReposConfigEnablesDeploy(t *testing.T) {
+	t.Parallel()
+
+	withRepos := writeConfig(t, `github_token = "t"
+search = "s"
+
+[[repos]]
+name = "acme/api"
+path = "/src/api"
+base = "master"`)
+	without := writeConfig(t, `github_token = "t"
+search = "s"`)
+
+	deployEnabled := func(cfgPath string) bool {
+		t.Helper()
+		var enabled bool
+		runner := func(m tui.Model) error {
+			enabled = m.DeployEnabled()
+			return nil
+		}
+		var stdout, stderr bytes.Buffer
+		err := Run(t.Context(), []string{"-config", cfgPath}, &stdout, &stderr,
+			WithGitHubClient(fakeClient{user: gh.User{Login: "ajardin"}}),
+			WithTUIRunner(runner))
+		if err != nil {
+			t.Fatalf("unexpected err: %v (stderr=%q)", err, stderr.String())
+		}
+		return enabled
+	}
+
+	if !deployEnabled(withRepos) {
+		t.Error("deploy must be wired when [[repos]] is configured")
+	}
+	if deployEnabled(without) {
+		t.Error("deploy must stay off without [[repos]]")
+	}
+}
+
 func TestRun_GitHubErrorPreservesInvalidToken(t *testing.T) {
 	t.Parallel()
 
