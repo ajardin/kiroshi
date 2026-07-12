@@ -15,6 +15,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/ajardin/kiroshi/internal/deploy"
 	"github.com/ajardin/kiroshi/internal/gh"
 )
 
@@ -36,6 +37,13 @@ type Opener func(url string) error
 
 // Refresher re-fetches the pull requests displayed in the dashboard.
 type Refresher func(ctx context.Context) ([]gh.PullRequest, error)
+
+// Builder prepares local deployment branches for the selected PRs and reports
+// the outcome. Degradation lives inside the Report (per-repo Err, per-PR
+// skips), so there is no error return — mirroring how enrichment failures
+// live on the PullRequest. The CLI bakes the clone mapping in, so the model
+// never touches git or config.
+type Builder func(ctx context.Context, branch string, prs []gh.PullRequest) deploy.Report
 
 // Profile is a named search the dashboard can switch to with the `p` key.
 // Each profile carries its own Refresher closure (the CLI bakes the query in),

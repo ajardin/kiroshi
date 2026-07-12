@@ -148,9 +148,23 @@ func (m Model) renderRow(pr gh.PullRequest, selected bool, cols rowCols) string 
 	age := m.now.Sub(pr.CreatedAt)
 	line2Body += sep + st(ageColor(age), false).Render(humanAgo(age))
 
+	// Deployment-selection marker: a one-cell slot between the bar and the
+	// arrow, rendered only when the feature is wired so rows don't shift for
+	// users without [[repos]]. ASCII (*) — no width-drift risk — in yellow, a
+	// reuse of the "pending action by the viewer" accent, not a new one.
+	marker, indent := "", ""
+	if m.build != nil {
+		markGlyph := " "
+		if m.selected[pr.URL] {
+			markGlyph = "*"
+		}
+		marker = st(colYellow, true).Render(markGlyph) + sp
+		indent = sp + sp
+	}
+
 	// Compose " ┃ <body>" / " ┃   <body>" (line 2 indents to align with title).
-	line1 := sp + bar + sp + line1Body
-	line2 := sp + bar + sp + sp + sp + line2Body
+	line1 := sp + bar + sp + marker + line1Body
+	line2 := sp + bar + sp + indent + sp + sp + line2Body
 
 	pad := st(colMuted, false)
 	line1 = fitRowToWidth(line1, m.width, pad)

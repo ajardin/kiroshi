@@ -88,7 +88,14 @@ func (m Model) helpView() string {
 		{"s", "cycle sort (updated / oldest / newest)"},
 		{"a", "cycle approval filter"},
 	}
-	// Like the footer, only advertise `p` when there is something to cycle.
+	// Like the footer, only advertise the deployment keys when the feature is
+	// wired ([[repos]] configured) and `p` when there is something to cycle.
+	if m.build != nil {
+		bindings = append(bindings,
+			binding{"space", "select PR for deployment"},
+			binding{"b", "prepare deployment branches"},
+		)
+	}
 	if len(m.profiles) > 1 {
 		bindings = append(bindings, binding{"p", "cycle search profile"})
 	}

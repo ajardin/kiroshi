@@ -10,6 +10,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/ajardin/kiroshi/internal/deploy"
 	"github.com/ajardin/kiroshi/internal/gh"
 )
 
@@ -104,6 +105,24 @@ type Model struct {
 	// for free.
 	profiles []Profile
 	profile  int
+	// selected marks the PRs picked (by URL, the TUI's per-PR identity) for
+	// deployment-branch preparation; the `space` key toggles membership.
+	// Pruned to surviving URLs on every rescan, cleared on a profile switch
+	// and on report dismissal.
+	selected map[string]bool
+	// build prepares the deployment branches; nil disables the whole feature
+	// (no marker column, space/b are no-ops, no footer/help hints).
+	build         Builder
+	branchPattern string
+	// branchInput and branchErr back the modeBranchPrompt text input (the
+	// filter's hand-rolled pattern; no bubbles/textinput).
+	branchInput string
+	branchErr   string
+	// building mirrors refreshing for the branch preparation: an in-flight
+	// flag, deliberately not a uiMode — it overlays a status-line spinner
+	// without changing what is on screen.
+	building bool
+	report   *deploy.Report
 }
 
 // uiMode enumerates the mutually-exclusive UI modes. handleKey and View both
@@ -128,6 +147,12 @@ const (
 	modeHelp
 	// modeDetail replaces the dashboard with the selected PR's detail overlay.
 	modeDetail
+	// modeBranchPrompt routes typed keys into the deployment-branch-name
+	// buffer; like modeFilter, the dashboard stays visible with the prompt in
+	// the status line.
+	modeBranchPrompt
+	// modeReport replaces the dashboard with the deployment-branch report.
+	modeReport
 )
 
 // NewModel builds a Model populated with the given pull requests. Pass
@@ -196,6 +221,22 @@ func (m Model) WithProfiles(profiles []Profile, active int) Model {
 		m.refresh = profiles[active].Refresh
 	}
 	return m
+}
+
+// WithDeploy returns a copy of the model with deployment-branch preparation
+// enabled: build runs the merges, pattern seeds the branch-name prompt (its
+// {date} token expands at prompt time). A chainable setter like WithNotify:
+// only the CLI wires it, and only when [[repos]] is configured.
+func (m Model) WithDeploy(build Builder, pattern string) Model {
+	m.build = build
+	m.branchPattern = pattern
+	return m
+}
+
+// DeployEnabled reports whether deployment-branch preparation is wired.
+// Exported as a test seam for the CLI wiring, like ActiveProfile.
+func (m Model) DeployEnabled() bool {
+	return m.build != nil
 }
 
 // ActiveProfile returns the active search profile's name, or "" when no
@@ -268,6 +309,11 @@ type (
 	// spinMsg advances the rescan spinner. The ticker is armed only while a
 	// rescan is in flight and lets itself die once it stops (see Update).
 	spinMsg time.Time
+	// buildDoneMsg carries the outcome of a deployment-branch preparation; the
+	// handler opens the report overlay.
+	buildDoneMsg struct {
+		report deploy.Report
+	}
 )
 
 // spinFrames is the braille spinner cycle. Each glyph is exactly one cell wide,
@@ -282,6 +328,11 @@ const spinInterval = 120 * time.Millisecond
 // built on context.Background(), not the CLI's signal context: ctrl+c tears
 // the whole program down anyway.
 const rescanTimeout = 30 * time.Second
+
+// prepareTimeout bounds one deployment-branch preparation: a fetch per repo
+// over a possibly slow link plus the merges, so it sits far above
+// rescanTimeout. Same context.Background() rationale.
+const prepareTimeout = 5 * time.Minute
 
 func tickCmd() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
@@ -321,12 +372,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tickCmd()
 
 	case spinMsg:
-		// Self-terminating: stop re-arming once the rescan / initial load finishes.
-		if !m.refreshing && m.mode != modeLoading {
+		// Self-terminating: stop re-arming once the rescan / initial load /
+		// branch preparation finishes.
+		if !m.refreshing && !m.building && m.mode != modeLoading {
 			return m, nil
 		}
 		m.spinFrame++
 		return m, spinnerCmd()
+
+	case buildDoneMsg:
+		m.building = false
+		rep := msg.report
+		m.report = &rep
+		m.mode = modeReport
+		return m, nil
 
 	case statusMsg:
 		m.status = msg.text
@@ -374,6 +433,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.prs = msg.prs
 		m.lastScan = msg.at
+		// Prune the deployment selection to PRs that survived the rescan, so
+		// the selected count stays honest and buildCmd can never pick up a PR
+		// that left the search results.
+		if len(m.selected) > 0 {
+			keep := map[string]bool{}
+			for _, pr := range msg.prs {
+				if m.selected[pr.URL] {
+					keep[pr.URL] = true
+				}
+			}
+			m.selected = keep
+		}
 		partial := countPartial(msg.prs)
 		m.githubHealthy = partial == 0
 		m.jiraHealthy = !anyJiraFailure(msg.prs)
@@ -401,7 +472,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// isn't already in flight (a slow scan that outlasts the interval simply
 		// skips a beat rather than stacking). Mirrors the manual "r" path.
 		next := autoRefreshCmd(m.refreshInterval)
-		if m.refresh == nil || m.refreshing || m.mode == modeLoading {
+		if m.refresh == nil || m.refreshing || m.building || m.mode == modeLoading {
 			return m, next
 		}
 		m.refreshing = true
@@ -421,6 +492,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.mode == modeFilter && msg.Content != "" {
 			m.filter += msg.Content
 			m.cursor, m.offset = 0, 0
+		}
+		if m.mode == modeBranchPrompt && msg.Content != "" {
+			// Branch names can't hold whitespace; strip it so a pasted
+			// "deploy/x " doesn't fail validation invisibly.
+			m.branchInput += strings.Join(strings.Fields(msg.Content), "")
+			m.branchErr = ""
 		}
 		return m, nil
 
@@ -445,6 +522,10 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		return m.handleHelpKey(msg)
 	case modeDetail:
 		return m.handleDetailKey(msg)
+	case modeBranchPrompt:
+		return m.handleBranchPromptKey(msg)
+	case modeReport:
+		return m.handleReportKey(msg)
 	}
 	switch msg.String() {
 	case "q", "esc", "ctrl+c":
@@ -474,8 +555,12 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		return m.openSelected()
 	case "y":
 		return m.yankSelected()
+	case "space":
+		return m.toggleSelected(), nil
+	case "b":
+		return m.startBranchPrompt()
 	case "r":
-		if m.refresh == nil || m.refreshing {
+		if m.refresh == nil || m.refreshing || m.building {
 			return m, nil
 		}
 		m.refreshing = true
@@ -511,12 +596,15 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 // profile's results landing after the switch would be labelled with the new
 // profile's name.
 func (m Model) cycleProfile() (Model, tea.Cmd) {
-	if len(m.profiles) < 2 || m.refreshing {
+	if len(m.profiles) < 2 || m.refreshing || m.building {
 		return m, nil
 	}
 	m.profile = (m.profile + 1) % len(m.profiles)
 	m.refresh = m.profiles[m.profile].Refresh
 	m.filter = ""
+	// The deployment selection resets with the result set (same rationale as
+	// the filter): the new profile's PRs are a different query.
+	m.selected = nil
 	m.cursor, m.offset = 0, 0
 	m.refreshing = true
 	m.status = ""
@@ -619,6 +707,101 @@ func (m Model) handleDetailKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		return m.yankSelected()
 	}
 	m.mode = modeList
+	return m, nil
+}
+
+// toggleSelected flips the deployment-selection membership of the PR under
+// the cursor. A no-op when the feature is off or the visible set is empty.
+func (m Model) toggleSelected() Model {
+	visible := m.visiblePRs()
+	if m.build == nil || m.cursor >= len(visible) {
+		return m
+	}
+	url := visible[m.cursor].URL
+	if m.selected == nil {
+		m.selected = map[string]bool{}
+	}
+	if m.selected[url] {
+		delete(m.selected, url)
+	} else {
+		m.selected[url] = true
+	}
+	return m
+}
+
+// startBranchPrompt opens the deployment-branch-name prompt seeded with the
+// pattern-expanded default. Blocked while a rescan or another preparation is
+// in flight — the selection snapshot must not race a result-set swap.
+func (m Model) startBranchPrompt() (Model, tea.Cmd) {
+	if m.build == nil || m.building || m.refreshing {
+		return m, nil
+	}
+	if len(m.selected) == 0 {
+		return m, warn("no pull requests selected")
+	}
+	m.mode = modeBranchPrompt
+	m.branchInput = deploy.BranchName(m.branchPattern, m.now)
+	m.branchErr = ""
+	m.status = ""
+	return m, nil
+}
+
+// handleBranchPromptKey drives the branch-name prompt, mirroring
+// handleFilterKey's hand-rolled input. enter validates before launching: an
+// invalid name keeps the prompt open with an inline error (the wizard's
+// min-reviews pattern) instead of failing later inside git.
+func (m Model) handleBranchPromptKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc":
+		// Cancel the prompt but keep the selection: backing out of the name
+		// question is not backing out of the picked PRs.
+		m.mode = modeList
+		m.branchInput = ""
+		m.branchErr = ""
+		return m, nil
+	case "enter":
+		name := strings.TrimSpace(m.branchInput)
+		if err := deploy.ValidateBranchName(name); err != nil {
+			m.branchErr = err.Error()
+			return m, nil
+		}
+		m.mode = modeList
+		m.branchInput = ""
+		m.branchErr = ""
+		m.building = true
+		m.status = ""
+		m.statusErr = false
+		m.spinFrame = 0
+		return m, tea.Batch(m.buildCmd(name), spinnerCmd())
+	case "backspace":
+		if len(m.branchInput) > 0 {
+			m.branchInput = trimLastRune(m.branchInput)
+			m.branchErr = ""
+		}
+		return m, nil
+	default:
+		// Key.Text carries printable input only; the bare space is excluded
+		// because branch names cannot contain whitespace.
+		if msg.Text != "" && msg.Text != " " {
+			m.branchInput += msg.Text
+			m.branchErr = ""
+		}
+		return m, nil
+	}
+}
+
+// handleReportKey dismisses the deployment report on any key (helpView's
+// pattern) and clears the selection — the job is done, a leftover selection
+// would silently feed the next preparation. ctrl+c still quits.
+func (m Model) handleReportKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
+	if msg.String() == "ctrl+c" {
+		return m, tea.Quit
+	}
+	m.mode = modeList
+	m.report = nil
+	m.selected = nil
 	return m, nil
 }
 
@@ -727,6 +910,32 @@ func (m Model) rescanCmd() tea.Cmd {
 		prs, err := refresh(ctx)
 		return rescanMsg{prs: prs, err: err, at: time.Now()}
 	}
+}
+
+// buildCmd snapshots the selected PRs and runs the deployment-branch
+// preparation off the Update goroutine, mirroring rescanCmd. The snapshot
+// reads m.prs (not visiblePRs): the selection may span panes and filters.
+func (m Model) buildCmd(branch string) tea.Cmd {
+	build := m.build
+	prs := m.selectedPRs()
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), prepareTimeout)
+		defer cancel()
+		return buildDoneMsg{report: build(ctx, branch, prs)}
+	}
+}
+
+// selectedPRs resolves the selection map back to PullRequests, in m.prs
+// order. Stale URLs (a PR gone since selection) simply don't resolve —
+// rescanMsg prunes them anyway.
+func (m Model) selectedPRs() []gh.PullRequest {
+	var out []gh.PullRequest
+	for _, pr := range m.prs {
+		if m.selected[pr.URL] {
+			out = append(out, pr)
+		}
+	}
+	return out
 }
 
 // panePRs partitions the fetched set by authorship for the active pane: the

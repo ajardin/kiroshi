@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/ajardin/kiroshi/internal/deploy"
 	"github.com/ajardin/kiroshi/internal/gh"
 	"github.com/ajardin/kiroshi/internal/jira"
 )
@@ -2147,5 +2148,274 @@ func TestModel_ProfileSwitchScanFailureKeepsUIUsable(t *testing.T) {
 	// Same semantics as a failed manual rescan: the previous results stay up.
 	if len(got.prs) != 2 {
 		t.Errorf("prs after failed switch = %d, want the previous set kept", len(got.prs))
+	}
+}
+
+// --- Deployment branches -----------------------------------------------------
+
+// deployFixture wires a deploy-enabled model whose Builder records the branch
+// and PRs it received and reports everything as merged under ajardin/kiroshi.
+func deployFixture(t *testing.T, gotBranch *string, gotPRs *[]gh.PullRequest) Model {
+	t.Helper()
+	build := func(_ context.Context, branch string, prs []gh.PullRequest) deploy.Report {
+		if gotBranch != nil {
+			*gotBranch = branch
+		}
+		if gotPRs != nil {
+			*gotPRs = prs
+		}
+		return deploy.Report{Branch: branch, Repos: []deploy.RepoResult{{
+			Name: "ajardin/kiroshi", Branch: branch, Merged: prs,
+		}}}
+	}
+	return newTestModel(t, nil, nil).WithDeploy(build, "deploy/{date}")
+}
+
+func pressSpace(t *testing.T, m Model) Model {
+	t.Helper()
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
+	return updated.(Model)
+}
+
+func TestModel_SpaceTogglesDeploySelection(t *testing.T) {
+	t.Parallel()
+
+	m := deployFixture(t, nil, nil)
+	m = pressSpace(t, m)
+	if len(m.selected) != 1 {
+		t.Fatalf("selected = %d, want 1 after first toggle", len(m.selected))
+	}
+	if !strings.Contains(m.View().Content, "1 selected") {
+		t.Errorf("section header missing the selection tally\n%s", m.View().Content)
+	}
+	if !strings.Contains(m.View().Content, "*") {
+		t.Errorf("selected row missing the * marker\n%s", m.View().Content)
+	}
+
+	m = pressSpace(t, m)
+	if len(m.selected) != 0 {
+		t.Errorf("selected = %d, want 0 after second toggle", len(m.selected))
+	}
+}
+
+func TestModel_SpaceNoopWhenDeployDisabled(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(t, nil, nil)
+	m = pressSpace(t, m)
+	if len(m.selected) != 0 {
+		t.Errorf("selected = %d, want 0 when deploy is not wired", len(m.selected))
+	}
+	if strings.Contains(m.View().Content, "selected") {
+		t.Errorf("selection tally must not render when deploy is not wired\n%s", m.View().Content)
+	}
+}
+
+func TestModel_BKeyWarnsOnEmptySelection(t *testing.T) {
+	t.Parallel()
+
+	m := deployFixture(t, nil, nil)
+	updated, cmd := m.Update(tea.KeyPressMsg{Text: "b"})
+	got := applyCmd(t, updated.(Model), cmd)
+	if got.mode != modeList {
+		t.Errorf("mode = %v, want modeList (no prompt without a selection)", got.mode)
+	}
+	if !got.statusErr || !strings.Contains(got.status, "no pull requests selected") {
+		t.Errorf("status = %q (err=%v), want the empty-selection warning", got.status, got.statusErr)
+	}
+}
+
+func TestModel_BKeyOpensPromptWithPatternDefault(t *testing.T) {
+	t.Parallel()
+
+	m := pressSpace(t, deployFixture(t, nil, nil))
+	updated, _ := m.Update(tea.KeyPressMsg{Text: "b"})
+	got := updated.(Model)
+	if got.mode != modeBranchPrompt {
+		t.Fatalf("mode = %v, want modeBranchPrompt", got.mode)
+	}
+	want := "deploy/" + got.now.Format("2006-01-02")
+	if got.branchInput != want {
+		t.Errorf("branchInput = %q, want pattern-expanded %q", got.branchInput, want)
+	}
+	if !strings.Contains(got.View().Content, "branch:") {
+		t.Errorf("status line missing the branch prompt\n%s", got.View().Content)
+	}
+}
+
+func TestModel_BranchPromptEditing(t *testing.T) {
+	t.Parallel()
+
+	m := pressSpace(t, deployFixture(t, nil, nil))
+	updated, _ := m.Update(tea.KeyPressMsg{Text: "b"})
+	m = updated.(Model)
+	before := m.branchInput
+
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
+	m = updated.(Model)
+	if m.branchInput != before+"x" {
+		t.Errorf("branchInput = %q, want %q", m.branchInput, before+"x")
+	}
+
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
+	m = updated.(Model)
+	if m.branchInput != before {
+		t.Errorf("branchInput after backspace = %q, want %q", m.branchInput, before)
+	}
+
+	updated, _ = m.Update(tea.PasteMsg{Content: " extra bits "})
+	m = updated.(Model)
+	if m.branchInput != before+"extrabits" {
+		t.Errorf("pasted whitespace must be stripped, got %q", m.branchInput)
+	}
+
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	m = updated.(Model)
+	if m.mode != modeList {
+		t.Errorf("esc should return to the list, mode = %v", m.mode)
+	}
+	if len(m.selected) != 1 {
+		t.Error("esc must keep the selection (cancelling the name, not the picks)")
+	}
+	if m.building {
+		t.Error("esc must not launch a build")
+	}
+}
+
+func TestModel_BranchPromptRejectsInvalidName(t *testing.T) {
+	t.Parallel()
+
+	m := pressSpace(t, deployFixture(t, nil, nil))
+	updated, _ := m.Update(tea.KeyPressMsg{Text: "b"})
+	m = updated.(Model)
+	// Append ".." to the valid default: now invalid.
+	for _, r := range ".." {
+		updated, _ = m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
+		m = updated.(Model)
+	}
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(Model)
+	if cmd != nil {
+		t.Error("invalid name must not launch a build cmd")
+	}
+	if m.mode != modeBranchPrompt || m.building {
+		t.Errorf("invalid name must keep the prompt open (mode=%v building=%v)", m.mode, m.building)
+	}
+	if m.branchErr == "" || !strings.Contains(m.View().Content, m.branchErr) {
+		t.Errorf("inline validation error missing (branchErr=%q)\n%s", m.branchErr, m.View().Content)
+	}
+}
+
+func TestModel_PrepareFlowEndsInReport(t *testing.T) {
+	t.Parallel()
+
+	var gotBranch string
+	var gotPRs []gh.PullRequest
+	m := pressSpace(t, deployFixture(t, &gotBranch, &gotPRs))
+	updated, _ := m.Update(tea.KeyPressMsg{Text: "b"})
+	m = updated.(Model)
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(Model)
+	if !m.building {
+		t.Fatal("enter with a valid name must set building")
+	}
+	m = applyCmd(t, m, cmd)
+
+	if gotBranch != "deploy/"+m.now.Format("2006-01-02") {
+		t.Errorf("builder got branch %q", gotBranch)
+	}
+	// Default sort shows PR #43 first; space selected it.
+	if len(gotPRs) != 1 || gotPRs[0].Number != 43 {
+		t.Errorf("builder got PRs %+v, want just #43", gotPRs)
+	}
+	if m.building {
+		t.Error("building must clear when the report lands")
+	}
+	if m.mode != modeReport {
+		t.Fatalf("mode = %v, want modeReport", m.mode)
+	}
+	view := m.View().Content
+	for _, want := range []string{"DEPLOYMENT BRANCHES", "ajardin/kiroshi", "merged (1)", "#43"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("report missing %q\n%s", want, view)
+		}
+	}
+
+	// Any key dismisses and clears the selection.
+	updated, _ = m.Update(tea.KeyPressMsg{Text: "x"})
+	m = updated.(Model)
+	if m.mode != modeList || m.report != nil || len(m.selected) != 0 {
+		t.Errorf("dismissal state: mode=%v report=%v selected=%d", m.mode, m.report, len(m.selected))
+	}
+}
+
+func TestModel_ReportRendersSkipsAndErrors(t *testing.T) {
+	t.Parallel()
+
+	m := deployFixture(t, nil, nil)
+	m.report = &deploy.Report{Branch: "deploy/x", Repos: []deploy.RepoResult{
+		{Name: "acme/api", Branch: "deploy/x",
+			Merged:  []gh.PullRequest{{Number: 1, Title: "Clean"}},
+			Skipped: []deploy.Skip{{PR: gh.PullRequest{Number: 2, Title: "Conflicting"}, Reason: "CONFLICT (content): Merge conflict in f"}}},
+		{Name: "acme/web", Branch: "deploy/x", Err: errors.New("working tree has local changes")},
+	}}
+	m.mode = modeReport
+
+	view := m.View().Content
+	for _, want := range []string{"deploy/x", "acme/api", "merged (1)", "skipped (1)", "CONFLICT", "acme/web", "error: working tree has local changes"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("report missing %q\n%s", want, view)
+		}
+	}
+}
+
+func TestModel_RescanPrunesDeploySelection(t *testing.T) {
+	t.Parallel()
+
+	m := pressSpace(t, deployFixture(t, nil, nil))                                           // selects PR #43
+	updated, _ := m.Update(rescanMsg{prs: []gh.PullRequest{samplePRs()[0]}, at: time.Now()}) // only #42 survives
+	got := updated.(Model)
+	if len(got.selected) != 0 {
+		t.Errorf("selected = %d, want 0 after the selected PR left the results", len(got.selected))
+	}
+}
+
+func TestModel_BuildingBlocksRescanAndRepeatLaunch(t *testing.T) {
+	t.Parallel()
+
+	m := pressSpace(t, deployFixture(t, nil, nil))
+	m.building = true
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Text: "r"})
+	got := updated.(Model)
+	if got.refreshing || cmd != nil {
+		t.Error("r must be a no-op while a preparation is in flight")
+	}
+
+	updated, cmd = m.Update(tea.KeyPressMsg{Text: "b"})
+	got = updated.(Model)
+	if got.mode != modeList || cmd != nil {
+		t.Error("b must be a no-op while a preparation is in flight")
+	}
+}
+
+func TestModel_DeployHintsOnlyWhenWired(t *testing.T) {
+	t.Parallel()
+
+	enabled := deployFixture(t, nil, nil)
+	if !enabled.DeployEnabled() {
+		t.Fatal("DeployEnabled() = false on a wired model")
+	}
+	view := enabled.View().Content
+	if !strings.Contains(view, "deploy") {
+		t.Errorf("footer missing the deploy hint\n%s", view)
+	}
+
+	disabled := newTestModel(t, nil, nil)
+	if disabled.DeployEnabled() {
+		t.Fatal("DeployEnabled() = true on an unwired model")
+	}
+	if strings.Contains(disabled.View().Content, "[b] deploy") {
+		t.Errorf("footer must not advertise deploy when not wired\n%s", disabled.View().Content)
 	}
 }
