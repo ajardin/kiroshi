@@ -310,7 +310,7 @@ func TestClient_SearchPullRequests(t *testing.T) {
 					  {"user":{"login":"erin"},"state":"COMMENTED","submitted_at":"2026-04-20T13:00:00Z"}
 					]`)
 				case "/repos/ajardin/repo-a/pulls/123":
-					fmt.Fprint(w, `{"number":123,"head":{"sha":"deadbeefcafe","ref":"feature/x"},"base":{"ref":"main"},"additions":42,"deletions":7,"changed_files":5,"commits":3,"comments":8,"review_comments":2}`)
+					fmt.Fprint(w, `{"number":123,"head":{"sha":"deadbeefcafe","ref":"feature/x","repo":{"full_name":"ajardin/repo-a"}},"base":{"ref":"main"},"additions":42,"deletions":7,"changed_files":5,"commits":3,"comments":8,"review_comments":2}`)
 				case "/repos/ajardin/repo-a/commits/deadbeefcafe/check-runs":
 					fmt.Fprint(w, `{
 					  "total_count": 2,
@@ -707,6 +707,70 @@ func TestClient_SearchPullRequests_UnauthorizedDuringEnrichment(t *testing.T) {
 	_, err := c.SearchPullRequests(t.Context(), "org:ajardin is:pr")
 	if !errors.Is(err, ErrInvalidToken) {
 		t.Errorf("err = %v, want errors.Is(ErrInvalidToken)", err)
+	}
+}
+
+func TestClient_SearchPullRequests_ForkDetection(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		headRepo string // raw JSON for head.repo, empty = field omitted
+		want     bool
+	}{
+		{"same repo is not a fork", `{"full_name":"ajardin/repo-x"}`, false},
+		{"case difference is not a fork", `{"full_name":"Ajardin/Repo-X"}`, false},
+		{"different repo is a fork", `{"full_name":"stranger/repo-x"}`, true},
+		{"missing head repo (deleted fork) counts as fork", "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			head := `"sha":"sha-1","ref":"feature/x"`
+			if tt.headRepo != "" {
+				head += `,"repo":` + tt.headRepo
+			}
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/search/issues":
+					fmt.Fprint(w, `{"total_count":1,"items":[{
+						"number":1,"title":"PR 1","user":{"login":"alice"},
+						"html_url":"https://github.com/ajardin/repo-x/pull/1",
+						"repository_url":"https://api.github.com/repos/ajardin/repo-x",
+						"updated_at":"2026-04-20T10:00:00Z",
+						"pull_request":{"url":"https://api.github.com/repos/ajardin/repo-x/pulls/1"}
+					}]}`)
+				case "/repos/ajardin/repo-x/pulls/1/requested_reviewers":
+					fmt.Fprint(w, `{"users":[],"teams":[]}`)
+				case "/repos/ajardin/repo-x/pulls/1/reviews":
+					fmt.Fprint(w, `[]`)
+				case "/repos/ajardin/repo-x/pulls/1":
+					fmt.Fprintf(w, `{"number":1,"head":{%s}}`, head)
+				case "/repos/ajardin/repo-x/commits/sha-1/check-runs":
+					fmt.Fprint(w, `{"total_count":0,"check_runs":[]}`)
+				case "/graphql":
+					fmt.Fprint(w, `{"data":{}}`)
+				default:
+					t.Errorf("unexpected path %q", r.URL.Path)
+					http.NotFound(w, r)
+				}
+			})
+			srv := httptest.NewServer(handler)
+			t.Cleanup(srv.Close)
+
+			c := newClient("test-token", srv.URL+"/", nil)
+			prs, err := c.SearchPullRequests(t.Context(), "org:ajardin is:pr")
+			if err != nil {
+				t.Fatalf("unexpected err: %v", err)
+			}
+			if len(prs) != 1 {
+				t.Fatalf("got %d PRs, want 1", len(prs))
+			}
+			if prs[0].HeadIsFork != tt.want {
+				t.Errorf("HeadIsFork = %v, want %v", prs[0].HeadIsFork, tt.want)
+			}
+		})
 	}
 }
 
