@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/ajardin/kiroshi/internal/jira"
 )
 
 // envToken is the environment variable name that overrides the token stored
@@ -71,6 +73,12 @@ type Config struct {
 	JiraBaseURL string
 	JiraEmail   string
 	JiraToken   string
+	// JiraProjectKeys, when non-empty, restricts Jira issue-key extraction to
+	// these project keys. The key regex alone also matches everyday strings
+	// (UTF-8, SHA-256), each costing a doomed lookup per scan; listing your
+	// projects suppresses them. Empty means "accept any key". Hand-edit only
+	// (the wizard never asks).
+	JiraProjectKeys []string
 	// Profiles holds the optional extra search profiles from [[profiles]].
 	// Search itself is always the implicit "default" profile; use AllProfiles
 	// for the full switchable list.
@@ -96,6 +104,7 @@ func (c *Config) LogValue() slog.Value {
 		slog.String("jira_base_url", c.JiraBaseURL),
 		slog.String("jira_email", c.JiraEmail),
 		slog.String("jira_token", "<redacted>"),
+		slog.Any("jira_project_keys", c.JiraProjectKeys),
 		slog.Int("profiles", len(c.Profiles)),
 	)
 }
@@ -103,14 +112,15 @@ func (c *Config) LogValue() slog.Value {
 // fileConfig mirrors the TOML schema. MinReviews is a pointer so we can tell
 // "absent" (apply DefaultMinReviews) from "explicitly set to 0".
 type fileConfig struct {
-	GitHubToken     string `toml:"github_token"`
-	Search          string `toml:"search"`
-	MinReviews      *int   `toml:"min_reviews"`
-	RefreshInterval string `toml:"refresh_interval"`
-	Notify          bool   `toml:"notify"`
-	JiraBaseURL     string `toml:"jira_base_url"`
-	JiraEmail       string `toml:"jira_email"`
-	JiraToken       string `toml:"jira_token"`
+	GitHubToken     string   `toml:"github_token"`
+	Search          string   `toml:"search"`
+	MinReviews      *int     `toml:"min_reviews"`
+	RefreshInterval string   `toml:"refresh_interval"`
+	Notify          bool     `toml:"notify"`
+	JiraBaseURL     string   `toml:"jira_base_url"`
+	JiraEmail       string   `toml:"jira_email"`
+	JiraToken       string   `toml:"jira_token"`
+	JiraProjectKeys []string `toml:"jira_project_keys"`
 	// Profiles is last on purpose: TOML array-of-tables must be encoded after
 	// the plain keys, or Save would fold them into the first [[profiles]] block.
 	Profiles []fileProfile `toml:"profiles"`
@@ -172,6 +182,9 @@ func Load(path string) (*Config, error) {
 		JiraBaseURL:     strings.TrimSpace(fc.JiraBaseURL),
 		JiraEmail:       strings.TrimSpace(fc.JiraEmail),
 		JiraToken:       jiraToken,
+	}
+	for _, k := range fc.JiraProjectKeys {
+		cfg.JiraProjectKeys = append(cfg.JiraProjectKeys, strings.ToUpper(strings.TrimSpace(k)))
 	}
 	for _, p := range fc.Profiles {
 		cfg.Profiles = append(cfg.Profiles, Profile{
@@ -246,6 +259,7 @@ func Save(path string, c *Config) error {
 		JiraBaseURL:     c.JiraBaseURL,
 		JiraEmail:       c.JiraEmail,
 		JiraToken:       c.JiraToken,
+		JiraProjectKeys: c.JiraProjectKeys,
 	}
 	for _, p := range c.Profiles {
 		fc.Profiles = append(fc.Profiles, fileProfile(p))
@@ -321,7 +335,17 @@ func (c *Config) validateProfiles() error {
 // any of base URL, email or token is set, all three must be (Jira Cloud Basic
 // auth needs the email). Leaving all three empty disables Jira entirely.
 func (c *Config) validateJira() error {
+	for i, k := range c.JiraProjectKeys {
+		if !jira.ValidProjectKey(k) {
+			return fmt.Errorf("jira_project_keys[%d]: %q is not a project key (expected e.g. PROJ, not a full issue key)", i, k)
+		}
+	}
 	if c.JiraBaseURL == "" && c.JiraEmail == "" && c.JiraToken == "" {
+		// Loud rather than inert: the list only has an effect through the Jira
+		// enricher, which never runs without the trio.
+		if len(c.JiraProjectKeys) > 0 {
+			return fmt.Errorf("jira_project_keys is set but Jira is not configured; add the jira_base_url/jira_email/jira_token trio or drop the key list")
+		}
 		return nil
 	}
 	var missing []string

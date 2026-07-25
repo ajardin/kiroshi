@@ -506,6 +506,60 @@ func TestRun_InitWithExistingConfigReconfigures(t *testing.T) {
 	}
 }
 
+// jira_project_keys is hand-edit only, so a reconfigure must carry it over —
+// but only while Jira survives: the key list is invalid without the trio, so
+// carrying it past a removal would write a config that no longer loads.
+func TestRun_InitJiraProjectKeysFollowJira(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("JIRA_API_TOKEN", "")
+
+	const existing = `github_token = "keep-me"
+search = "is:pr"
+jira_base_url = "https://acme.atlassian.net"
+jira_email = "me@acme.com"
+jira_token = "jira-tok"
+jira_project_keys = ["PROJ"]
+`
+
+	reconfigure := func(t *testing.T, res tui.WizardResult) *config.Config {
+		t.Helper()
+		cfgPath := filepath.Join(t.TempDir(), "config.toml")
+		if err := os.WriteFile(cfgPath, []byte(existing), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr bytes.Buffer
+		err := Run(t.Context(), []string{"-init", "-config", cfgPath}, &stdout, &stderr,
+			WithWizardRunner(func(tui.WizardModel) (tui.WizardResult, error) { return res, nil }))
+		if err != nil {
+			t.Fatalf("unexpected err: %v (stderr=%q)", err, stderr.String())
+		}
+		cfg, err := config.Load(cfgPath)
+		if err != nil {
+			t.Fatalf("rewritten config does not load: %v", err)
+		}
+		return cfg
+	}
+
+	t.Run("kept when jira survives", func(t *testing.T) {
+		cfg := reconfigure(t, tui.WizardResult{
+			Completed: true, Token: "keep-me", Search: "is:pr", MinReviews: 1,
+			JiraBaseURL: "https://acme.atlassian.net", JiraEmail: "me@acme.com", JiraToken: "jira-tok",
+		})
+		if len(cfg.JiraProjectKeys) != 1 || cfg.JiraProjectKeys[0] != "PROJ" {
+			t.Errorf("jira project keys = %v, want [PROJ]", cfg.JiraProjectKeys)
+		}
+	})
+
+	t.Run("dropped when the wizard removes jira", func(t *testing.T) {
+		cfg := reconfigure(t, tui.WizardResult{
+			Completed: true, Token: "keep-me", Search: "is:pr", MinReviews: 1,
+		})
+		if len(cfg.JiraProjectKeys) != 0 {
+			t.Errorf("jira project keys = %v, want none once Jira is removed", cfg.JiraProjectKeys)
+		}
+	})
+}
+
 func TestRun_InitCorruptConfigStillRefuses(t *testing.T) {
 	t.Parallel()
 

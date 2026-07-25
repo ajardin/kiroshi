@@ -172,6 +172,9 @@ type API interface {
 type Client struct {
 	gh   *github.Client
 	jira jira.Lookup
+	// jiraProjects, when non-empty, restricts issue-key extraction to those
+	// project keys; see jira.ExtractKey.
+	jiraProjects []string
 
 	// mu guards cache: enrichment runs through an errgroup worker pool, so
 	// concurrent reads and writes would race without it.
@@ -262,14 +265,15 @@ func New(token string) *Client {
 
 // NewWithJira returns a Client that also resolves Jira issue status for each
 // PR. Pass a nil jiraClient to disable Jira enrichment (equivalent to New).
-func NewWithJira(token string, jiraClient jira.Lookup) *Client {
-	return newClient(token, "", jiraClient)
+// projectKeys, when given, restricts issue-key extraction to those projects.
+func NewWithJira(token string, jiraClient jira.Lookup, projectKeys ...string) *Client {
+	return newClient(token, "", jiraClient, projectKeys...)
 }
 
 // newClient is the test-friendly constructor. An empty baseURL targets
 // api.github.com; anything else is used verbatim and lets tests point the
 // client at an httptest.Server. A nil jiraClient disables Jira enrichment.
-func newClient(token, baseURL string, jiraClient jira.Lookup) *Client {
+func newClient(token, baseURL string, jiraClient jira.Lookup, projectKeys ...string) *Client {
 	httpClient := &http.Client{
 		Timeout:   HTTPTimeout,
 		Transport: &advancedSearchTransport{base: http.DefaultTransport},
@@ -285,7 +289,7 @@ func newClient(token, baseURL string, jiraClient jira.Lookup) *Client {
 		ghClient.BaseURL = u
 		ghClient.UploadURL = u
 	}
-	return &Client{gh: ghClient, jira: jiraClient}
+	return &Client{gh: ghClient, jira: jiraClient, jiraProjects: projectKeys}
 }
 
 // advancedSearchTransport forces advanced_search=true on /search/issues
@@ -465,7 +469,7 @@ func (c *Client) enrichJiraStatus(ctx context.Context, pr *PullRequest) error {
 	if c.jira == nil {
 		return nil
 	}
-	key := jira.ExtractKey(pr.HeadRef, pr.Title, pr.Body)
+	key := jira.ExtractKey(c.jiraProjects, pr.HeadRef, pr.Title, pr.Body)
 	if key == "" {
 		return nil
 	}

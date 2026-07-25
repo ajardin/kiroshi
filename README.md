@@ -133,6 +133,15 @@ jira_base_url = "https://your-org.atlassian.net"
 jira_email    = "you@your-org.com"
 jira_token    = "xxxxxxxxxxxxxxxxxxxx"
 
+# Optional allowlist of Jira project keys. The key pattern that scans branches,
+# titles and bodies (PROJ-1234) also matches everyday strings like UTF-8,
+# SHA-256 or ISO-8601, and every false positive costs a doomed Jira lookup on
+# every scan. Listing your projects suppresses them; a PR whose only match is
+# outside the list simply shows no ticket. Entries are project keys, not full
+# issue keys ("PROJ", never "PROJ-1"), and are upper-cased on load. Omit the
+# key to accept any project. Requires the Jira trio above.
+jira_project_keys = ["PROJ", "OPS"]
+
 # Optional named search profiles for juggling several contexts (work org,
 # OSS, a specific team) from one dashboard. The top-level `search` above is
 # always the profile named "default" (that name is reserved); each

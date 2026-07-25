@@ -251,6 +251,7 @@ func TestSaveRoundTrip(t *testing.T) {
 		JiraBaseURL:     "https://acme.atlassian.net",
 		JiraEmail:       "me@acme.com",
 		JiraToken:       "jira-tok",
+		JiraProjectKeys: []string{"PROJ", "OPS"},
 		Profiles: []Profile{
 			{Name: "oss", Search: "is:pr user:some-org"},
 			{Name: "team", Search: "is:pr team:acme/core"},
@@ -283,6 +284,11 @@ func TestSaveRoundTrip(t *testing.T) {
 	}
 	if got.JiraBaseURL != want.JiraBaseURL || got.JiraEmail != want.JiraEmail || got.JiraToken != want.JiraToken {
 		t.Errorf("jira round-trip mismatch: got %+v, want %+v", got, want)
+	}
+	// Also pins the encoding order: a plain array written after the [[profiles]]
+	// tables would be parsed as a member of the last table.
+	if len(got.JiraProjectKeys) != 2 || got.JiraProjectKeys[0] != "PROJ" || got.JiraProjectKeys[1] != "OPS" {
+		t.Errorf("jira project keys round-trip = %v, want [PROJ OPS]", got.JiraProjectKeys)
 	}
 	if got.RefreshInterval != want.RefreshInterval {
 		t.Errorf("refresh_interval round-trip = %v, want %v", got.RefreshInterval, want.RefreshInterval)
@@ -521,6 +527,47 @@ jira_base_url = "https://acme.atlassian.net"`)
 		_, err := Load(p)
 		if err == nil || !strings.Contains(err.Error(), "jira") {
 			t.Errorf("err = %v, want a jira validation error", err)
+		}
+	})
+
+	t.Run("project keys are trimmed and upper-cased", func(t *testing.T) {
+		p := writeConfig(t, `github_token = "t"
+search = "s"
+jira_base_url = "https://acme.atlassian.net"
+jira_email = "me@acme.com"
+jira_token = "tok"
+jira_project_keys = [" proj ", "ops"]`)
+		cfg, err := Load(p)
+		if err != nil {
+			t.Fatalf("Load() err = %v", err)
+		}
+		if len(cfg.JiraProjectKeys) != 2 || cfg.JiraProjectKeys[0] != "PROJ" || cfg.JiraProjectKeys[1] != "OPS" {
+			t.Errorf("jira project keys = %v, want [PROJ OPS]", cfg.JiraProjectKeys)
+		}
+	})
+
+	t.Run("full issue key is rejected as a project key", func(t *testing.T) {
+		p := writeConfig(t, `github_token = "t"
+search = "s"
+jira_base_url = "https://acme.atlassian.net"
+jira_email = "me@acme.com"
+jira_token = "tok"
+jira_project_keys = ["PROJ-1"]`)
+		_, err := Load(p)
+		if err == nil || !strings.Contains(err.Error(), "jira_project_keys") {
+			t.Errorf("err = %v, want a project-key validation error", err)
+		}
+	})
+
+	t.Run("project keys without the jira trio are rejected", func(t *testing.T) {
+		// Silently inert otherwise: the list only bites through the enricher,
+		// which never runs without Jira configured.
+		p := writeConfig(t, `github_token = "t"
+search = "s"
+jira_project_keys = ["PROJ"]`)
+		_, err := Load(p)
+		if err == nil || !strings.Contains(err.Error(), "jira_project_keys") {
+			t.Errorf("err = %v, want an error about Jira not being configured", err)
 		}
 	})
 

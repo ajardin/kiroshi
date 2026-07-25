@@ -28,8 +28,61 @@ func TestExtractKey(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := ExtractKey(tt.candidates...); got != tt.want {
+			if got := ExtractKey(nil, tt.candidates...); got != tt.want {
 				t.Errorf("ExtractKey(%v) = %q, want %q", tt.candidates, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractKey_ProjectAllowlist(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		projects   []string
+		candidates []string
+		want       string
+	}{
+		{"allowed project matches", []string{"PROJ"}, []string{"feature/PROJ-1234-foo"}, "PROJ-1234"},
+		{"any of several projects", []string{"OPS", "PROJ"}, []string{"fix PROJ-7 crash"}, "PROJ-7"},
+		{"foreign project rejected", []string{"PROJ"}, []string{"feature/OTHER-1-foo"}, ""},
+		{"false positive rejected", []string{"PROJ"}, []string{"fix UTF-8 decoding"}, ""},
+		{"real key wins over a preceding false positive", []string{"PROJ"}, []string{"fix UTF-8 in PROJ-42"}, "PROJ-42"},
+		{"scan continues past a rejected candidate", []string{"PROJ"}, []string{"chore/SHA-256", "bump PROJ-9"}, "PROJ-9"},
+		{"empty allowlist accepts anything", nil, []string{"fix UTF-8 decoding"}, "UTF-8"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := ExtractKey(tt.projects, tt.candidates...); got != tt.want {
+				t.Errorf("ExtractKey(%v, %v) = %q, want %q", tt.projects, tt.candidates, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidProjectKey(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		in   string
+		want bool
+	}{
+		{"PROJ", true},
+		{"AB1", true},
+		{"", false},
+		{"P", false},        // a single letter is not a project key
+		{"proj", false},     // Jira keys are uppercase
+		{"PROJ-1", false},   // a full issue key, not a project key
+		{"1PROJ", false},    // must start with a letter
+		{"PROJ FOO", false}, // no whitespace
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			t.Parallel()
+			if got := ValidProjectKey(tt.in); got != tt.want {
+				t.Errorf("ValidProjectKey(%q) = %v, want %v", tt.in, got, tt.want)
 			}
 		})
 	}

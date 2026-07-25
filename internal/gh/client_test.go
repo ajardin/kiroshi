@@ -66,6 +66,35 @@ func TestEnrichJiraStatus(t *testing.T) {
 		}
 	})
 
+	t.Run("allowlist skips the lookup for a false positive", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeJira{status: jira.Status{Name: "Done", Category: jira.CategoryDone}}
+		c := &Client{jira: fake, jiraProjects: []string{"PROJ"}}
+		pr := &PullRequest{HeadRef: "chore/bump", Title: "fix UTF-8 decoding"}
+		if err := c.enrichJiraStatus(context.Background(), pr); err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		if fake.askedAt != "" {
+			t.Errorf("looked up %q, want no call at all (that is the point of the allowlist)", fake.askedAt)
+		}
+		if pr.JiraKey != "" || pr.JiraLookupFailed {
+			t.Errorf("unexpected Jira fields: %+v", pr)
+		}
+	})
+
+	t.Run("allowlist still resolves a listed project", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeJira{status: jira.Status{Name: "Done", Category: jira.CategoryDone}}
+		c := &Client{jira: fake, jiraProjects: []string{"PROJ"}}
+		pr := &PullRequest{Title: "fix UTF-8 in PROJ-42"}
+		if err := c.enrichJiraStatus(context.Background(), pr); err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		if fake.askedAt != "PROJ-42" {
+			t.Errorf("looked up %q, want PROJ-42", fake.askedAt)
+		}
+	})
+
 	t.Run("resolves key from branch", func(t *testing.T) {
 		t.Parallel()
 		fake := &fakeJira{status: jira.Status{Name: "In Review", Category: jira.CategoryIndeterminate}}
