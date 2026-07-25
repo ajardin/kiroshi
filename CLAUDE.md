@@ -92,9 +92,24 @@ degradation: `enrichJiraStatus` distinguishes a 404 (`jira.ErrIssueNotFound`)
 health dot can flag it; either way the scan never fails, degrading to an
 omitted cell instead. It's also a full no-op under `gh.New` (vs
 `gh.NewWithJira`). Key extraction is `jira.ExtractKey` (branch → title →
-body, regex `[A-Z][A-Z0-9]+-\d+`, first match wins). Config is the
+body, regex `[A-Z][A-Z0-9]+-\d+`, first *allowed* match wins). Config is the
 `jira_base_url`/`jira_email`/`jira_token` trio (env override `JIRA_API_TOKEN`);
 all three or none.
+
+**Jira project allowlist.** The key regex is deliberately loose, so it also
+matches `UTF-8`, `SHA-256`, `ISO-8601` — each a doomed lookup on *every*
+scan (a 404, silently swallowed, so the cost is invisible). Optional
+`jira_project_keys` restricts matches to the listed projects; empty (the
+default) accepts any key, so existing configs are unaffected. Two
+non-obvious consequences: (1) `ExtractKey` scans **every** match in a
+candidate rather than only the first, or `fix UTF-8 in PROJ-42` would
+resolve to nothing; (2) the list is only valid alongside the trio —
+validation rejects it otherwise (loud beats inert), which is why the
+`-init` reconfigure carries it over **only when Jira survives** the wizard
+(`cli.runWizard`), otherwise removing Jira would write a config that no
+longer loads. The grammar lives in `jira.ValidProjectKey` so `config`
+validates against one definition instead of restating the pattern.
+Hand-edit only, like `notify` and `[[profiles]]`.
 
 **Help overlay.** The `?` key sets `Model.mode = modeHelp` (the UI modes —
 list, loading, filter, help, detail — are one `uiMode` enum, so they are

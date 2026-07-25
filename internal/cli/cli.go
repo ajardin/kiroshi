@@ -140,7 +140,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, opts ...O
 	client := ro.githubClient
 	if client == nil {
 		if cfg.JiraBaseURL != "" {
-			client = gh.NewWithJira(cfg.GitHubToken, jira.New(cfg.JiraBaseURL, cfg.JiraEmail, cfg.JiraToken))
+			client = gh.NewWithJira(cfg.GitHubToken, jira.New(cfg.JiraBaseURL, cfg.JiraEmail, cfg.JiraToken), cfg.JiraProjectKeys...)
 		} else {
 			client = gh.New(cfg.GitHubToken)
 		}
@@ -261,11 +261,17 @@ func runWizard(ctx context.Context, configPath string, stdout io.Writer, ro runO
 		JiraToken:       res.JiraToken,
 	}
 	if existing != nil {
-		// Notify and Profiles are hand-edit only (the wizard never asks for
-		// them), so a reconfigure must carry them over instead of silently
-		// dropping them.
+		// Notify, Profiles and JiraProjectKeys are hand-edit only (the wizard
+		// never asks for them), so a reconfigure must carry them over instead of
+		// silently dropping them.
 		cfg.Notify = existing.Notify
 		cfg.Profiles = existing.Profiles
+		// The exception: the key list is only valid alongside the Jira trio, so
+		// carrying it over after the wizard removed Jira would write a file that
+		// no longer loads.
+		if res.JiraBaseURL != "" {
+			cfg.JiraProjectKeys = existing.JiraProjectKeys
+		}
 	}
 	if err := config.Save(path, cfg); err != nil {
 		return fmt.Errorf("save config: %w", err)

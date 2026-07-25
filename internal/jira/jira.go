@@ -176,14 +176,46 @@ func categoryFromKey(key string) Category {
 // followed by uppercase letters/digits) and a dash and a number, e.g. PROJ-1234.
 var keyPattern = regexp.MustCompile(`[A-Z][A-Z0-9]+-\d+`)
 
+// projectKeyPattern matches the project-key half of an issue key on its own,
+// i.e. what keyPattern accepts before the dash. Exposed through
+// ValidProjectKey so config validation doesn't restate the grammar.
+var projectKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]+$`)
+
+// ValidProjectKey reports whether s is a well-formed Jira project key (PROJ,
+// AB1) — the shape ExtractKey's allowlist entries must have.
+func ValidProjectKey(s string) bool { return projectKeyPattern.MatchString(s) }
+
 // ExtractKey returns the first Jira issue key found across candidates, scanned
 // in order, or "" if none match. Callers pass the branch name first (most
 // reliable, e.g. feature/PROJ-1234-foo), then the title, then the PR body.
-func ExtractKey(candidates ...string) string {
+//
+// projects, when non-empty, restricts matches to those project keys. The bare
+// pattern also matches everyday strings like UTF-8, SHA-256 and ISO-8601, and
+// each false positive costs a doomed Jira lookup on every scan. Every match
+// within a candidate is considered rather than just the first, so a real key
+// still wins over a false positive that precedes it ("fix UTF-8 in PROJ-42").
+func ExtractKey(projects []string, candidates ...string) string {
 	for _, c := range candidates {
-		if key := keyPattern.FindString(c); key != "" {
-			return key
+		for _, key := range keyPattern.FindAllString(c, -1) {
+			if allowedProject(projects, key) {
+				return key
+			}
 		}
 	}
 	return ""
+}
+
+// allowedProject reports whether key belongs to one of projects; an empty
+// projects list allows every key.
+func allowedProject(projects []string, key string) bool {
+	if len(projects) == 0 {
+		return true
+	}
+	project, _, _ := strings.Cut(key, "-")
+	for _, p := range projects {
+		if p == project {
+			return true
+		}
+	}
+	return false
 }
