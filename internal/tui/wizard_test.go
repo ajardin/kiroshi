@@ -48,6 +48,73 @@ func TestApplyKey_BackspaceTrimsRuneNotByte(t *testing.T) {
 	}
 }
 
+// Pasting is the nominal way through this form — nobody types a personal
+// access token by hand — so every input step must accept it, and accept it as
+// an append rather than a replace.
+func TestWizard_PasteAppendsToActiveStep(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		step   wizardStep
+		buffer func(WizardModel) string
+	}{
+		{"token", stepToken, func(m WizardModel) string { return m.token }},
+		{"search", stepSearch, func(m WizardModel) string { return m.search }},
+		{"min reviews", stepMinReviews, func(m WizardModel) string { return m.minReviewsStr }},
+		{"refresh", stepRefresh, func(m WizardModel) string { return m.refreshStr }},
+		{"jira url", stepJiraURL, func(m WizardModel) string { return m.jiraURL }},
+		{"jira email", stepJiraEmail, func(m WizardModel) string { return m.jiraEmail }},
+		{"jira token", stepJiraToken, func(m WizardModel) string { return m.jiraToken }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			m := NewWizardModel(nil, nil)
+			m.step = tt.step
+			m = typeRunes(t, m, "ab")
+			m, _ = send(t, m, tea.PasteMsg{Content: "cd"})
+
+			if got := tt.buffer(m); got != "abcd" {
+				t.Errorf("buffer = %q, want %q (paste must append, not replace)", got, "abcd")
+			}
+		})
+	}
+}
+
+// A paste is a fresh attempt at a field that failed validation, so it must
+// clear the inline error the way typing does.
+func TestWizard_PasteClearsInlineError(t *testing.T) {
+	t.Parallel()
+
+	for _, step := range []wizardStep{stepMinReviews, stepRefresh, stepJiraURL} {
+		m := NewWizardModel(nil, nil)
+		m.step = step
+		m.errMsg = "previous complaint"
+		m, _ = send(t, m, tea.PasteMsg{Content: "x"})
+		if m.errMsg != "" {
+			t.Errorf("step %d: errMsg = %q, want cleared by the paste", step, m.errMsg)
+		}
+	}
+}
+
+func TestWizard_PasteIgnoredOnNonInputSteps(t *testing.T) {
+	t.Parallel()
+
+	for _, step := range []wizardStep{stepValidating, stepError, stepDone} {
+		m := NewWizardModel(nil, nil)
+		m.step = step
+		m, _ = send(t, m, tea.PasteMsg{Content: "junk"})
+		if m.token != "" || m.search != "" || m.jiraURL != "" {
+			t.Errorf("step %d: paste leaked into a buffer: %+v", step, m)
+		}
+		if m.step != step {
+			t.Errorf("step %d: paste moved the wizard to step %d", step, m.step)
+		}
+	}
+}
+
 func typeRunes(t *testing.T, m WizardModel, s string) WizardModel {
 	t.Helper()
 	m, _ = send(t, m, tea.KeyPressMsg{Text: s})

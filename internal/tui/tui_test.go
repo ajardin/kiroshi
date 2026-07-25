@@ -342,6 +342,39 @@ func TestModel_FilterAcceptsSpace(t *testing.T) {
 	}
 }
 
+func TestModel_PasteAppendsToFilter(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(t, nil, nil)
+	m.mode = modeFilter
+	m.filter = "add"
+	m.offset = 5 // leftover scroll from before filtering
+
+	updated, _ := m.Update(tea.PasteMsg{Content: " pr"})
+	got := updated.(Model)
+
+	if got.filter != "add pr" {
+		t.Errorf("filter = %q, want %q", got.filter, "add pr")
+	}
+	if got.cursor != 0 || got.offset != 0 {
+		t.Errorf("after paste: cursor=%d offset=%d, want 0/0 — a stale offset would render past a shrunken set", got.cursor, got.offset)
+	}
+	visible := got.visiblePRs()
+	if len(visible) != 1 || visible[0].Number != 42 {
+		t.Errorf("filtered list = %+v, want only PR #42", visible)
+	}
+}
+
+func TestModel_PasteIgnoredOutsideFilterMode(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(t, nil, nil)
+	updated, _ := m.Update(tea.PasteMsg{Content: "junk"})
+	if got := updated.(Model); got.filter != "" || got.mode != modeList {
+		t.Errorf("paste outside filter mode changed state: filter=%q mode=%d", got.filter, got.mode)
+	}
+}
+
 func TestModel_FilterBackspaceTrimsRuneNotByte(t *testing.T) {
 	t.Parallel()
 
