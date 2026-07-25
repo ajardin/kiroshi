@@ -641,10 +641,10 @@ func (m Model) handleFilterKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		}
 		return m, nil
 	default:
-		// Key.Text carries printable input only. The bare space is excluded to
-		// match v1, where space arrived as KeySpace (not KeyRunes) and the
-		// filter dropped it.
-		if msg.Text != "" && msg.Text != " " {
+		// Key.Text carries printable input only — the space included: PR titles
+		// are multi-word, so "fix login" has to be typable. (v1 delivered space
+		// as KeySpace rather than KeyRunes, so the filter silently dropped it.)
+		if msg.Text != "" {
 			m.filter += msg.Text
 			// Reset the scroll window along with the cursor: a leftover offset
 			// from a scrolled list would render past the end of a shrunken set.
