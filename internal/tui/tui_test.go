@@ -321,6 +321,27 @@ func TestModel_FilterModeNarrowsList(t *testing.T) {
 	}
 }
 
+func TestModel_FilterAcceptsSpace(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(t, nil, nil)
+	m.mode = modeFilter
+
+	// "add pr" spans a space: it matches PR #42 ("Add PR search") but not #43
+	// ("Add TUI"). A dropped space would collapse it to "addpr", matching neither.
+	for _, r := range "add pr" {
+		updated, _ := m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
+		m = updated.(Model)
+	}
+	if m.filter != "add pr" {
+		t.Fatalf("filter = %q, want %q", m.filter, "add pr")
+	}
+	visible := m.visiblePRs()
+	if len(visible) != 1 || visible[0].Number != 42 {
+		t.Errorf("filtered list = %+v, want only PR #42", visible)
+	}
+}
+
 func TestModel_FilterBackspaceTrimsRuneNotByte(t *testing.T) {
 	t.Parallel()
 
