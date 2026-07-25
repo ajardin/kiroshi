@@ -147,6 +147,40 @@ longer loads. The grammar lives in `jira.ValidProjectKey` so `config`
 validates against one definition instead of restating the pattern.
 Hand-edit only, like `notify` and `[[profiles]]`.
 
+**Rate-limit visibility.** `rateObserver` (`internal/gh/ratelimit.go`) is a
+RoundTripper that records the `X-Ratelimit-*` headers of every response. It
+sits in the transport chain rather than at the six call sites so any REST call
+added later is accounted for without anyone remembering to instrument it — the
+same reasoning that centralises `wrapAPIError`. It costs **zero** extra calls:
+the numbers ride on responses the scan already made, so `client.RateLimits` is
+never called.
+
+Only the **core** resource is recorded (an absent `X-Ratelimit-Resource`
+counts as core). Search and GraphQL publish their own, far smaller budgets
+under the same header names — search is 30/minute — so recording those would
+leave the header reading `28/30` after any scan. This is load-bearing and
+mutation-tested.
+
+The snapshot reaches the dashboard through `WithRateReporter` (a chainable
+setter, like `WithNotify`), is read **on the rescan goroutine** and parked on
+`Model.rate`, so `View` stays a pure function of the model. It is captured on
+the error path too: a scan killed by a rate limit is when the number matters
+most. An unknown snapshot never overwrites a known one, so an unwired reporter
+can't blank a budget already on screen. Rendered as `● github 4.2k/5k` on the
+github badge (it qualifies that connection, and the header has no room for
+another cluster), in `colDim` with **no escalation** — escalating would mint a
+new palette semantic, and the palette is locked; the github dot already turns
+red when a scan fails. Also `rate_limit` in the JSON envelope, null until
+known.
+
+Two limits, and they are **not** interchangeable — the primary quota is 5000
+requests/hour, but the secondary limit is 900 points/minute (and ≤100
+concurrent, shared REST+GraphQL). A conditional request returning 304 is
+exempt from the *primary* quota only; it still costs a request against the
+per-minute limit. So an ETag cache would not substitute for bounding a large
+scan, and it would not make `cachedEnrichment` redundant either: skipping a
+call outright beats revalidating it.
+
 **Help overlay.** The `?` key sets `Model.mode = modeHelp` (the UI modes —
 list, loading, filter, help, detail — are one `uiMode` enum, so they are
 mutually exclusive by construction and `handleKey`/`View` both switch on it);

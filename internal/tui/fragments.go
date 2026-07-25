@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -125,6 +126,32 @@ func shortDuration(d time.Duration) string {
 	default:
 		return d.String()
 	}
+}
+
+// shortCount abbreviates a rate-limit figure for the header, where every
+// column is contested: 4231 becomes "4.2k", 980 stays "980". One decimal is
+// kept because the interesting range (a 5000/hour budget) would otherwise
+// collapse to a single digit.
+func shortCount(n int) string {
+	if n < 1000 {
+		return strconv.Itoa(n)
+	}
+	return strings.TrimSuffix(fmt.Sprintf("%.1f", float64(n)/1000), ".0") + "k"
+}
+
+// rateFragment renders the GitHub REST budget as "remaining/limit" in
+// abbreviated form. Empty until a response has carried the headers, so the
+// header shows nothing rather than a fake "0/0" before the first scan lands.
+//
+// Deliberately colourless at the call site (rendered colDim, like every other
+// secondary figure): escalating it would mean minting a new palette semantic,
+// and the palette is locked. The github health dot already turns red when a
+// scan fails, rate limit included.
+func rateFragment(r gh.RateSnapshot) string {
+	if !r.Known {
+		return ""
+	}
+	return shortCount(r.Remaining) + "/" + shortCount(r.Limit)
 }
 
 const (

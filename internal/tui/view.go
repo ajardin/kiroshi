@@ -118,9 +118,16 @@ func (m Model) headerView() string {
 	if m.refreshInterval > 0 {
 		autoColor, autoLabel = colGreen, "auto "+shortDuration(m.refreshInterval)
 	}
+	// The remaining REST budget rides on the github badge rather than taking a
+	// slot of its own: it qualifies that connection, and the header has no room
+	// for another cluster.
+	githubDot := lipgloss.NewStyle().Foreground(healthColor(m.githubHealthy)).Render("● github")
+	if r := rateFragment(m.rate); r != "" {
+		githubDot += lipgloss.NewStyle().Foreground(colDim).Render(" " + r)
+	}
 	dot := lipgloss.NewStyle().Foreground(colMuted).Render(" · ")
 	status := []string{
-		lipgloss.NewStyle().Foreground(healthColor(m.githubHealthy)).Render("● github"),
+		githubDot,
 		jiraDot,
 		lipgloss.NewStyle().Foreground(autoColor).Render("● " + autoLabel),
 	}

@@ -32,7 +32,12 @@ type fakeClient struct {
 	searchErr error
 	// gotSearch, when set, captures the query passed to SearchPullRequests.
 	gotSearch *string
+	// rate is reported as-is; the zero value (Known false) stands for a client
+	// that has not seen a rate-limit header yet.
+	rate gh.RateSnapshot
 }
+
+func (f fakeClient) RateSnapshot() gh.RateSnapshot { return f.rate }
 
 func (f fakeClient) AuthenticatedUser(context.Context) (gh.User, error) {
 	return f.user, f.err
@@ -141,6 +146,73 @@ search = "my-search"`)
 
 // The whole point of the JSON path is being pipeable, so diagnostics must never
 // reach stdout. -verbose is the loudest case: it drops slog to debug level.
+func TestRun_JSONCarriesRateLimit(t *testing.T) {
+	t.Parallel()
+
+	cfgPath := writeConfig(t, `github_token = "t"
+search = "s"`)
+
+	reset := time.Date(2026, 7, 25, 15, 0, 0, 0, time.UTC)
+
+	t.Run("reported when known", func(t *testing.T) {
+		t.Parallel()
+
+		var stdout, stderr bytes.Buffer
+		err := Run(t.Context(), []string{"-no-tui", "-config", cfgPath}, &stdout, &stderr,
+			WithGitHubClient(fakeClient{
+				user: gh.User{Login: "ajardin"},
+				rate: gh.RateSnapshot{Limit: 5000, Remaining: 4231, Used: 769, Reset: reset, Known: true},
+			}))
+		if err != nil {
+			t.Fatalf("unexpected err: %v (stderr=%q)", err, stderr.String())
+		}
+
+		var doc struct {
+			RateLimit *struct {
+				Limit     int       `json:"limit"`
+				Remaining int       `json:"remaining"`
+				Used      int       `json:"used"`
+				Reset     time.Time `json:"reset"`
+			} `json:"rate_limit"`
+		}
+		if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
+			t.Fatalf("output is not valid JSON: %v\n%s", err, stdout.String())
+		}
+		if doc.RateLimit == nil {
+			t.Fatalf("rate_limit is null, want the reported budget\n%s", stdout.String())
+		}
+		if doc.RateLimit.Limit != 5000 || doc.RateLimit.Remaining != 4231 || doc.RateLimit.Used != 769 {
+			t.Errorf("rate_limit = %+v, want 4231/5000 used=769", *doc.RateLimit)
+		}
+		if !doc.RateLimit.Reset.Equal(reset) {
+			t.Errorf("reset = %v, want %v", doc.RateLimit.Reset, reset)
+		}
+	})
+
+	// The contract says every key is present, so an unknown budget is an
+	// explicit null rather than a dropped field.
+	t.Run("null but present when unknown", func(t *testing.T) {
+		t.Parallel()
+
+		var stdout, stderr bytes.Buffer
+		err := Run(t.Context(), []string{"-no-tui", "-config", cfgPath}, &stdout, &stderr,
+			WithGitHubClient(fakeClient{user: gh.User{Login: "ajardin"}}))
+		if err != nil {
+			t.Fatalf("unexpected err: %v (stderr=%q)", err, stderr.String())
+		}
+		var doc map[string]any
+		if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
+			t.Fatalf("output is not valid JSON: %v", err)
+		}
+		v, present := doc["rate_limit"]
+		if !present {
+			t.Error("the rate_limit key is missing entirely")
+		} else if v != nil {
+			t.Errorf("rate_limit = %v, want null when no budget was reported", v)
+		}
+	})
+}
+
 func TestRun_VerboseKeepsStdoutParseable(t *testing.T) {
 	t.Parallel()
 

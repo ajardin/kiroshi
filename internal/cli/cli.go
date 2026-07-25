@@ -312,7 +312,8 @@ func run(ctx context.Context, logger *slog.Logger, client gh.API, cfg *config.Co
 		}
 		model := tui.NewLoadingModel(user.Login, version.String(), cfg.MinReviews, cfg.JiraBaseURL != "", cfg.RefreshInterval, tui.OpenURL, refresherFor(search)).
 			WithProfiles(tuiProfiles, activeProfile).
-			WithNotify(cfg.Notify)
+			WithNotify(cfg.Notify).
+			WithRateReporter(client.RateSnapshot)
 		if err := runTUI(model); err != nil {
 			return fmt.Errorf("run tui: %w", err)
 		}
@@ -325,5 +326,5 @@ func run(ctx context.Context, logger *slog.Logger, client gh.API, cfg *config.Co
 	}
 	logger.DebugContext(ctx, "searched pull requests", "count", len(prs))
 
-	return writeJSON(stdout, buildJSONDocument(prs, user.Login, profiles[activeProfile].Name, search, cfg.MinReviews, time.Now()))
+	return writeJSON(stdout, buildJSONDocument(prs, user.Login, profiles[activeProfile].Name, search, cfg.MinReviews, time.Now(), client.RateSnapshot()))
 }

@@ -104,6 +104,11 @@ type Model struct {
 	// for free.
 	profiles []Profile
 	profile  int
+	// rateOf reports the GitHub REST budget; nil when unwired (tests). It is
+	// read on the rescan goroutine and the result parked in rate, so View stays
+	// a pure function of the model.
+	rateOf func() gh.RateSnapshot
+	rate   gh.RateSnapshot
 }
 
 // uiMode enumerates the mutually-exclusive UI modes. handleKey and View both
@@ -198,6 +203,15 @@ func (m Model) WithProfiles(profiles []Profile, active int) Model {
 	return m
 }
 
+// WithRateReporter returns a copy of the model wired to report the GitHub REST
+// budget in the header. A chainable setter for the same reason as WithNotify:
+// only the CLI wires it, so widening the constructors would ripple a parameter
+// through every other call site for nothing.
+func (m Model) WithRateReporter(rateOf func() gh.RateSnapshot) Model {
+	m.rateOf = rateOf
+	return m
+}
+
 // ActiveProfile returns the active search profile's name, or "" when no
 // profiles are wired. Exported as a test seam for the CLI wiring (the same
 // idea as WithTUIRunner: cli tests assert on the prepared model).
@@ -258,9 +272,10 @@ type (
 	// status only if it still matches (a newer message bumped seq otherwise).
 	statusClearMsg int
 	rescanMsg      struct {
-		prs []gh.PullRequest
-		err error
-		at  time.Time
+		prs  []gh.PullRequest
+		err  error
+		at   time.Time
+		rate gh.RateSnapshot
 	}
 	// autoRefreshMsg fires on the refresh_interval cadence; the handler
 	// triggers a rescan (unless one is already running) and re-arms the tick.
@@ -348,6 +363,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case rescanMsg:
 		m.refreshing = false
+		// Guarded on Known so an unwired reporter never wipes a budget we already
+		// displayed. Set before the error branch: a scan killed by a rate limit is
+		// when the number matters most.
+		if msg.rate.Known {
+			m.rate = msg.rate
+		}
 		// Invalidate any pending transient timer: a message set below (scan
 		// failed / partially enriched) is persistent and must not be wiped by a
 		// dismiss armed before the scan.
@@ -720,12 +741,19 @@ func (m Model) bellCmd() tea.Cmd {
 }
 
 func (m Model) rescanCmd() tea.Cmd {
-	refresh := m.refresh
+	refresh, rateOf := m.refresh, m.rateOf
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), rescanTimeout)
 		defer cancel()
 		prs, err := refresh(ctx)
-		return rescanMsg{prs: prs, err: err, at: time.Now()}
+		msg := rescanMsg{prs: prs, err: err, at: time.Now()}
+		// Read after the scan: the budget we want is the one the scan just
+		// consumed. Also read on the error path — a scan that died on a rate
+		// limit is exactly when the number matters.
+		if rateOf != nil {
+			msg.rate = rateOf()
+		}
+		return msg
 	}
 }
 

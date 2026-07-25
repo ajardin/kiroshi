@@ -205,6 +205,16 @@ list), never a missing key, so consumers never need existence checks.
 | `unresolved_threads` | `null` when the GraphQL pass could not resolve it — distinct from a genuine `0` |
 | `jira` | `null` when the PR references no resolved ticket; `jira_lookup_failed` tells a failed lookup from no ticket at all |
 | `enrich_partial` | `true` when a GitHub enricher failed for that PR, so its zero-valued fields mean "unknown", not "empty" |
+| `rate_limit` | the GitHub REST budget left after the scan (`limit`, `remaining`, `used`, `reset`), or `null` before any response reported it — useful for backing off in a scheduled job |
+
+The budget is read from response headers the scan already made, so it costs
+no extra API call. It covers the primary REST quota only; the search and
+GraphQL endpoints have their own, much smaller budgets.
+
+```bash
+# back off when the hourly budget runs low
+kiroshi | jq -e '.rate_limit.remaining > 500' >/dev/null || echo "budget low, skipping"
+```
 
 When the scan itself fails (bad token, rate limit, unreachable API) kiroshi
 writes nothing to stdout, reports on stderr and exits non-zero — it never

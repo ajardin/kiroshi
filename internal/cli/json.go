@@ -16,12 +16,25 @@ import (
 // always present. An absent value is null or its zero, never a missing key, so
 // consumers can rely on the shape without existence checks.
 type jsonDocument struct {
-	Login        string            `json:"login"`
-	Profile      string            `json:"profile"`
-	Search       string            `json:"search"`
-	ScannedAt    time.Time         `json:"scanned_at"`
+	Login     string    `json:"login"`
+	Profile   string    `json:"profile"`
+	Search    string    `json:"search"`
+	ScannedAt time.Time `json:"scanned_at"`
+	// RateLimit is the GitHub REST budget left after this scan, so a scheduled
+	// consumer can back off before it hits the wall. Null until a response has
+	// carried the headers.
+	RateLimit    *jsonRateLimit    `json:"rate_limit"`
 	Counts       jsonCounts        `json:"counts"`
 	PullRequests []jsonPullRequest `json:"pull_requests"`
+}
+
+// jsonRateLimit is the primary REST budget; the search and GraphQL budgets are
+// separate and much smaller, and are not reported here.
+type jsonRateLimit struct {
+	Limit     int       `json:"limit"`
+	Remaining int       `json:"remaining"`
+	Used      int       `json:"used"`
+	Reset     time.Time `json:"reset"`
 }
 
 // jsonCounts mirrors the TUI's four status cards.
@@ -88,12 +101,13 @@ type jsonJira struct {
 // buildJSONDocument classifies prs and assembles the output document.
 // Classification goes through tui.BucketFor, so the JSON and the dashboard can
 // never disagree on which bucket a PR belongs to.
-func buildJSONDocument(prs []gh.PullRequest, login, profile, search string, minReviews int, scannedAt time.Time) jsonDocument {
+func buildJSONDocument(prs []gh.PullRequest, login, profile, search string, minReviews int, scannedAt time.Time, rate gh.RateSnapshot) jsonDocument {
 	doc := jsonDocument{
 		Login:        login,
 		Profile:      profile,
 		Search:       search,
 		ScannedAt:    scannedAt,
+		RateLimit:    rateLimitOf(rate),
 		PullRequests: make([]jsonPullRequest, 0, len(prs)),
 	}
 	for _, pr := range prs {
@@ -155,6 +169,13 @@ func writeJSON(w io.Writer, doc jsonDocument) error {
 		return fmt.Errorf("write json output: %w", err)
 	}
 	return nil
+}
+
+func rateLimitOf(r gh.RateSnapshot) *jsonRateLimit {
+	if !r.Known {
+		return nil
+	}
+	return &jsonRateLimit{Limit: r.Limit, Remaining: r.Remaining, Used: r.Used, Reset: r.Reset}
 }
 
 func jsonCIState(s gh.CIState) string {

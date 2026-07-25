@@ -160,6 +160,7 @@ type PullRequest struct {
 type API interface {
 	AuthenticatedUser(ctx context.Context) (User, error)
 	SearchPullRequests(ctx context.Context, query string) ([]PullRequest, error)
+	RateSnapshot() RateSnapshot
 }
 
 // Client talks to the GitHub REST API on behalf of kiroshi. When jira is
@@ -175,6 +176,8 @@ type Client struct {
 	// jiraProjects, when non-empty, restricts issue-key extraction to those
 	// project keys; see jira.ExtractKey.
 	jiraProjects []string
+	// rates observes the rate-limit headers of every response; see RateSnapshot.
+	rates *rateObserver
 
 	// mu guards cache: enrichment runs through an errgroup worker pool, so
 	// concurrent reads and writes would race without it.
@@ -274,9 +277,10 @@ func NewWithJira(token string, jiraClient jira.Lookup, projectKeys ...string) *C
 // api.github.com; anything else is used verbatim and lets tests point the
 // client at an httptest.Server. A nil jiraClient disables Jira enrichment.
 func newClient(token, baseURL string, jiraClient jira.Lookup, projectKeys ...string) *Client {
+	rates := &rateObserver{base: http.DefaultTransport}
 	httpClient := &http.Client{
 		Timeout:   HTTPTimeout,
-		Transport: &advancedSearchTransport{base: http.DefaultTransport},
+		Transport: &advancedSearchTransport{base: rates},
 	}
 	ghClient := github.NewClient(httpClient).WithAuthToken(token)
 	if baseURL != "" {
@@ -289,7 +293,7 @@ func newClient(token, baseURL string, jiraClient jira.Lookup, projectKeys ...str
 		ghClient.BaseURL = u
 		ghClient.UploadURL = u
 	}
-	return &Client{gh: ghClient, jira: jiraClient, jiraProjects: projectKeys}
+	return &Client{gh: ghClient, jira: jiraClient, jiraProjects: projectKeys, rates: rates}
 }
 
 // advancedSearchTransport forces advanced_search=true on /search/issues

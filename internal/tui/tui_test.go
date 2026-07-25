@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -339,6 +340,80 @@ func TestModel_FilterAcceptsSpace(t *testing.T) {
 	visible := m.visiblePRs()
 	if len(visible) != 1 || visible[0].Number != 42 {
 		t.Errorf("filtered list = %+v, want only PR #42", visible)
+	}
+}
+
+func TestShortCount(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct{ in, want string }{
+		{"0", "0"}, {"87", "87"}, {"999", "999"},
+		{"1000", "1k"}, {"4231", "4.2k"}, {"5000", "5k"}, {"14900", "14.9k"},
+	}
+	for _, tt := range tests {
+		n, _ := strconv.Atoi(tt.in)
+		if got := shortCount(n); got != tt.want {
+			t.Errorf("shortCount(%d) = %q, want %q", n, got, tt.want)
+		}
+	}
+}
+
+func TestModel_HeaderShowsRateBudget(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(t, nil, nil)
+	if strings.Contains(m.headerView(), "5k") {
+		t.Error("header shows a budget before any scan has reported one")
+	}
+
+	m.rate = gh.RateSnapshot{Limit: 5000, Remaining: 4231, Known: true}
+	if got := m.headerView(); !strings.Contains(got, "4.2k/5k") {
+		t.Errorf("header = %q, want the budget next to the github badge", got)
+	}
+}
+
+// The reporter is read on the rescan goroutine and parked on the model, so a
+// scan that fails still updates the number — that is when it matters most.
+func TestModel_RescanCapturesRateBudget(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		refresh Refresher
+	}{
+		{"successful scan", func(context.Context) ([]gh.PullRequest, error) { return nil, nil }},
+		{"failed scan", func(context.Context) ([]gh.PullRequest, error) { return nil, errors.New("boom") }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			m := newTestModel(t, nil, tt.refresh).
+				WithRateReporter(func() gh.RateSnapshot {
+					return gh.RateSnapshot{Limit: 5000, Remaining: 12, Known: true}
+				})
+			updated, cmd := m.Update(tea.KeyPressMsg{Code: 'r', Text: "r"})
+			got := applyCmd(t, updated.(Model), cmd)
+
+			if got.rate.Remaining != 12 || !got.rate.Known {
+				t.Errorf("rate = %+v, want a known 12 remaining", got.rate)
+			}
+		})
+	}
+}
+
+func TestModel_UnknownRateNeverWipesAKnownOne(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(t, nil, func(context.Context) ([]gh.PullRequest, error) { return nil, nil })
+	m.rate = gh.RateSnapshot{Limit: 5000, Remaining: 4231, Known: true}
+
+	// No reporter wired: the rescan reports a zero snapshot.
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'r', Text: "r"})
+	got := applyCmd(t, updated.(Model), cmd)
+
+	if got.rate.Remaining != 4231 {
+		t.Errorf("rate = %+v, want the previous budget kept", got.rate)
 	}
 }
 
