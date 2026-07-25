@@ -25,6 +25,22 @@ const (
 	BucketReadyToShip                   // approved by the viewer and all required reviewers
 )
 
+// String returns the bucket's stable machine-readable name. These values are
+// part of the CLI's JSON contract, so they must not change once released — the
+// human-facing labels (which differ per pane) live at their render sites.
+func (b Bucket) String() string {
+	switch b {
+	case BucketWaitingOnYou:
+		return "waiting_on_you"
+	case BucketWaitingOnOthers:
+		return "waiting_on_others"
+	case BucketReadyToShip:
+		return "ready_to_ship"
+	default:
+		return "in_flight"
+	}
+}
+
 // Color returns the accent color associated with a bucket.
 func (b Bucket) Color() lipgloss.Color {
 	switch b {
