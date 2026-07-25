@@ -9,8 +9,9 @@ Two panes, toggled with `tab`: **Incoming** (PRs you're reviewing) and
 author-side labels — **Needs You**, **In Review**, **Ready**, **Draft** —
 splitting whatever your search returns by author, with no extra API calls.
 
-Built as a CLI with an optional Bubble Tea TUI. Plain-text output is
-available for pipes, CI, and any non-TTY context.
+Built as a CLI with an optional Bubble Tea TUI. Outside a terminal — a pipe,
+a file, CI — it emits a JSON document instead, carrying every field the
+dashboard resolved.
 
 ## Install
 
@@ -170,15 +171,44 @@ Both token fields are redacted from structured logs (see
 ```bash
 kiroshi                       # interactive TUI when stdout is a terminal
 kiroshi -init                 # interactively create or update the config file and exit
-kiroshi -no-tui               # plain text, always
-kiroshi -profile oss          # start on a named search profile (TUI or plain text)
+kiroshi -no-tui               # JSON, always
+kiroshi -profile oss          # start on a named search profile (TUI or JSON)
 kiroshi -config ./my.toml     # override the config path
 kiroshi -verbose              # debug-level slog output on stderr
 kiroshi -version              # print build metadata and exit
 ```
 
-When stdout is not a TTY (pipe, file, CI), the TUI is skipped
-automatically — TTY detection lives in `cli.isTerminal`.
+When either stdout or stdin is not a TTY (pipe, file, CI), the TUI is
+skipped automatically and kiroshi emits JSON instead.
+
+### JSON output
+
+Every non-TUI run writes one JSON document to stdout: an envelope with the
+scan's context and bucket counts, then the pull requests.
+
+```bash
+kiroshi | jq -r '.pull_requests[] | select(.bucket == "waiting_on_you") | .url'
+kiroshi | jq '.counts'
+kiroshi | jq -r '.pull_requests[] | select(.ci == "failure") | "\(.repo)#\(.number) \(.title)"'
+kiroshi -profile oss | jq '[.pull_requests[] | select(.merge_state == "conflict")] | length'
+```
+
+The shape is a contract: field names and enum values are stable, and **every
+key is always present** — an unknown or absent value is `null` (or an empty
+list), never a missing key, so consumers never need existence checks.
+
+| Field | Notes |
+| ----- | ----- |
+| `bucket` | `waiting_on_you`, `waiting_on_others`, `ready_to_ship`, `in_flight` — the same classification the dashboard uses |
+| `ci` | `none`, `pending`, `success`, `failure` (`none` = the repo reported no checks, which is not a passing build) |
+| `merge_state` | `clear`, `behind`, `conflict` |
+| `unresolved_threads` | `null` when the GraphQL pass could not resolve it — distinct from a genuine `0` |
+| `jira` | `null` when the PR references no resolved ticket; `jira_lookup_failed` tells a failed lookup from no ticket at all |
+| `enrich_partial` | `true` when a GitHub enricher failed for that PR, so its zero-valued fields mean "unknown", not "empty" |
+
+When the scan itself fails (bad token, rate limit, unreachable API) kiroshi
+writes nothing to stdout, reports on stderr and exits non-zero — it never
+emits an empty document that a consumer would read as "no pull requests".
 
 ### Keybindings (TUI)
 
@@ -227,7 +257,7 @@ output instead of token-filtered.)
 ## Architecture
 
 `internal/cli` parses flags and wires the GitHub client to either the
-TUI or plain-text renderer. `internal/gh` is a narrow wrapper around
+TUI or the JSON renderer. `internal/gh` is a narrow wrapper around
 [`go-github`](https://github.com/google/go-github) that adds REST
 enrichment (review state, CI checks, diff stats) in parallel across PRs,
 plus one batched GraphQL query per ~20 PRs that counts unresolved review

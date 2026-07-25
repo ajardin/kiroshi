@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -58,16 +59,16 @@ search = "my-search"`)
 		wantErr bool
 	}{
 		{
-			name:    "default prints greeting with login and search",
+			name:    "default emits the json document",
 			args:    []string{"-config", cfgPath},
 			client:  fakeClient{user: gh.User{Login: "ajardin"}},
-			wantOut: `kiroshi ready as @ajardin (search="my-search")`,
+			wantOut: `"search": "my-search"`,
 		},
 		{
 			name:    "verbose does not change stdout content",
 			args:    []string{"-verbose", "-config", cfgPath},
 			client:  fakeClient{user: gh.User{Login: "ajardin"}},
-			wantOut: "kiroshi ready as @ajardin",
+			wantOut: `"login": "ajardin"`,
 		},
 		{
 			name:    "version skips github call",
@@ -98,13 +99,13 @@ search = "my-search"`)
 					UpdatedAt: time.Date(2026, 4, 20, 0, 0, 0, 0, time.UTC),
 				}},
 			},
-			wantOut: "[ajardin/kiroshi#42] Add PR search",
+			wantOut: `"title": "Add PR search"`,
 		},
 		{
 			name:    "no matching pull requests",
 			args:    []string{"-config", cfgPath},
 			client:  fakeClient{user: gh.User{Login: "ajardin"}},
-			wantOut: "No pull requests match the search.",
+			wantOut: `"pull_requests": []`,
 		},
 		{
 			name:    "search failure is wrapped",
@@ -138,16 +139,42 @@ search = "my-search"`)
 	}
 }
 
-func TestRun_NoTUIGroupsByBucket(t *testing.T) {
+// The whole point of the JSON path is being pipeable, so diagnostics must never
+// reach stdout. -verbose is the loudest case: it drops slog to debug level.
+func TestRun_VerboseKeepsStdoutParseable(t *testing.T) {
 	t.Parallel()
 
 	cfgPath := writeConfig(t, `github_token = "t"
 search = "s"`)
 
-	// Input order is deliberately scrambled to prove the output regroups by
-	// bucket. With the default min_reviews (2): the draft lands In Flight, the
+	var stdout, stderr bytes.Buffer
+	err := Run(t.Context(), []string{"-verbose", "-no-tui", "-config", cfgPath}, &stdout, &stderr,
+		WithGitHubClient(fakeClient{
+			user: gh.User{Login: "ajardin"},
+			prs:  []gh.PullRequest{{Owner: "acme", Repo: "api", Number: 1, Title: "x"}},
+		}))
+	if err != nil {
+		t.Fatalf("unexpected err: %v (stderr=%q)", err, stderr.String())
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
+		t.Fatalf("stdout is not pure JSON under -verbose: %v\n%s", err, stdout.String())
+	}
+	if stderr.Len() == 0 {
+		t.Error("expected debug logging on stderr, got none — the test would pass vacuously")
+	}
+}
+
+func TestRun_JSONDocument(t *testing.T) {
+	t.Parallel()
+
+	cfgPath := writeConfig(t, `github_token = "t"
+search = "s"`)
+
+	// With the default min_reviews (2): the draft lands In Flight, the
 	// requested-reviewer PR lands Waiting On You, the twice-approved PR lands
-	// Ready To Ship — and the empty Waiting On Others heading is omitted.
+	// Ready To Ship. #7 carries every optional cell, #9 carries none, so the
+	// two together pin both sides of the null-vs-value contract.
 	prs := []gh.PullRequest{
 		{
 			Owner: "acme", Repo: "api", Number: 9, Title: "WIP thing",
@@ -162,6 +189,11 @@ search = "s"`)
 			RequestedReviewers: []string{"ajardin"},
 			CIState:            gh.CIStateFailure,
 			MergeState:         gh.MergeStateConflict,
+			UnresolvedThreads:  3,
+			ThreadsKnown:       true,
+			JiraKey:            "PROJ-1",
+			JiraStatus:         "In Review",
+			JiraCategory:       "indeterminate",
 		},
 		{
 			Owner: "acme", Repo: "api", Number: 8, Title: "Add cache",
@@ -179,27 +211,77 @@ search = "s"`)
 		t.Fatalf("unexpected err: %v (stderr=%q)", err, stderr.String())
 	}
 
-	want := `kiroshi ready as @ajardin (search="s")
+	var doc struct {
+		Login        string           `json:"login"`
+		Profile      string           `json:"profile"`
+		Search       string           `json:"search"`
+		ScannedAt    time.Time        `json:"scanned_at"`
+		Counts       map[string]int   `json:"counts"`
+		PullRequests []map[string]any `json:"pull_requests"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, stdout.String())
+	}
 
-Found 3 pull request(s):
+	if doc.Login != "ajardin" || doc.Search != "s" || doc.Profile != "default" {
+		t.Errorf("envelope = %+v, want login=ajardin search=s profile=default", doc)
+	}
+	if doc.ScannedAt.IsZero() {
+		t.Error("scanned_at must be set")
+	}
+	wantCounts := map[string]int{"waiting_on_you": 1, "waiting_on_others": 0, "ready_to_ship": 1, "in_flight": 1}
+	for k, want := range wantCounts {
+		if doc.Counts[k] != want {
+			t.Errorf("counts[%s] = %d, want %d", k, doc.Counts[k], want)
+		}
+	}
 
-Waiting On You (1)
-  [acme/api#7] Fix login
-    by @alice, updated 2026-06-01 · ci: failing · conflict
-    https://github.com/acme/api/pull/7
+	byNumber := map[int]map[string]any{}
+	for _, pr := range doc.PullRequests {
+		byNumber[int(pr["number"].(float64))] = pr
+	}
+	if len(byNumber) != 3 {
+		t.Fatalf("got %d pull requests, want 3", len(byNumber))
+	}
 
-Ready To Ship (1)
-  [acme/api#8] Add cache
-    by @bob, updated 2026-06-02 · ci: passing
-    https://github.com/acme/api/pull/8
+	enriched := byNumber[7]
+	if enriched["bucket"] != "waiting_on_you" || enriched["ci"] != "failure" || enriched["merge_state"] != "conflict" {
+		t.Errorf("PR #7 = %+v, want waiting_on_you/failure/conflict", enriched)
+	}
+	if enriched["unresolved_threads"] != float64(3) {
+		t.Errorf("PR #7 unresolved_threads = %v, want 3", enriched["unresolved_threads"])
+	}
+	jira, ok := enriched["jira"].(map[string]any)
+	if !ok || jira["key"] != "PROJ-1" || jira["status"] != "In Review" {
+		t.Errorf("PR #7 jira = %v, want the PROJ-1 object", enriched["jira"])
+	}
 
-In Flight (1)
-  [acme/api#9] WIP thing
-    by @carol, updated 2026-06-03
-    https://github.com/acme/api/pull/9
-`
-	if got := stdout.String(); got != want {
-		t.Errorf("stdout mismatch:\ngot:\n%s\nwant:\n%s", got, want)
+	// The bare PR pins the other half of the contract: states spelled out rather
+	// than left empty, unknowns as null, and empty lists as [] — never a missing
+	// key, so consumers can index without existence checks.
+	bare := byNumber[9]
+	if bare["bucket"] != "in_flight" || bare["ci"] != "none" || bare["merge_state"] != "clear" {
+		t.Errorf("PR #9 = %+v, want in_flight/none/clear", bare)
+	}
+	if bare["draft"] != true {
+		t.Errorf("PR #9 draft = %v, want true", bare["draft"])
+	}
+	for _, key := range []string{"unresolved_threads", "jira"} {
+		v, present := bare[key]
+		if !present {
+			t.Errorf("PR #9 is missing the %q key entirely", key)
+		} else if v != nil {
+			t.Errorf("PR #9 %s = %v, want null when unknown/absent", key, v)
+		}
+	}
+	reviewers, ok := bare["reviewers"].(map[string]any)
+	if !ok {
+		t.Fatalf("PR #9 reviewers = %v, want an object", bare["reviewers"])
+	}
+	for _, group := range []string{"requested", "approved", "changes_requested", "commented"} {
+		if list, isSlice := reviewers[group].([]any); !isSlice || len(list) != 0 {
+			t.Errorf("PR #9 reviewers.%s = %v, want [] (never null)", group, reviewers[group])
+		}
 	}
 }
 
@@ -223,8 +305,11 @@ search = "oss-query"`)
 	if gotSearch != "oss-query" {
 		t.Errorf("search query = %q, want the oss profile's query", gotSearch)
 	}
-	if !strings.Contains(stdout.String(), `search="oss-query"`) {
+	if !strings.Contains(stdout.String(), `"search": "oss-query"`) {
 		t.Errorf("stdout = %q, want the active profile's search echoed", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"profile": "oss"`) {
+		t.Errorf("stdout = %q, want the active profile named in the envelope", stdout.String())
 	}
 }
 
@@ -360,7 +445,7 @@ search = "s"`)
 	}
 }
 
-func TestRun_NoTUIFlagForcesTextOutput(t *testing.T) {
+func TestRun_NoTUIFlagForcesJSONOutput(t *testing.T) {
 	t.Parallel()
 
 	cfgPath := writeConfig(t, `github_token = "t"
@@ -390,8 +475,8 @@ search = "s"`)
 	if called {
 		t.Error("-no-tui must bypass the TUI runner")
 	}
-	if !strings.Contains(stdout.String(), "[ajardin/kiroshi#1] first") {
-		t.Errorf("stdout = %q, want text rendering", stdout.String())
+	if !strings.Contains(stdout.String(), `"title": "first"`) {
+		t.Errorf("stdout = %q, want the JSON document", stdout.String())
 	}
 }
 

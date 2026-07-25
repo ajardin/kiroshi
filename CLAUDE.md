@@ -9,7 +9,7 @@ the code does, read the code; for *why* it looks the way it does, read here.
 ## Architecture
 
 - `internal/cli` — flag parsing, config load, GitHub client wiring, decides
-  TUI vs plain-text output. Functional options (`WithGitHubClient`,
+  TUI vs JSON output. Functional options (`WithGitHubClient`,
   `WithTUIRunner`) exist purely as test seams.
 - `internal/tui` — custom Bubble Tea model. We deliberately do **not** use
   `bubbles/list`: the mockup needed pixel-level control over selected-row
@@ -26,8 +26,44 @@ the code does, read the code; for *why* it looks the way it does, read here.
 - `internal/config`, `internal/version` — self-explanatory.
 
 TTY detection lives in `cli.isTerminal` and uses `os.ModeCharDevice`. Any
-non-`*os.File` writer (tests, pipes, CI) falls back to plain text. The
-`-no-tui` flag forces text mode regardless.
+non-`*os.File` writer (tests, pipes, CI) falls back to JSON. The
+`-no-tui` flag forces JSON regardless.
+
+### JSON output contract
+
+`internal/cli/json.go` holds the whole non-TUI output. It **replaced** a
+human-readable listing: two non-TUI formats could not both be justified, and
+only one of them was pipeable. There is deliberately **no `-json` flag** —
+with a single non-TUI format, `-no-tui` already selects it and a second flag
+would be a synonym.
+
+The document is an envelope (`login`, `profile`, `search`, `scanned_at`,
+`counts`) wrapping `pull_requests`, and it carries **every** enriched field.
+That is the point: the scan pays 4–5 REST calls per PR either way, and the
+old text output discarded most of the result. A rendered row must distil, a
+machine document must not.
+
+Two rules make it a contract, and both have teeth in the tests:
+
+1. **Names and enum values are stable once released.** Bucket names come from
+   `tui.Bucket.String()` (snake_case) rather than a mapping in `cli`, so a new
+   bucket can't silently serialise as `""`. The pane-specific display labels
+   (`ON YOU` / `NEEDS YOU`) stay at their render sites — they are not this.
+2. **Every key is always present.** No `omitempty` anywhere. An unknown is
+   `null`, an empty list is `[]`, and the two Go zero values that would
+   otherwise read as "empty" are spelled out instead: `CIStateNone` → `"none"`
+   (a repo with no checks is not a passing build) and `MergeStateClear` →
+   `"clear"`. `unresolved_threads` is `*int` so a GraphQL failure is `null`
+   rather than a `0` indistinguishable from a genuinely clean PR; `jira` is a
+   nullable object, with `jira_lookup_failed` separating "lookup broke" from
+   "no ticket".
+
+Classification goes through `tui.BucketFor` (incoming semantics), so the JSON
+and the dashboard can never disagree. There is no `mine`-pane equivalent in
+the document — consumers split on `author == login` themselves.
+
+The encoder runs with `SetEscapeHTML(false)`: titles and URLs routinely
+contain `&`, and `&` in a `jq -r` pipeline is user-visible damage.
 
 ### Enrichment & feature constraints
 
@@ -176,7 +212,7 @@ header then shows the new profile over the old list, accepted as the lesser
 evil vs blanking the dashboard. The header tag, footer hint, and help row
 only appear with >1 profile (`p` is a no-op otherwise). `-profile <name>`
 resolves before the first GitHub call (unknown name fails fast, listing the
-valid names) and selects the query in plain-text mode / the starting profile
+valid names) and selects the query in JSON mode / the starting profile
 in TUI mode. Profiles are hand-edit only: the wizard never asks, and a
 reconfigure carries them over like `notify`. `[[profiles]]` must sit at the
 end of the TOML file (keys after a table header belong to the table) —
