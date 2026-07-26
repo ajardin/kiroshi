@@ -15,9 +15,11 @@ the code does, read the code; for *why* it looks the way it does, read here.
   `bubbles/list`: the mockup needed pixel-level control over selected-row
   highlighting, status cards, and the footer that the list bubble couldn't
   give us cleanly.
-- `internal/gh` — GitHub client. Uses an `advancedSearchTransport`
-  RoundTripper to hit the v2 advanced search endpoint (the classic search
-  endpoint can't express the queries we need).
+- `internal/gh` — GitHub client. Sets `SearchOptions.AdvancedSearch` on the
+  issue search so it hits the v2 advanced search backend (the classic one
+  can't express the queries we need). This was a hand-rolled
+  `advancedSearchTransport` RoundTripper until go-github v81 exposed the
+  option natively — don't reintroduce the wrapper.
 - `internal/jira` — optional Jira Cloud client (REST v3, HTTP Basic). A
   separate package, not folded into `internal/gh`: it's a different service
   with different auth, and keeping it out keeps the go-github wrapper and its
