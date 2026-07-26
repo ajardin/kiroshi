@@ -274,10 +274,7 @@ func NewWithJira(token string, jiraClient jira.Lookup, projectKeys ...string) *C
 // api.github.com; anything else is used verbatim and lets tests point the
 // client at an httptest.Server. A nil jiraClient disables Jira enrichment.
 func newClient(token, baseURL string, jiraClient jira.Lookup, projectKeys ...string) *Client {
-	httpClient := &http.Client{
-		Timeout:   HTTPTimeout,
-		Transport: &advancedSearchTransport{base: http.DefaultTransport},
-	}
+	httpClient := &http.Client{Timeout: HTTPTimeout}
 	ghClient := github.NewClient(httpClient).WithAuthToken(token)
 	if baseURL != "" {
 		u, err := url.Parse(baseURL)
@@ -290,33 +287,6 @@ func newClient(token, baseURL string, jiraClient jira.Lookup, projectKeys ...str
 		ghClient.UploadURL = u
 	}
 	return &Client{gh: ghClient, jira: jiraClient, jiraProjects: projectKeys}
-}
-
-// advancedSearchTransport forces advanced_search=true on /search/issues
-// requests. The REST endpoint still defaults to the classic search backend,
-// which silently drops boolean expressions like `(author:A OR author:B)` and
-// returns zero results — the opposite of what github.com/issues shows. Once
-// GitHub flips the default or go-github exposes the option on SearchOptions,
-// this wrapper can be removed.
-type advancedSearchTransport struct {
-	base http.RoundTripper
-}
-
-// RoundTrip appends advanced_search=true to every /search/issues request.
-// The incoming request is cloned so we honour the net/http contract that
-// RoundTrippers must not mutate the request they receive.
-func (t *advancedSearchTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if req.URL.Path != "/search/issues" {
-		return t.base.RoundTrip(req)
-	}
-	q := req.URL.Query()
-	if q.Get("advanced_search") != "" {
-		return t.base.RoundTrip(req)
-	}
-	r := req.Clone(req.Context())
-	q.Set("advanced_search", "true")
-	r.URL.RawQuery = q.Encode()
-	return t.base.RoundTrip(r)
 }
 
 // ErrInvalidToken is returned when GitHub answers 401 to an authenticated
@@ -387,7 +357,13 @@ func (c *Client) AuthenticatedUser(ctx context.Context) (User, error) {
 // hasn't moved (see cachedEnrichment); detail, check runs and Jira stay live.
 // Cache entries for PRs that dropped out of the results are evicted.
 func (c *Client) SearchPullRequests(ctx context.Context, query string) ([]PullRequest, error) {
-	opts := &github.SearchOptions{ListOptions: github.ListOptions{PerPage: 100}}
+	// The endpoint still defaults to the classic search backend, which silently
+	// drops boolean expressions like `(author:A OR author:B)` and returns zero
+	// results — the opposite of what github.com/issues shows.
+	opts := &github.SearchOptions{
+		AdvancedSearch: github.Ptr(true),
+		ListOptions:    github.ListOptions{PerPage: 100},
+	}
 	var out []PullRequest
 	for {
 		res, resp, err := c.gh.Search.Issues(ctx, query, opts)
