@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/go-github/v81/github"
+	"github.com/google/go-github/v82/github"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/ajardin/kiroshi/internal/jira"
