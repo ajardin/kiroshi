@@ -1,6 +1,6 @@
 module github.com/ajardin/kiroshi
 
-go 1.25.0
+go 1.26.0
 
 require (
 	charm.land/bubbletea/v2 v2.0.9
@@ -8,7 +8,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/charmbracelet/x/ansi v0.11.8
 	github.com/google/go-github/v82 v82.0.0
-	golang.org/x/sync v0.22.0
+	golang.org/x/sync v0.23.0
 )
 
 require (
