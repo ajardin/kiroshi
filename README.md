@@ -30,7 +30,7 @@ come through `brew upgrade` like any other formula.
 go install github.com/ajardin/kiroshi/cmd/kiroshi@latest
 ```
 
-Requires Go 1.25 or newer.
+Requires Go 1.26 or newer.
 
 ### Pre-built binaries
 
