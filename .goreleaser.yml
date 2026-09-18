@@ -98,7 +98,15 @@ homebrew_casks:
     description: GitHub pull request dashboard for the terminal
     caveats: |
       Run `kiroshi -init` to create your configuration (GitHub token, search query).
-    hooks:
-      post:
-        install: |
-          system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/kiroshi"]
+    # GoReleaser's `hooks.post.install` emits a `postflight do` block, which
+    # Homebrew 7 deprecated in favour of `postflight_steps`; `custom_block` is
+    # the only escape hatch that lets us write the modern stanza ourselves.
+    # The backticks are load-bearing: GoReleaser Go-templates the whole rendered
+    # cask, so Homebrew's own `{{staged_path}}` token has to be emitted as a
+    # literal. Drop this once GoReleaser's cask template catches up.
+    custom_block: |
+      postflight_steps do
+        on_macos do
+          run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ `{{staged_path}}` }}/kiroshi"]
+        end
+      end
