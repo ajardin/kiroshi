@@ -111,9 +111,9 @@ search = "is:pr is:open involves:@me archived:false"
 min_reviews = 2
 
 # Optional auto-refresh cadence for the TUI, as a Go duration ("30s", "5m",
-# "1h"). When set, the dashboard rescans on its own and the footer shows an
-# "auto <interval>" indicator. Omit it (or set 0) to refresh only on demand
-# with the "r" key.
+# "1h"). When set, the dashboard rescans on its own and the header shows an
+# "auto <interval>" badge. Omit it (or set 0) to refresh only on demand with
+# the "r" key.
 refresh_interval = "5m"
 
 # Optional terminal bell: when true, a rescan (manual "r" or auto-refresh)
