@@ -79,7 +79,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, opts ...O
 	)
 	fs.BoolVar(&showVersion, "version", false, "print version and exit")
 	fs.BoolVar(&verbose, "verbose", false, "enable verbose logging")
-	fs.BoolVar(&noTUI, "no-tui", false, "disable the interactive TUI and print plain text")
+	fs.BoolVar(&noTUI, "no-tui", false, "disable the interactive TUI and print JSON")
 	fs.BoolVar(&initMode, "init", false, "interactively create or update the config file and exit")
 	fs.StringVar(&configPath, "config", "", "path to config file (default: $XDG_CONFIG_HOME/kiroshi/config.toml)")
 	fs.StringVar(&profileName, "profile", "", "search profile to use (default: the top-level search)")
