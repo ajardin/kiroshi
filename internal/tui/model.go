@@ -405,7 +405,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, next
 		}
 		m.refreshing = true
+		// Like the r key: the rows give way to a spinner, so a leftover status
+		// goes too rather than turning green while the scan runs.
+		m.status = ""
 		m.statusErr = false
+		m.statusDim = false
 		m.spinFrame = 0
 		return m, tea.Batch(m.rescanCmd(), spinnerCmd(), next)
 
