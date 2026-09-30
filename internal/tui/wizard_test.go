@@ -11,13 +11,12 @@ import (
 	"github.com/ajardin/kiroshi/internal/config"
 )
 
-// send applies a key message and unwraps the result back to a WizardModel,
-// running the returned command synchronously so msg-producing cmds (the token
-// validation) feed back through Update — mirroring applyCmd for the dashboard.
+// send applies msg and unwraps the result back to a WizardModel, the wizard's
+// counterpart of applyCmd.
 func send(t *testing.T, m WizardModel, msg tea.Msg) (WizardModel, tea.Cmd) {
 	t.Helper()
-	// Validation now batches the validate cmd with the spinner tick; unwrap and
-	// apply each sub-cmd so the wizardValidateMsg still feeds back through Update.
+	// Validation batches the validate cmd with the spinner tick: apply each
+	// sub-cmd so the wizardValidateMsg feeds back through Update.
 	if batch, ok := msg.(tea.BatchMsg); ok {
 		var last tea.Cmd
 		for _, c := range batch {

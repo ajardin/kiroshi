@@ -426,9 +426,9 @@ search = "s"`)
 		return nil
 	}
 
-	// The TUI now fetches from inside the program, so it launches regardless of
-	// the eventual PR count — a zero-PR search yields an empty dashboard, not a
-	// plain-text fallback. (The fake runner never executes the scan command.)
+	// The TUI runs its first scan from inside the program, so it launches
+	// whatever the PR count: a zero-PR search yields an empty dashboard. (The
+	// fake runner never executes the scan command.)
 	var stdout, stderr bytes.Buffer
 	err := Run(t.Context(), []string{"-config", cfgPath}, &stdout, &stderr,
 		WithGitHubClient(fakeClient{user: gh.User{Login: "u"}}),

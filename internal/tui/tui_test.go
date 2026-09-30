@@ -51,8 +51,8 @@ func applyCmd(t *testing.T, m Model, cmd tea.Cmd) Model {
 		return m
 	}
 	msg := cmd()
-	// A rescan now batches the data cmd with the spinner tick; unwrap and apply
-	// each sub-cmd so the rescanMsg still feeds back through Update.
+	// A rescan batches the data cmd with the spinner tick: apply each sub-cmd
+	// so the rescanMsg feeds back through Update.
 	if batch, ok := msg.(tea.BatchMsg); ok {
 		for _, c := range batch {
 			m = applyCmd(t, m, c)
@@ -657,8 +657,8 @@ func TestModel_RescanRunsRefresh(t *testing.T) {
 	if len(got.prs) != 1 || got.prs[0].Number != 43 {
 		t.Errorf("prs after rescan = %+v, want single PR #43", got.prs)
 	}
-	// A successful rescan no longer prints a transient status line; recency is
-	// carried by the header's "scanned …" instead.
+	// A successful rescan prints no status line: the header's "scanned …"
+	// carries the recency.
 	if got.status != "" {
 		t.Errorf("status after successful rescan = %q, want empty", got.status)
 	}
@@ -1166,9 +1166,8 @@ func TestView_TallListNeverExceedsTerminalHeight(t *testing.T) {
 }
 
 // TestView_HeaderNeverWraps guards listAreaHeight's single-line header
-// assumption: across widths (including the 91–130 band where the full header
-// used to overflow), headerView must stay one line and within the terminal
-// width, degrading by measurement instead of wrapping.
+// assumption: at every width, including the 91–130 band where the full header
+// doesn't fit, headerView stays one line within the terminal width.
 func TestView_HeaderNeverWraps(t *testing.T) {
 	t.Parallel()
 
@@ -1194,9 +1193,9 @@ func TestModel_ActiveTabUnderlined(t *testing.T) {
 	if !strings.Contains(view, active) {
 		t.Errorf("active tab should be underlined+bright\n%s", view)
 	}
-	// The old ▶ cursor-glyph marker must be gone from the strip.
+	// A leading ▶ would collide with the selected-row arrow.
 	if strings.Contains(view, "▶ INCOMING") {
-		t.Error("section header should no longer use the ▶ marker")
+		t.Error("section header must not mark the active tab with ▶")
 	}
 }
 
@@ -1564,9 +1563,8 @@ func TestView_RendersCIStateForEachRow(t *testing.T) {
 	m := NewModel(prs, "viewer", "v0.0.1", 2, false, 0, time.Now(), nil, nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 50})
 	view := updated.(Model).View().Content
-	// The "ci:" prefix is dropped now that CI is a fixed aligned column; the
-	// none/"—" state isn't asserted here because the diff column also renders
-	// "—" (covered distinctly by TestCIFragment).
+	// The none/"—" state isn't asserted here: the diff column also renders "—"
+	// (TestCIFragment covers it).
 	for _, want := range []string{"✓ passing", "● pending", "✗ failing"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("view missing %q\nview=\n%s", want, view)
@@ -2101,7 +2099,7 @@ func TestModel_PKeyCyclesProfilesAndRescans(t *testing.T) {
 		t.Errorf("prs after switch = %+v, want the oss profile's single PR", got.prs)
 	}
 
-	// The manual rescan now follows the active profile.
+	// The manual rescan follows the active profile.
 	updated, cmd = got.Update(tea.KeyPressMsg{Text: "r"})
 	applyCmd(t, updated.(Model), cmd)
 	if len(calls) != 2 || calls[1] != "oss" {
