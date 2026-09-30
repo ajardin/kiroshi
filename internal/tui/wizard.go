@@ -410,16 +410,17 @@ func (m WizardModel) resolvedSearch() string {
 	return defaultSearch
 }
 
+// validateCmd checks the values result will write, trimmed: a pasted token
+// with a trailing newline must not fail here and then be saved anyway.
 func (m WizardModel) validateCmd() tea.Cmd {
-	token, validate := m.token, m.validate
-	jiraURL, jiraEmail, jiraToken, validateJira := strings.TrimSpace(m.jiraURL), m.jiraEmail, m.jiraToken, m.validateJira
+	res, validate, validateJira := m.values(), m.validate, m.validateJira
 	return func() tea.Msg {
-		login, err := validate(token)
+		login, err := validate(res.Token)
 		if err != nil {
 			return wizardValidateMsg{err: err}
 		}
-		if jiraURL != "" {
-			if jerr := validateJira(jiraURL, jiraEmail, jiraToken); jerr != nil {
+		if res.JiraBaseURL != "" {
+			if jerr := validateJira(res.JiraBaseURL, res.JiraEmail, res.JiraToken); jerr != nil {
 				return wizardValidateMsg{err: fmt.Errorf("jira: %w", jerr)}
 			}
 		}
@@ -432,10 +433,16 @@ func (m WizardModel) result() WizardResult {
 	if m.step != stepDone {
 		return WizardResult{Completed: false}
 	}
+	res := m.values()
+	res.Completed = true
+	return res
+}
+
+// values resolves the typed buffers.
+func (m WizardModel) values() WizardResult {
 	mr, _ := m.parsedMinReviews()      // already validated before leaving stepMinReviews
 	ri, _ := m.parsedRefreshInterval() // already validated before leaving stepRefresh
 	return WizardResult{
-		Completed:       true,
 		Token:           strings.TrimSpace(m.token),
 		Search:          m.resolvedSearch(),
 		MinReviews:      mr,
