@@ -113,8 +113,8 @@ func (m Model) headerView() string {
 	if m.jiraEnabled {
 		jiraDot = lipgloss.NewStyle().Foreground(healthColor(m.jiraHealthy)).Render("● jira")
 	}
-	// Auto-refresh as an on/off status badge: green when armed, red when off.
-	autoColor, autoLabel := colRed, "auto off"
+	// Off is a setting, not a failure: muted, never red.
+	autoColor, autoLabel := colMuted, "auto off"
 	if m.refreshInterval > 0 {
 		autoColor, autoLabel = colGreen, "auto "+shortDuration(m.refreshInterval)
 	}
