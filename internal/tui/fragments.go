@@ -11,17 +11,9 @@ import (
 	"github.com/ajardin/kiroshi/internal/jira"
 )
 
-// --- helpers -------------------------------------------------------------
-
-// renderDiff renders the "+N -M" cell. styler is the row's st() closure so
-// the diff cell inherits the selected-row background fill. An all-zero diff
-// (e.g. rename-only PR) falls back to a muted em-dash; otherwise both sides are
-// always shown — including a "+0" or "-0". The "+N" sub-field is left-padded to
-// plusW (the widest "+N" in the visible set) so the "-M" parts line up under
-// each other across rows; the caller pads the whole cell to the column width.
-// Green / red usage mirrors `git diff` and every diff viewer users already
-// know — the second documented exception to the "red = errors only" palette
-// rule (see CLAUDE.md).
+// renderDiff renders the "+N -M" cell through the row's styler, so it keeps
+// the selected-row background. The "+N" is padded to plusW so the "-M" parts
+// align across rows; an all-zero diff (a rename) is a muted em-dash.
 func renderDiff(additions, deletions, plusW int, styler func(lipgloss.Color, bool) lipgloss.Style) string {
 	if additions == 0 && deletions == 0 {
 		return styler(colMuted, false).Render("—")
@@ -31,19 +23,11 @@ func renderDiff(additions, deletions, plusW int, styler func(lipgloss.Color, boo
 	return plus + styler(colMuted, false).Render(" ") + minus
 }
 
-// approvalFragment is the marker for the "viewer approved this PR" cell — a
-// compact green check that occupies a fixed one-column slot between the author
-// and diff columns (a blank space when the viewer hasn't approved). Green
-// follows the universal GitHub "approved" convention, the third deliberate
-// concession to convention in the otherwise-locked palette (alongside the CI
-// and diff cells; see CLAUDE.md).
-func approvalFragment() string { return "✓" }
+// approvalMark fills the one-column slot marking a PR the viewer approved.
+const approvalMark = "✓"
 
-// ciFragment returns the label and accent color for the CI cell of a row. The
-// cell is an aligned column, so the textual "ci:" prefix is dropped — its fixed
-// position identifies it. Pending is rendered in cyan (the project's "in
-// progress elsewhere" hue); failure is the only place colRed leaves the
-// reserved-for-errors bucket.
+// ciFragment returns the label and color of the CI cell. Its fixed column
+// identifies it, so there is no "ci:" prefix.
 func ciFragment(s gh.CIState) (string, lipgloss.Color) {
 	switch s {
 	case gh.CIStateSuccess:
@@ -57,17 +41,9 @@ func ciFragment(s gh.CIState) (string, lipgloss.Color) {
 	}
 }
 
-// mergeFragment returns the label and accent color for the merge-state cell of
-// a row. Like the ci cell it's a fixed aligned column, but it carries a
-// self-describing word ("conflict"/"behind") instead of a glyph, so no prefix —
-// and no width-ambiguous symbol — is needed. Only the two action-requiring
-// states are surfaced; a healthy or not-yet-computed PR (MergeStateClear)
-// renders blank, and the whole column collapses when no visible PR is flagged.
-// Conflict is rendered in colRed: a merge conflict blocks merge exactly like a
-// failing build, so it earns the same "action required" accent — a documented
-// extension of the otherwise reserved-for-errors palette rule (see CLAUDE.md).
-// Behind stays colDim (no new accent): a soft nudge to update the branch, not a
-// hard block.
+// mergeFragment returns the label and color of the merge cell, empty when
+// there is nothing to flag. A conflict blocks merge like a failing build, so it
+// gets the same red; behind is a soft nudge.
 func mergeFragment(s gh.MergeState) (string, lipgloss.Color) {
 	switch s {
 	case gh.MergeStateConflict:
@@ -79,13 +55,8 @@ func mergeFragment(s gh.MergeState) (string, lipgloss.Color) {
 	}
 }
 
-// unresolvedFragment renders the unresolved-review-threads cell ("3
-// unresolved") — the strongest "why is this stuck?" signal for an approved
-// but unmerged PR. A flowing-tail item like the merge and Jira cells: empty
-// when the count is zero or unknown (GraphQL unavailable), so most rows show
-// nothing. Callers render it in colDim — an informational nudge, not an
-// error; no new accent, no glyph (palette and width rules are locked, see
-// CLAUDE.md).
+// unresolvedFragment renders "N unresolved", empty when the count is zero or
+// unknown.
 func unresolvedFragment(pr gh.PullRequest) string {
 	if !pr.ThreadsKnown || pr.UnresolvedThreads == 0 {
 		return ""
@@ -93,13 +64,8 @@ func unresolvedFragment(pr gh.PullRequest) string {
 	return fmt.Sprintf("%d unresolved", pr.UnresolvedThreads)
 }
 
-// jiraColor maps a Jira statusCategory to the palette, reusing the CI semantics
-// rather than introducing a new accent: done = green (ships, like CI passing),
-// indeterminate (in progress) = cyan (the project's "in progress elsewhere" hue,
-// like CI pending), new/unknown = dim. There is deliberately no red state — a
-// Jira ticket is never an "error". The listing renders the status word alone in
-// this color (the key is dropped to cut noise); detailView pairs it with the key
-// on a dedicated line.
+// jiraColor reuses the CI semantics rather than a new accent. There is no red:
+// a Jira ticket is never an error.
 func jiraColor(category string) lipgloss.Color {
 	switch jira.Category(category) {
 	case jira.CategoryDone:
@@ -111,9 +77,7 @@ func jiraColor(category string) lipgloss.Color {
 	}
 }
 
-// shortDuration formats a refresh interval for the footer, collapsing the exact
-// whole-unit cases time.Duration.String() spells out in full ("5m0s" → "5m",
-// "1h0m0s" → "1h") and falling back to the standard form otherwise.
+// shortDuration writes whole units the short way ("5m" rather than "5m0s").
 func shortDuration(d time.Duration) string {
 	switch {
 	case d%time.Hour == 0:
@@ -128,13 +92,12 @@ func shortDuration(d time.Duration) string {
 }
 
 const (
-	ageStaleAfter     = 7 * 24 * time.Hour  // colDim — aging
-	ageForgottenAfter = 21 * 24 * time.Hour // colYellow — nudge
+	ageStaleAfter     = 7 * 24 * time.Hour
+	ageForgottenAfter = 21 * 24 * time.Hour
 )
 
-// ageColor escalates an age toward attention-grabbing as a PR sits unmerged:
-// muted while fresh, dim past a week, yellow past three weeks. Yellow here is a
-// deliberate, documented reuse of the "needs your attention" accent (see CLAUDE.md).
+// ageColor escalates as a PR sits open, up to the "needs your attention"
+// yellow past three weeks.
 func ageColor(age time.Duration) lipgloss.Color {
 	switch {
 	case age >= ageForgottenAfter:
@@ -148,7 +111,7 @@ func ageColor(age time.Duration) lipgloss.Color {
 
 func humanAgo(d time.Duration) string {
 	switch {
-	case d < 0, d < time.Second:
+	case d < time.Second:
 		return "just now"
 	case d < time.Minute:
 		return fmt.Sprintf("%ds ago", int(d.Seconds()))
@@ -161,8 +124,7 @@ func humanAgo(d time.Duration) string {
 	}
 }
 
-// countNoun formats a count with a naively pluralised noun ("1 file" / "3
-// files"). Only used for the detail meta's regular-plural nouns.
+// countNoun naively pluralises a regular noun ("1 file", "3 files").
 func countNoun(n int, noun string) string {
 	if n == 1 {
 		return fmt.Sprintf("%d %s", n, noun)
@@ -177,11 +139,8 @@ func truncate(s string, maxW int) string {
 	if maxW <= 1 {
 		return "…"
 	}
-	// Accumulate runes until the next one would push the prefix past maxW-1
-	// display columns, reserving the final column for the ellipsis. Width is
-	// measured per rune because wide glyphs (CJK, emoji) occupy two cells —
-	// slicing by rune count alone would overflow maxW and break the row's
-	// column alignment and selected-row background fill.
+	// Measure per rune: wide glyphs (CJK, emoji) take two cells, so counting
+	// runes would overflow maxW. The last column is kept for the ellipsis.
 	budget := maxW - 1
 	var b strings.Builder
 	used := 0

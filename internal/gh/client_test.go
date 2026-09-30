@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,9 +43,7 @@ func TestEnrichJiraStatus(t *testing.T) {
 		t.Parallel()
 		c := &Client{}
 		pr := &PullRequest{HeadRef: "feature/PROJ-1-foo"}
-		if err := c.enrichJiraStatus(context.Background(), pr); err != nil {
-			t.Fatalf("err = %v", err)
-		}
+		c.enrichJiraStatus(context.Background(), pr)
 		if pr.JiraKey != "" || pr.JiraStatus != "" {
 			t.Errorf("expected no Jira fields set, got %+v", pr)
 		}
@@ -55,9 +54,7 @@ func TestEnrichJiraStatus(t *testing.T) {
 		fake := &fakeJira{status: jira.Status{Name: "Done", Category: jira.CategoryDone}}
 		c := &Client{jira: fake}
 		pr := &PullRequest{HeadRef: "feature/no-key", Title: "nothing", Body: "here"}
-		if err := c.enrichJiraStatus(context.Background(), pr); err != nil {
-			t.Fatalf("err = %v", err)
-		}
+		c.enrichJiraStatus(context.Background(), pr)
 		if pr.JiraKey != "" {
 			t.Errorf("JiraKey = %q, want empty", pr.JiraKey)
 		}
@@ -71,9 +68,7 @@ func TestEnrichJiraStatus(t *testing.T) {
 		fake := &fakeJira{status: jira.Status{Name: "Done", Category: jira.CategoryDone}}
 		c := &Client{jira: fake, jiraProjects: []string{"PROJ"}}
 		pr := &PullRequest{HeadRef: "chore/bump", Title: "fix UTF-8 decoding"}
-		if err := c.enrichJiraStatus(context.Background(), pr); err != nil {
-			t.Fatalf("err = %v", err)
-		}
+		c.enrichJiraStatus(context.Background(), pr)
 		if fake.askedAt != "" {
 			t.Errorf("looked up %q, want no call at all (that is the point of the allowlist)", fake.askedAt)
 		}
@@ -87,9 +82,7 @@ func TestEnrichJiraStatus(t *testing.T) {
 		fake := &fakeJira{status: jira.Status{Name: "Done", Category: jira.CategoryDone}}
 		c := &Client{jira: fake, jiraProjects: []string{"PROJ"}}
 		pr := &PullRequest{Title: "fix UTF-8 in PROJ-42"}
-		if err := c.enrichJiraStatus(context.Background(), pr); err != nil {
-			t.Fatalf("err = %v", err)
-		}
+		c.enrichJiraStatus(context.Background(), pr)
 		if fake.askedAt != "PROJ-42" {
 			t.Errorf("looked up %q, want PROJ-42", fake.askedAt)
 		}
@@ -100,9 +93,7 @@ func TestEnrichJiraStatus(t *testing.T) {
 		fake := &fakeJira{status: jira.Status{Name: "In Review", Category: jira.CategoryIndeterminate}}
 		c := &Client{jira: fake}
 		pr := &PullRequest{HeadRef: "feature/PROJ-7-foo", Title: "ignored ABC-9"}
-		if err := c.enrichJiraStatus(context.Background(), pr); err != nil {
-			t.Fatalf("err = %v", err)
-		}
+		c.enrichJiraStatus(context.Background(), pr)
 		if fake.askedAt != "PROJ-7" {
 			t.Errorf("looked up %q, want PROJ-7", fake.askedAt)
 		}
@@ -119,9 +110,7 @@ func TestEnrichJiraStatus(t *testing.T) {
 		fake := &fakeJira{err: jira.ErrIssueNotFound}
 		c := &Client{jira: fake}
 		pr := &PullRequest{HeadRef: "feature/PROJ-7-foo"}
-		if err := c.enrichJiraStatus(context.Background(), pr); err != nil {
-			t.Fatalf("err = %v, want nil (graceful degradation)", err)
-		}
+		c.enrichJiraStatus(context.Background(), pr)
 		// A 404 leaves all Jira fields empty so the cell renders "—".
 		if pr.JiraKey != "" || pr.JiraStatus != "" || pr.JiraCategory != "" {
 			t.Errorf("expected all Jira fields empty on a 404, got %+v", pr)
@@ -139,9 +128,7 @@ func TestEnrichJiraStatus(t *testing.T) {
 		fake := &fakeJira{err: jira.ErrInvalidToken}
 		c := &Client{jira: fake}
 		pr := &PullRequest{HeadRef: "feature/PROJ-7-foo"}
-		if err := c.enrichJiraStatus(context.Background(), pr); err != nil {
-			t.Fatalf("err = %v, want nil (graceful degradation)", err)
-		}
+		c.enrichJiraStatus(context.Background(), pr)
 		if pr.JiraKey != "" || pr.JiraStatus != "" {
 			t.Errorf("expected empty Jira fields, got %+v", pr)
 		}
@@ -156,9 +143,7 @@ func TestEnrichJiraStatus(t *testing.T) {
 		fake := &fakeJira{err: errors.New("connection reset by peer")}
 		c := &Client{jira: fake}
 		pr := &PullRequest{HeadRef: "feature/PROJ-7-foo"}
-		if err := c.enrichJiraStatus(context.Background(), pr); err != nil {
-			t.Fatalf("err = %v, want nil (graceful degradation)", err)
-		}
+		c.enrichJiraStatus(context.Background(), pr)
 		if pr.JiraKey != "" || pr.JiraStatus != "" {
 			t.Errorf("expected empty Jira fields, got %+v", pr)
 		}
@@ -172,9 +157,7 @@ func TestEnrichJiraStatus(t *testing.T) {
 		fake := &fakeJira{err: jira.ErrInvalidToken}
 		c := &Client{jira: fake}
 		pr := &PullRequest{HeadRef: "feature/no-key"}
-		if err := c.enrichJiraStatus(context.Background(), pr); err != nil {
-			t.Fatalf("err = %v", err)
-		}
+		c.enrichJiraStatus(context.Background(), pr)
 		// No key was found, so no lookup happened: not a Jira failure.
 		if pr.JiraLookupFailed {
 			t.Error("JiraLookupFailed should stay false when there is no key to look up")
@@ -437,16 +420,16 @@ func TestClient_SearchPullRequests(t *testing.T) {
 					if !got.UpdatedAt.Equal(want.UpdatedAt) {
 						t.Errorf("pr[0].UpdatedAt = %v, want %v", got.UpdatedAt, want.UpdatedAt)
 					}
-					if !equalStrings(got.RequestedReviewers, want.RequestedReviewers) {
+					if !slices.Equal(got.RequestedReviewers, want.RequestedReviewers) {
 						t.Errorf("RequestedReviewers = %v, want %v", got.RequestedReviewers, want.RequestedReviewers)
 					}
-					if !equalStrings(got.Approvals, want.Approvals) {
+					if !slices.Equal(got.Approvals, want.Approvals) {
 						t.Errorf("Approvals = %v, want %v", got.Approvals, want.Approvals)
 					}
-					if !equalStrings(got.ChangesRequested, want.ChangesRequested) {
+					if !slices.Equal(got.ChangesRequested, want.ChangesRequested) {
 						t.Errorf("ChangesRequested = %v, want %v", got.ChangesRequested, want.ChangesRequested)
 					}
-					if !equalStrings(got.Commented, want.Commented) {
+					if !slices.Equal(got.Commented, want.Commented) {
 						t.Errorf("Commented = %v, want %v", got.Commented, want.Commented)
 					}
 					if got.HeadSHA != want.HeadSHA {
@@ -607,7 +590,7 @@ func TestClient_SearchPullRequests_PartialFailureDegrades(t *testing.T) {
 				t.Error("PR 2 should be flagged EnrichPartial after its detail call failed")
 			}
 			// The review state fetched before the failure is kept...
-			if !equalStrings(pr.RequestedReviewers, []string{"carol"}) {
+			if !slices.Equal(pr.RequestedReviewers, []string{"carol"}) {
 				t.Errorf("PR 2 RequestedReviewers = %v, want [carol] (fields enriched before the failure must survive)", pr.RequestedReviewers)
 			}
 			// ...and the fields owned by the failed enricher stay zero.
@@ -709,7 +692,7 @@ func TestClient_SearchPullRequests_PartialReviewStateNotCached(t *testing.T) {
 	if second.EnrichPartial {
 		t.Error("second scan should be complete once the reviews call recovers")
 	}
-	if !equalStrings(second.Approvals, []string{"bob"}) {
+	if !slices.Equal(second.Approvals, []string{"bob"}) {
 		t.Errorf("Approvals = %v, want [bob] (partial review state must not be cached)", second.Approvals)
 	}
 }
@@ -815,10 +798,10 @@ func TestClient_SearchPullRequests_ReviewCache(t *testing.T) {
 	if got := count("/repos/ajardin/repo-x/commits/sha-1/check-runs"); got != 2 {
 		t.Errorf("check-runs calls = %d, want 2 (CI must stay live)", got)
 	}
-	if !equalStrings(second.RequestedReviewers, first.RequestedReviewers) ||
-		!equalStrings(second.Approvals, first.Approvals) ||
-		!equalStrings(second.ChangesRequested, first.ChangesRequested) ||
-		!equalStrings(second.Commented, first.Commented) {
+	if !slices.Equal(second.RequestedReviewers, first.RequestedReviewers) ||
+		!slices.Equal(second.Approvals, first.Approvals) ||
+		!slices.Equal(second.ChangesRequested, first.ChangesRequested) ||
+		!slices.Equal(second.Commented, first.Commented) {
 		t.Errorf("cached review state differs: first %+v, second %+v", first, second)
 	}
 
@@ -1285,18 +1268,6 @@ func TestNormalizeMergeState(t *testing.T) {
 	}
 }
 
-func equalStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
 func TestSummarizeReviews(t *testing.T) {
 	t.Parallel()
 
@@ -1407,13 +1378,13 @@ func TestSummarizeReviews(t *testing.T) {
 			t.Parallel()
 			reviews := buildReviews(t, tc.reviews)
 			approvals, changesReq, commented := summarizeReviews(reviews, tc.author)
-			if !equalStrings(approvals, tc.wantApprovals) {
+			if !slices.Equal(approvals, tc.wantApprovals) {
 				t.Errorf("approvals = %v, want %v", approvals, tc.wantApprovals)
 			}
-			if !equalStrings(changesReq, tc.wantChangesReq) {
+			if !slices.Equal(changesReq, tc.wantChangesReq) {
 				t.Errorf("changesRequested = %v, want %v", changesReq, tc.wantChangesReq)
 			}
-			if !equalStrings(commented, tc.wantCommented) {
+			if !slices.Equal(commented, tc.wantCommented) {
 				t.Errorf("commented = %v, want %v", commented, tc.wantCommented)
 			}
 		})

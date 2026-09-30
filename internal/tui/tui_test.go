@@ -215,7 +215,7 @@ func TestModel_PersistentStatusNotAutoDismissed(t *testing.T) {
 
 	m := newTestModel(t, nil, nil)
 
-	updated, cmd := m.Update(statusMsg{text: "failed to open", err: true})
+	updated, cmd := m.Update(statusMsg{text: "failed to open", kind: statusError})
 	got := updated.(Model)
 	if cmd != nil {
 		t.Errorf("an error status should not arm a clear timer, got %T", cmd())
@@ -237,8 +237,8 @@ func TestModel_StatusLineIcons(t *testing.T) {
 		icon string
 	}{
 		{"success", func(m Model) Model { m.status = "yanked x"; return m }, "✓"},
-		{"error", func(m Model) Model { m.status = "scan failed"; m.statusErr = true; return m }, "✗"},
-		{"warning", func(m Model) Model { m.status = "1 partially enriched"; m.statusDim = true; return m }, "⚠"},
+		{"error", func(m Model) Model { m.status = "scan failed"; m.statusKind = statusError; return m }, "✗"},
+		{"warning", func(m Model) Model { m.status = "1 partially enriched"; m.statusKind = statusWarn; return m }, "⚠"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -611,14 +611,14 @@ func TestView_RendersApprovalMarker(t *testing.T) {
 	t.Parallel()
 
 	view := approvalModel(t).View().Content
-	if !strings.Contains(view, approvalFragment()) {
-		t.Errorf("view missing approval marker %q\nview=\n%s", approvalFragment(), view)
+	if !strings.Contains(view, approvalMark) {
+		t.Errorf("view missing approval marker %q\nview=\n%s", approvalMark, view)
 	}
 	// The marker rides next to the approved PR's title (#42), so it must not
 	// appear when the viewer approved nothing.
 	none := NewModel(samplePRs(), "nobody", "v", 2, false, 0, time.Now(), nil, nil)
 	upd, _ := none.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	if strings.Contains(upd.(Model).View().Content, approvalFragment()) {
+	if strings.Contains(upd.(Model).View().Content, approvalMark) {
 		t.Error("approval marker shown when viewer approved nothing")
 	}
 }
@@ -676,8 +676,8 @@ func TestModel_RescanReportsError(t *testing.T) {
 	m := newTestModel(t, nil, refresh)
 	updated, cmd := m.Update(tea.KeyPressMsg{Text: "r"})
 	got := applyCmd(t, updated.(Model), cmd)
-	if !got.statusErr {
-		t.Error("statusErr should be true on rescan failure")
+	if got.statusKind != statusError {
+		t.Error("statusKind should be statusError on rescan failure")
 	}
 	if !strings.Contains(got.View().Content, "scan failed") {
 		t.Errorf("view missing scan failure\n%s", got.View().Content)
@@ -694,7 +694,7 @@ func TestModel_RescanIgnoredWhenNoRefresh(t *testing.T) {
 	}
 }
 
-// waitingOnYouPR returns sample PR #42 mutated so bucketFor classifies it
+// waitingOnYouPR returns sample PR #42 mutated so BucketFor classifies it
 // WaitingOnYou for the "ajardin" viewer (a pending review request).
 func waitingOnYouPR() gh.PullRequest {
 	pr := samplePRs()[0]
@@ -890,7 +890,7 @@ func TestModel_InitialScanErrorLeavesLoadingWithStatus(t *testing.T) {
 	if got.mode == modeLoading {
 		t.Error("loading should clear even when the initial scan fails")
 	}
-	if !got.statusErr || !strings.Contains(got.View().Content, "scan failed") {
+	if got.statusKind != statusError || !strings.Contains(got.View().Content, "scan failed") {
 		t.Errorf("a failed initial scan should surface a red status line\n%s", got.View().Content)
 	}
 }
@@ -1237,7 +1237,7 @@ func TestModel_PartialEnrichmentDegradesGitHubDot(t *testing.T) {
 	if got.githubHealthy {
 		t.Error("github should be unhealthy when a PR came back partially enriched")
 	}
-	if got.statusErr {
+	if got.statusKind == statusError {
 		t.Error("partial enrichment is a warning, not an error")
 	}
 	if got.status != "1 pull request(s) partially enriched" {
@@ -1432,8 +1432,8 @@ func TestBucketFor(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := bucketFor(tc.pr, viewer, tc.min); got != tc.want {
-				t.Errorf("bucketFor() = %v, want %v", got, tc.want)
+			if got := BucketFor(tc.pr, viewer, tc.min); got != tc.want {
+				t.Errorf("BucketFor() = %v, want %v", got, tc.want)
 			}
 		})
 	}
@@ -1977,7 +1977,7 @@ func TestMineBucketFor(t *testing.T) {
 		{"changes beats ready", gh.PullRequest{Approvals: []string{"a", "b"}, ChangesRequested: []string{"c"}}, BucketWaitingOnYou},
 	}
 	for _, tc := range cases {
-		if got := mineBucketFor(tc.pr, "ajardin", 2); got != tc.want {
+		if got := mineBucketFor(tc.pr, 2); got != tc.want {
 			t.Errorf("%s: mineBucketFor = %d, want %d", tc.name, got, tc.want)
 		}
 	}
@@ -2192,7 +2192,7 @@ func TestModel_ProfileSwitchScanFailureKeepsUIUsable(t *testing.T) {
 
 	updated, cmd := m.Update(tea.KeyPressMsg{Text: "p"})
 	got := applyCmd(t, updated.(Model), cmd)
-	if !got.statusErr || !strings.Contains(got.View().Content, "scan failed") {
+	if got.statusKind != statusError || !strings.Contains(got.View().Content, "scan failed") {
 		t.Errorf("failed profile scan should surface on the status line\n%s", got.View().Content)
 	}
 	if got.refreshing {

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -10,9 +11,8 @@ import (
 	"github.com/ajardin/kiroshi/internal/gh"
 )
 
-// rowCols holds the per-render column widths for line 2 of each PR row. They are
-// computed once over the full visible set (not just the on-screen page) so the
-// diff and ci columns stay put while scrolling.
+// rowCols holds the line-2 column widths, computed over the whole visible set
+// rather than the page so the columns stay put while scrolling.
 type rowCols struct {
 	author int // width of the "@author" column (capped at maxAuthorW)
 	plus   int // width of the "+N" sub-field, so "-M" aligns across rows
@@ -69,9 +69,8 @@ func (m Model) renderRow(pr gh.PullRequest, selected bool, cols rowCols) string 
 		titleBold = true
 	}
 
-	// st builds a style that includes the row background when the row is
-	// selected. Each segment must declare its own bg up-front; lipgloss does
-	// not back-fill a background across already-rendered SGR resets.
+	// Each segment must declare the selected-row background itself: lipgloss
+	// does not back-fill it across already-rendered SGR resets.
 	st := func(fg lipgloss.Color, bold bool) lipgloss.Style {
 		s := lipgloss.NewStyle().Foreground(fg)
 		if bg != "" {
@@ -99,12 +98,9 @@ func (m Model) renderRow(pr gh.PullRequest, selected bool, cols rowCols) string 
 	title := st(titleFg, titleBold).Render(truncate(pr.Title, available))
 	line1Body := prefix + title
 
-	// Line 2 lays out fixed-width columns (author, approval, diff, ci) so the
-	// diff and ci cells line up vertically across rows for scanning; the Jira
-	// ticket and timestamp flow after, and absent cells are dropped rather than
-	// shown as placeholders. padCell right-pads an already-styled cell with
-	// bg-aware spaces so the row background reaches the column boundary on a
-	// selected row.
+	// Line 2: fixed columns (author, approval, diff, ci) the eye can scan,
+	// then a flowing tail of present cells only. padCell pads with bg-aware
+	// spaces so a selected row's background reaches the column boundary.
 	padCell := func(s string, w int) string {
 		if cw := lipgloss.Width(s); cw < w {
 			return s + st(colMuted, false).Render(strings.Repeat(" ", w-cw))
@@ -114,41 +110,33 @@ func (m Model) renderRow(pr gh.PullRequest, selected bool, cols rowCols) string 
 
 	authorCell := padCell(st(colDim, false).Render(truncate("@"+pr.Author, cols.author)), cols.author)
 	approval := st(colMuted, false).Render(" ")
-	if containsLogin(pr.Approvals, m.login) {
-		approval = st(colGreen, false).Render(approvalFragment())
+	if slices.Contains(pr.Approvals, m.login) {
+		approval = st(colGreen, false).Render(approvalMark)
 	}
 	diffCell := padCell(renderDiff(pr.Additions, pr.Deletions, cols.plus, st), cols.diff)
 	ciText, ciColor := ciFragment(pr.CIState)
 	ciCell := padCell(st(ciColor, false).Render(ciText), cols.ci)
 
-	// Every indicator block is joined by a uniform " · " (sep). The author column
-	// is set apart by a wider gap (authorGap) so the eye separates "who" from the
-	// status indicators. The approval marker stays glued to the diff (it annotates
-	// the PR, not a block of its own).
+	// A wider gap sets "who" apart from the indicators. The approval mark
+	// stays glued to the diff: it annotates the PR, not a block of its own.
 	sep := sp + dot + sp
 	authorGap := st(colMuted, false).Render("      ")
 	line2Body := authorCell + authorGap + approval + sp + diffCell + sep + ciCell
-	// Merge state ("conflict"/"behind") is a flowing-tail item, not a fixed
-	// column: it's rare, so reserving an aligned column just left a gap on every
-	// clear row. Shown first in the tail (it's the most action-worthy), present
-	// only when flagged.
+	// The tail leads with the most action-worthy cells.
 	if mergeText, mergeColor := mergeFragment(pr.MergeState); mergeText != "" {
 		line2Body += sep + st(mergeColor, false).Render(mergeText)
 	}
-	// Unresolved review threads: grouped with the merge cell (both are GitHub
-	// "why is this stuck?" signals), present only when known and > 0.
 	if u := unresolvedFragment(pr); u != "" {
 		line2Body += sep + st(colDim, false).Render(u)
 	}
-	// Jira cell: the status word alone (the key is dropped to cut noise on an
-	// already-dense line), colored by category. Present only when a key resolved.
+	// The Jira key is dropped here to cut noise; detailView shows it.
 	if pr.JiraKey != "" {
 		line2Body += sep + st(jiraColor(pr.JiraCategory), false).Render(pr.JiraStatus)
 	}
 	age := m.now.Sub(pr.CreatedAt)
 	line2Body += sep + st(ageColor(age), false).Render(humanAgo(age))
 
-	// Compose " ┃ <body>" / " ┃   <body>" (line 2 indents to align with title).
+	// Line 2 indents to align with the title.
 	line1 := sp + bar + sp + line1Body
 	line2 := sp + bar + sp + sp + sp + line2Body
 
@@ -159,11 +147,9 @@ func (m Model) renderRow(pr gh.PullRequest, selected bool, cols rowCols) string 
 	return line1 + "\n" + line2 + "\n"
 }
 
-// fitRowToWidth makes an already-styled row exactly width columns wide: it clips
-// the overflow on a narrow terminal (line 1's title, line 2's jira/age tail) and
-// pads the remainder so the selected-row background still reaches the edge.
-// ansi.Truncate is ANSI-aware (the rune-based truncate would mangle the embedded
-// SGR codes), appending a "…" within the budget when it cuts.
+// fitRowToWidth clips or pads an already-styled row to exactly width columns,
+// so a selected row's background reaches the edge. ansi.Truncate, because the
+// rune-based truncate would mangle the embedded SGR codes.
 func fitRowToWidth(s string, width int, padStyle lipgloss.Style) string {
 	if width < 1 {
 		return s
@@ -174,9 +160,7 @@ func fitRowToWidth(s string, width int, padStyle lipgloss.Style) string {
 	return padRowToWidth(s, width, padStyle)
 }
 
-// padRowToWidth right-pads s with styled spaces so the row's background fills
-// the entire terminal width. Spaces have no visible foreground, so the style
-// only matters for its background attribute.
+// padRowToWidth right-pads s with spaces carrying padStyle's background.
 func padRowToWidth(s string, width int, padStyle lipgloss.Style) string {
 	cur := lipgloss.Width(s)
 	if cur >= width {

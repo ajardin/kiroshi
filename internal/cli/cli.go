@@ -19,8 +19,7 @@ import (
 	"github.com/ajardin/kiroshi/internal/version"
 )
 
-// Option configures the CLI entry point. Options exist as a test seam for
-// dependency injection; production callers simply omit them.
+// Option is a test seam for dependency injection; production omits them.
 type Option func(*runOptions)
 
 type runOptions struct {
@@ -30,36 +29,30 @@ type runOptions struct {
 	tokenValidator func(ctx context.Context, token string) (login string, err error)
 }
 
-// WithGitHubClient overrides the default GitHub client with a fake, so tests
-// can exercise Run without hitting the real API.
+// WithGitHubClient replaces the GitHub client.
 func WithGitHubClient(c gh.API) Option {
 	return func(o *runOptions) { o.githubClient = c }
 }
 
-// WithTUIRunner overrides the function used to run the interactive list. Tests
-// pass a no-op so they can assert on the prepared model without spinning up a
-// real Bubble Tea program against /dev/tty.
+// WithTUIRunner replaces the dashboard runner, so tests can assert on the
+// prepared model without a real terminal.
 func WithTUIRunner(run func(tui.Model) error) Option {
 	return func(o *runOptions) { o.runTUI = run }
 }
 
-// WithWizardRunner overrides the function used to run the setup wizard. Tests
-// pass a stub returning a fixed WizardResult so they can assert on the written
-// config without spinning up a Bubble Tea program against a real terminal.
+// WithWizardRunner replaces the setup wizard runner, so tests can assert on
+// the written config without a real terminal.
 func WithWizardRunner(run func(tui.WizardModel) (tui.WizardResult, error)) Option {
 	return func(o *runOptions) { o.runWizard = run }
 }
 
-// WithTokenValidator overrides the live token check the wizard performs before
-// writing the config. Tests inject a fake so the wizard never hits the network.
+// WithTokenValidator replaces the wizard's live GitHub token check.
 func WithTokenValidator(validate func(ctx context.Context, token string) (login string, err error)) Option {
 	return func(o *runOptions) { o.tokenValidator = validate }
 }
 
-// Run parses args and executes the kiroshi CLI, writing user-facing output to
-// stdout and diagnostics to stderr. It returns an error when parsing,
-// configuration loading, GitHub authentication or the underlying command
-// fails; a cancelled ctx surfaces as a wrapped context error.
+// Run parses args and executes the kiroshi CLI, writing output to stdout and
+// diagnostics to stderr.
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer, opts ...Option) error {
 	ro := runOptions{}
 	for _, opt := range opts {
@@ -156,9 +149,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, opts ...O
 	return run(ctx, logger, client, cfg, activeProfile, stdout, useTUI, runTUI)
 }
 
-// isTerminal reports whether w is a character device, used to decide whether
-// to launch the TUI. Anything that isn't an *os.File (bytes.Buffer in tests,
-// a pipe in CI) returns false so we keep the plain-text output path.
+// isTerminal reports whether w is a character device. Anything else (a pipe,
+// a bytes.Buffer in tests) gets the JSON output.
 func isTerminal(w io.Writer) bool {
 	f, ok := w.(*os.File)
 	if !ok {
@@ -172,8 +164,8 @@ func isTerminal(w io.Writer) bool {
 }
 
 // stdinIsTerminal mirrors isTerminal for the input side: the TUI and the
-// wizard both read keys from os.Stdin, so a piped stdin must fall back to
-// plain text even when stdout is a TTY.
+// wizard read keys from os.Stdin, so a piped stdin falls back to JSON even
+// when stdout is a TTY.
 func stdinIsTerminal() bool {
 	stat, err := os.Stdin.Stat()
 	if err != nil {
@@ -182,11 +174,7 @@ func stdinIsTerminal() bool {
 	return (stat.Mode() & os.ModeCharDevice) != 0
 }
 
-// runWizard resolves the target config path, runs the interactive setup
-// wizard, and writes the resulting config. When the target already exists and
-// loads cleanly, the wizard runs in reconfigure mode, seeded with the current
-// values. The default runner requires a real terminal; the WithWizardRunner
-// test seam bypasses that check.
+// runWizard runs the setup wizard and writes the resulting config.
 func runWizard(ctx context.Context, configPath string, stdout io.Writer, ro runOptions) error {
 	path := configPath
 	if path == "" {
@@ -197,11 +185,8 @@ func runWizard(ctx context.Context, configPath string, stdout io.Writer, ro runO
 		path = def
 	}
 
-	// An existing config that loads cleanly switches the wizard to reconfigure
-	// mode, seeded with the current values. A corrupt or invalid file still
-	// refuses — never silently overwrite something unreadable. The
-	// auto-fallback path never gets here with a file present (it is gated on
-	// config.ErrNotFound), so this only concerns explicit -init.
+	// An existing config switches the wizard to reconfigure mode. One that no
+	// longer loads is never overwritten: the user may want what is in it.
 	var existing *config.Config
 	if _, err := os.Stat(path); err == nil {
 		cfg, loadErr := config.Load(path)
@@ -262,14 +247,10 @@ func runWizard(ctx context.Context, configPath string, stdout io.Writer, ro runO
 		JiraToken:       res.JiraToken,
 	}
 	if existing != nil {
-		// Notify, Profiles and JiraProjectKeys are hand-edit only (the wizard
-		// never asks for them), so a reconfigure must carry them over instead of
-		// silently dropping them.
+		// Carry over the hand-edit-only fields. The key list is only valid
+		// alongside the Jira trio, so it goes when the wizard removed Jira.
 		cfg.Notify = existing.Notify
 		cfg.Profiles = existing.Profiles
-		// The exception: the key list is only valid alongside the Jira trio, so
-		// carrying it over after the wizard removed Jira would write a file that
-		// no longer loads.
 		if res.JiraBaseURL != "" {
 			cfg.JiraProjectKeys = existing.JiraProjectKeys
 		}
@@ -291,8 +272,8 @@ func run(ctx context.Context, logger *slog.Logger, client gh.API, cfg *config.Co
 	}
 	logger.DebugContext(ctx, "authenticated", "login", user.Login)
 
-	// One refresher per profile, each with its query baked in: the TUI switches
-	// profiles by swapping closures, so it never handles query strings itself.
+	// One refresher per profile with its query baked in, so the TUI never
+	// handles query strings.
 	profiles := cfg.AllProfiles()
 	refresherFor := func(query string) tui.Refresher {
 		return func(ctx context.Context) ([]gh.PullRequest, error) {
@@ -301,10 +282,8 @@ func run(ctx context.Context, logger *slog.Logger, client gh.API, cfg *config.Co
 	}
 	search := profiles[activeProfile].Search
 
-	// The TUI fetches its first batch from inside the program (Init → refresh)
-	// so the multi-second search+enrichment runs behind the decrypt splash
-	// instead of blocking on a frozen-looking terminal. The plain-text path keeps
-	// the blocking search below (and its non-zero exit on failure).
+	// The TUI runs its first scan behind the loading splash instead of on a
+	// frozen-looking terminal; the JSON path blocks and exits non-zero on failure.
 	if useTUI {
 		tuiProfiles := make([]tui.Profile, len(profiles))
 		for i, p := range profiles {
