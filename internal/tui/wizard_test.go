@@ -11,13 +11,12 @@ import (
 	"github.com/ajardin/kiroshi/internal/config"
 )
 
-// send applies a key message and unwraps the result back to a WizardModel,
-// running the returned command synchronously so msg-producing cmds (the token
-// validation) feed back through Update — mirroring applyCmd for the dashboard.
+// send applies msg and unwraps the result back to a WizardModel, the wizard's
+// counterpart of applyCmd.
 func send(t *testing.T, m WizardModel, msg tea.Msg) (WizardModel, tea.Cmd) {
 	t.Helper()
-	// Validation now batches the validate cmd with the spinner tick; unwrap and
-	// apply each sub-cmd so the wizardValidateMsg still feeds back through Update.
+	// Validation batches the validate cmd with the spinner tick: apply each
+	// sub-cmd so the wizardValidateMsg feeds back through Update.
 	if batch, ok := msg.(tea.BatchMsg); ok {
 		var last tea.Cmd
 		for _, c := range batch {
@@ -258,6 +257,37 @@ func TestWizard_JiraValidationFails(t *testing.T) {
 	}
 	if !strings.Contains(m.errMsg, "jira") {
 		t.Errorf("errMsg = %q, want it to mention jira", m.errMsg)
+	}
+}
+
+// A pasted secret often carries a trailing newline. The live check must see
+// the trimmed value the config will get, or it rejects a working token.
+func TestWizard_ValidatesTrimmedValues(t *testing.T) {
+	t.Parallel()
+
+	var gotToken, gotEmail, gotJiraToken string
+	validate := func(token string) (string, error) { gotToken = token; return "octocat", nil }
+	validateJira := func(_, email, token string) error { gotEmail, gotJiraToken = email, token; return nil }
+	m := NewWizardModel(validate, validateJira)
+	m, _ = send(t, m, tea.PasteMsg{Content: "ghp_token\n"})
+	m, _ = enter(t, m) // -> search
+	m, _ = enter(t, m) // -> min reviews
+	m, _ = enter(t, m) // -> refresh interval
+	m, _ = enter(t, m) // -> jira url
+
+	m = typeRunes(t, m, "https://acme.atlassian.net")
+	m, _ = enter(t, m) // -> jira email
+	m, _ = send(t, m, tea.PasteMsg{Content: " me@acme.com "})
+	m, _ = enter(t, m) // -> jira token
+	m, _ = send(t, m, tea.PasteMsg{Content: "jira-secret\n"})
+	m, cmd := enter(t, m) // -> validating
+	m, _ = send(t, m, cmd())
+
+	if m.step != stepDone {
+		t.Fatalf("step = %v, want stepDone", m.step)
+	}
+	if gotToken != "ghp_token" || gotEmail != "me@acme.com" || gotJiraToken != "jira-secret" {
+		t.Errorf("validated %q / %q / %q, want the trimmed values", gotToken, gotEmail, gotJiraToken)
 	}
 }
 

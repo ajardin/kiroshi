@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -13,10 +13,8 @@ import (
 	"github.com/ajardin/kiroshi/internal/gh"
 )
 
-// sortMode controls the order in which PRs are listed. sortDefault preserves
-// the order returned by the GitHub search API (updated_at desc); the two
-// explicit modes sort by CreatedAt. The user cycles through the three states
-// with the `s` key.
+// sortMode is the list order, cycled with the `s` key: most recent activity
+// first by default, or by creation date either way.
 type sortMode int
 
 const (
@@ -25,8 +23,8 @@ const (
 	sortNewestFirst
 )
 
-// approvalFilter narrows the list to PRs the viewer has (or has not) approved.
-// The user cycles through the three states with the `a` key.
+// approvalFilter narrows the list to PRs the viewer has (or has not)
+// approved, cycled with the `a` key.
 type approvalFilter int
 
 const (
@@ -35,10 +33,8 @@ const (
 	approvalNotMine                       // only PRs the viewer has not approved
 )
 
-// paneView selects which slice of the search results the dashboard shows. The
-// two panes split the same fetched set by authorship — they are NOT two
-// queries. `viewIncoming` is PRs the viewer is reviewing (Author != login);
-// `viewMine` is PRs the viewer authored. The `tab` key toggles between them.
+// paneView splits the same fetched set by authorship, toggled with `tab`: the
+// panes are not two queries.
 type paneView int
 
 const (
@@ -57,86 +53,65 @@ type Model struct {
 	minReviews      int
 	jiraEnabled     bool
 	refreshInterval time.Duration
-	// notify, when true, emits a terminal bell plus a status note when a
-	// rescan moves a PR into the viewer's WaitingOnYou bucket. bell is where
-	// the BEL byte goes — Run wires the program's own output writer so the
-	// byte reaches the terminal Bubble Tea renders to (BEL moves no cursor,
-	// so it cannot corrupt the frame); nil skips the bell.
-	notify    bool
-	bell      io.Writer
-	lastScan  time.Time
-	now       time.Time
-	cursor    int
-	offset    int
-	width     int
-	height    int
-	status    string
-	statusErr bool
-	// statusDim renders the status line in colDim instead of green/red: used
-	// for the partial-enrichment note, a warning that is neither a success
-	// nor an error.
-	statusDim bool
-	// statusSeq is bumped on every status write. A transient status arms a
-	// statusClearCmd carrying the current seq; the clear only fires if the seq
-	// still matches, so a stale timer can never wipe a newer message.
-	statusSeq  int
+	notify          bool
+	// bell receives the notify BEL. Run wires the program's own output, the
+	// terminal Bubble Tea renders to; nil skips the bell.
+	bell       io.Writer
+	lastScan   time.Time
+	now        time.Time
+	cursor     int
+	offset     int
+	width      int
+	height     int
+	status     string
+	statusKind statusKind
+	// statusSeq is bumped on every status write, so a transient status's clear
+	// timer never wipes a newer message.
+	statusSeq int
+	// refreshing is deliberately not a mode: the dashboard stays on screen with
+	// a spinner in place of the rows.
 	refreshing bool
-	// mode is the mutually-exclusive UI mode (list, loading, filter, help,
-	// detail). refreshing is deliberately not a mode: it overlays a spinner on
-	// the status line without changing what is on screen.
-	mode      uiMode
-	spinFrame int
-	// Connection health for the header dots. githubHealthy flips false on a
-	// failed rescan or when any PR came back partially enriched (see
-	// gh.PullRequest.EnrichPartial); jiraHealthy flips false when any PR's
-	// Jira lookup failed. Both default true (a fatal initial GitHub auth
-	// error exits in the CLI before the TUI launches).
+	mode       uiMode
+	spinFrame  int
+	// githubHealthy and jiraHealthy drive the header dots. Both start true: a
+	// failed initial GitHub auth exits in the CLI before the TUI launches.
 	githubHealthy bool
 	jiraHealthy   bool
 	filter        string
 	sort          sortMode
 	approval      approvalFilter
 	pane          paneView
-	// profiles is the switchable search-profile list (empty when the config
-	// defines only the default search); profile indexes the active one. The
-	// active profile's Refresh IS m.refresh — cycleProfile swaps it in place,
-	// so every rescan path (r key, auto-refresh) follows the active profile
-	// for free.
+	// profiles is empty when the config defines only the default search. The
+	// active profile's Refresh IS m.refresh, so every rescan path follows it.
 	profiles []Profile
 	profile  int
 }
 
-// uiMode enumerates the mutually-exclusive UI modes. handleKey and View both
-// switch on it, so the "one mode at a time" invariant is structural — the
-// previous four booleans (loading/filterMode/showHelp/showDetail) enforced it
-// only through matching if-chain order kept in sync by hand across two files.
+// uiMode enumerates the mutually exclusive UI modes; handleKey and View both
+// switch on it.
 type uiMode int
 
 const (
-	// modeList is the default dashboard (the zero value): header, cards, PR
-	// list, footer.
-	modeList uiMode = iota
-	// modeLoading is the initial fetch, before any data has arrived. Unlike
-	// refreshing — which keeps the dashboard visible with a status-line
-	// spinner — it replaces the whole screen with loadingView's decrypt
-	// animation.
-	modeLoading
-	// modeFilter routes typed keys into the filter buffer; the dashboard stays
-	// visible with the filter prompt in the status line.
-	modeFilter
-	// modeHelp replaces the dashboard with the keybindings overlay.
-	modeHelp
-	// modeDetail replaces the dashboard with the selected PR's detail overlay.
-	modeDetail
+	modeList    uiMode = iota // the dashboard
+	modeLoading               // the first scan, behind the decrypt splash
+	modeFilter                // typed keys go to the filter buffer
+	modeHelp                  // the keybindings overlay replaces the dashboard
+	modeDetail                // the PR detail overlay replaces the dashboard
 )
 
-// NewModel builds a Model populated with the given pull requests. Pass
-// time.Now() for lastScan; the header displays "last scan Xm ago" relative
-// to the live clock. minReviews is the team-wide threshold of non-author
-// approvals required to classify a PR as ReadyToShip. jiraEnabled toggles the
-// footer's Jira indicator between active and inactive. refreshInterval, when
-// > 0, drives an automatic rescan on that cadence (0 disables it). open and
-// refresh may be nil in tests.
+// statusKind picks the status line's color and icon.
+type statusKind int
+
+const (
+	statusOK    statusKind = iota // green ✓
+	statusWarn                    // dim ⚠: a degraded scan that still landed
+	statusError                   // red ✗
+)
+
+// NewModel builds a Model already populated with prs, scanned at lastScan.
+// minReviews is the number of non-author approvals ReadyToShip needs, and a
+// zero refreshInterval disables auto-refresh. open and refresh may be nil in
+// tests.
 func NewModel(prs []gh.PullRequest, login, version string, minReviews int, jiraEnabled bool, refreshInterval time.Duration, lastScan time.Time, open Opener, refresh Refresher) Model {
 	return Model{
 		prs:             prs,
@@ -154,12 +129,8 @@ func NewModel(prs []gh.PullRequest, login, version string, minReviews int, jiraE
 	}
 }
 
-// NewLoadingModel builds a Model that launches straight into the loading
-// animation and fetches its first batch of pull requests from inside the TUI
-// (via refresh, kicked off by Init). It exists so the initial scan — search
-// plus per-PR enrichment, a multi-second wait — runs while the decrypt splash
-// animates, instead of blocking before the program starts. lastScan is left
-// zero (never rendered: loadingView replaces the dashboard until data arrives).
+// NewLoadingModel builds a Model that runs its first scan from Init, behind
+// the loading splash, instead of blocking before the program starts.
 func NewLoadingModel(login, version string, minReviews int, jiraEnabled bool, refreshInterval time.Duration, open Opener, refresh Refresher) Model {
 	return Model{
 		login:           login,
@@ -176,19 +147,17 @@ func NewLoadingModel(login, version string, minReviews int, jiraEnabled bool, re
 	}
 }
 
-// WithNotify returns a copy of the model with bell notifications enabled or
-// disabled. A chainable setter, for the same reason as WithProfiles: only the
-// CLI wires it (from the config's notify flag), so widening the constructors
-// would ripple a parameter through every other call site for nothing.
+// WithNotify returns a copy of the model that rings the terminal bell when a
+// rescan moves a PR into Waiting On You. A chainable setter rather than a
+// constructor parameter: only the CLI wires it.
 func (m Model) WithNotify(enabled bool) Model {
 	m.notify = enabled
 	return m
 }
 
-// WithProfiles returns a copy of the model with the switchable search-profile
-// list set and the profile at active selected (its Refresh replaces the
-// model's refresher). A chainable setter like WithNotify: only the CLI wires
-// profiles, and most configs have none. An out-of-range active is ignored.
+// WithProfiles returns a copy of the model with the switchable search
+// profiles set and the one at active selected. An out-of-range active is
+// ignored.
 func (m Model) WithProfiles(profiles []Profile, active int) Model {
 	m.profiles = profiles
 	if active >= 0 && active < len(profiles) {
@@ -199,8 +168,7 @@ func (m Model) WithProfiles(profiles []Profile, active int) Model {
 }
 
 // ActiveProfile returns the active search profile's name, or "" when no
-// profiles are wired. Exported as a test seam for the CLI wiring (the same
-// idea as WithTUIRunner: cli tests assert on the prepared model).
+// profiles are wired. Exported for the CLI tests.
 func (m Model) ActiveProfile() string {
 	if len(m.profiles) == 0 {
 		return ""
@@ -208,8 +176,7 @@ func (m Model) ActiveProfile() string {
 	return m.profiles[m.profile].Name
 }
 
-// anyJiraFailure reports whether any PR's Jira lookup failed during enrichment
-// (a key was found but the call errored). Drives the header's jira health dot.
+// anyJiraFailure drives the header's jira health dot.
 func anyJiraFailure(prs []gh.PullRequest) bool {
 	for _, pr := range prs {
 		if pr.JiraLookupFailed {
@@ -219,9 +186,7 @@ func anyJiraFailure(prs []gh.PullRequest) bool {
 	return false
 }
 
-// countPartial counts the PRs whose GitHub enrichment failed partway (see
-// gh.PullRequest.EnrichPartial). Drives the github health dot and the
-// partial-enrichment status note.
+// countPartial drives the github health dot and the partial-enrichment note.
 func countPartial(prs []gh.PullRequest) int {
 	n := 0
 	for _, pr := range prs {
@@ -232,10 +197,8 @@ func countPartial(prs []gh.PullRequest) int {
 	return n
 }
 
-// Init kicks off the per-second clock tick and, when configured, the
-// auto-refresh tick. When the model launched in the loading state, it also
-// fires the initial scan and arms the decrypt-animation frame ticker so the
-// fetch runs behind the loading splash.
+// Init arms the clock and auto-refresh ticks, plus the first scan when the
+// model launched in the loading state.
 func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{tickCmd(), autoRefreshCmd(m.refreshInterval)}
 	if m.mode == modeLoading && m.refresh != nil {
@@ -248,53 +211,43 @@ type (
 	tickMsg   time.Time
 	statusMsg struct {
 		text string
-		err  bool
-		// transient marks a status that auto-dismisses after statusTTL (yank,
-		// open, "new waiting on you"). Errors and the partial-enrichment note
-		// stay put — they describe a durable state the user must see.
+		kind statusKind
+		// transient statuses auto-dismiss after statusTTL; errors describe a
+		// durable state and stay put.
 		transient bool
 	}
-	// statusClearMsg carries the statusSeq that armed it; the handler clears the
-	// status only if it still matches (a newer message bumped seq otherwise).
+	// statusClearMsg carries the statusSeq that armed it.
 	statusClearMsg int
 	rescanMsg      struct {
 		prs []gh.PullRequest
 		err error
 		at  time.Time
 	}
-	// autoRefreshMsg fires on the refresh_interval cadence; the handler
-	// triggers a rescan (unless one is already running) and re-arms the tick.
 	autoRefreshMsg time.Time
-	// spinMsg advances the rescan spinner. The ticker is armed only while a
-	// rescan is in flight and lets itself die once it stops (see Update).
+	// spinMsg is only re-armed while a wait is in flight.
 	spinMsg time.Time
 )
 
-// spinFrames is the braille spinner cycle. Each glyph is exactly one cell wide,
-// so it never disturbs the status line's width.
+// spinFrames glyphs are exactly one cell wide, so the spinner never shifts
+// the layout.
 var spinFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 const spinInterval = 120 * time.Millisecond
 
-// rescanTimeout bounds one full scan: search plus per-PR enrichment (up to 5
-// REST calls per PR through the enrichConcurrency pool), so it sits well
-// above gh.HTTPTimeout, which caps each individual request. Deliberately
-// built on context.Background(), not the CLI's signal context: ctrl+c tears
-// the whole program down anyway.
+// rescanTimeout bounds a whole scan, well above gh.HTTPTimeout, which caps
+// each request. It hangs off context.Background() rather than the CLI's signal
+// context: ctrl+c tears the whole program down anyway.
 const rescanTimeout = 30 * time.Second
 
 func tickCmd() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
-// spinnerCmd schedules the next spinner frame. Callers arm it when a wait
-// begins; the spinMsg handler re-arms it until the wait ends.
 func spinnerCmd() tea.Cmd {
 	return tea.Tick(spinInterval, func(t time.Time) tea.Msg { return spinMsg(t) })
 }
 
-// autoRefreshCmd schedules the next auto-refresh tick, or nil when auto-refresh
-// is disabled (tea.Batch ignores nil commands).
+// autoRefreshCmd returns nil when auto-refresh is disabled.
 func autoRefreshCmd(d time.Duration) tea.Cmd {
 	if d <= 0 {
 		return nil
@@ -303,12 +256,12 @@ func autoRefreshCmd(d time.Duration) tea.Cmd {
 }
 
 func info(s string) tea.Cmd { return func() tea.Msg { return statusMsg{text: s, transient: true} } }
-func warn(s string) tea.Cmd { return func() tea.Msg { return statusMsg{text: s, err: true} } }
+func failure(s string) tea.Cmd {
+	return func() tea.Msg { return statusMsg{text: s, kind: statusError} }
+}
 
-// statusTTL is how long a transient status lingers before it auto-dismisses.
 const statusTTL = 4 * time.Second
 
-// statusClearCmd schedules a status dismissal tagged with the seq that armed it.
 func statusClearCmd(seq int) tea.Cmd {
 	return tea.Tick(statusTTL, func(time.Time) tea.Msg { return statusClearMsg(seq) })
 }
@@ -321,7 +274,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tickCmd()
 
 	case spinMsg:
-		// Self-terminating: stop re-arming once the rescan / initial load finishes.
 		if !m.refreshing && m.mode != modeLoading {
 			return m, nil
 		}
@@ -329,9 +281,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, spinnerCmd()
 
 	case statusMsg:
-		m.status = msg.text
-		m.statusErr = msg.err
-		m.statusDim = false
+		m.status, m.statusKind = msg.text, msg.kind
 		m.statusSeq++
 		if msg.transient {
 			return m, statusClearCmd(m.statusSeq)
@@ -340,32 +290,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case statusClearMsg:
 		if int(msg) == m.statusSeq {
-			m.status = ""
-			m.statusErr = false
-			m.statusDim = false
+			m.status, m.statusKind = "", statusOK
 		}
 		return m, nil
 
 	case rescanMsg:
 		m.refreshing = false
-		// Invalidate any pending transient timer: a message set below (scan
-		// failed / partially enriched) is persistent and must not be wiped by a
-		// dismiss armed before the scan.
+		// The statuses set below are persistent: disarm any pending clear.
 		m.statusSeq++
 		wasLoading := m.mode == modeLoading
 		if wasLoading {
 			m.mode = modeList
 		}
 		if msg.err != nil {
-			m.status = "scan failed: " + msg.err.Error()
-			m.statusErr = true
-			m.statusDim = false
+			m.status, m.statusKind = "scan failed: "+msg.err.Error(), statusError
 			m.githubHealthy = false
 			return m, nil
 		}
-		// Diff bucket membership before m.prs is replaced. Never notify on the
-		// initial load (everything would be "new"): loading mode or an empty
-		// previous set means there is no baseline to diff against.
+		// Without a previous set there is no baseline: everything would be new.
 		var notifyCmd tea.Cmd
 		if m.notify && !wasLoading && len(m.prs) > 0 {
 			if n := newlyWaitingOnYou(m.prs, msg.prs, m.login, m.minReviews); n > 0 {
@@ -378,36 +320,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.githubHealthy = partial == 0
 		m.jiraHealthy = !anyJiraFailure(msg.prs)
 		m = m.clampCursor()
-		// An auto-refresh rescan can land while the detail overlay is open; if
-		// the new set is empty there is no PR left to detail, so drop the
-		// overlay rather than letting detailView index an empty slice.
+		// An auto-refresh can empty the list under an open detail overlay.
 		if m.mode == modeDetail && len(m.visiblePRs()) == 0 {
 			m.mode = modeList
 		}
-		// No success status: the header's "scanned Xm ago" carries recency and
-		// the section header carries the count, so a transient line is redundant.
-		// The exception is a degraded scan, flagged with a muted note (a
-		// warning, not an error — the scan did land).
-		m.status = ""
+		// No success status: the header already carries the scan's recency and
+		// the section header its count. A degraded scan still landed, so it
+		// gets a warning rather than an error.
+		m.status, m.statusKind = "", statusOK
 		if partial > 0 {
-			m.status = fmt.Sprintf("%d pull request(s) partially enriched", partial)
+			m.status, m.statusKind = fmt.Sprintf("%d pull request(s) partially enriched", partial), statusWarn
 		}
-		m.statusErr = false
-		m.statusDim = partial > 0
 		return m, notifyCmd
 
 	case autoRefreshMsg:
-		// Always re-arm so the cadence continues; only kick off a rescan when one
-		// isn't already in flight (a slow scan that outlasts the interval simply
-		// skips a beat rather than stacking). Mirrors the manual "r" path.
+		// Always re-arm; a scan that outlasts the interval skips a beat rather
+		// than stacking.
 		next := autoRefreshCmd(m.refreshInterval)
 		if m.refresh == nil || m.refreshing || m.mode == modeLoading {
 			return m, next
 		}
-		m.refreshing = true
-		m.statusErr = false
-		m.spinFrame = 0
-		return m, tea.Batch(m.rescanCmd(), spinnerCmd(), next)
+		nm, cmd := m.startRescan()
+		return nm, tea.Batch(cmd, next)
 
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -415,9 +349,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.PasteMsg:
-		// v1 delivered bracketed paste as a runes KeyMsg, so pasting into the
-		// filter just worked; v2 emits a dedicated message. Every other mode
-		// ignores paste, like v1 where multi-rune input matched no binding.
+		// Only the filter takes pasted text.
 		if m.mode == modeFilter && msg.Content != "" {
 			m.filter += msg.Content
 			m.cursor, m.offset = 0, 0
@@ -434,7 +366,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) handleKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	switch m.mode {
 	case modeLoading:
-		// Nothing to act on until the first batch lands; only let the user bail.
 		if k := msg.String(); k == "q" || k == "esc" || k == "ctrl+c" {
 			return m, tea.Quit
 		}
@@ -478,15 +409,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		if m.refresh == nil || m.refreshing {
 			return m, nil
 		}
-		m.refreshing = true
-		// While refreshing, the in-flight indicator lives in the list area
-		// (listView), not the status line. Clear m.status so a leftover status
-		// from a previous action neither resurfaces after this scan finishes nor
-		// pushes the footer down a line during the scan (footer stability).
-		m.status = ""
-		m.statusErr = false
-		m.spinFrame = 0
-		return m, tea.Batch(m.rescanCmd(), spinnerCmd())
+		return m.startRescan()
 	case "f", "/":
 		m.mode = modeFilter
 		m.status = ""
@@ -503,13 +426,18 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
-// cycleProfile advances to the next search profile (with wrap-around) and
-// rescans through the same path as the `r` key. The whole result set is about
-// to be replaced by a different query, so the cursor AND the text filter reset
-// (unlike `tab`, which keeps the filter: the panes share one result set, a
-// profile switch does not). Ignored while a rescan is in flight — an old
-// profile's results landing after the switch would be labelled with the new
-// profile's name.
+// startRescan is the one way into a scan: the `r` key, a profile switch and
+// auto-refresh. The rows give way to a spinner, so a leftover status goes too.
+func (m Model) startRescan() (Model, tea.Cmd) {
+	m.refreshing = true
+	m.spinFrame = 0
+	m.status, m.statusKind = "", statusOK
+	return m, tea.Batch(m.rescanCmd(), spinnerCmd())
+}
+
+// cycleProfile switches to the next search profile and rescans. The result set
+// is about to change, so the text filter resets too, unlike `tab`. It is
+// ignored mid-scan: the old profile's results would land under the new name.
 func (m Model) cycleProfile() (Model, tea.Cmd) {
 	if len(m.profiles) < 2 || m.refreshing {
 		return m, nil
@@ -518,16 +446,11 @@ func (m Model) cycleProfile() (Model, tea.Cmd) {
 	m.refresh = m.profiles[m.profile].Refresh
 	m.filter = ""
 	m.cursor, m.offset = 0, 0
-	m.refreshing = true
-	m.status = ""
-	m.statusErr = false
-	m.spinFrame = 0
-	return m, tea.Batch(m.rescanCmd(), spinnerCmd())
+	return m.startRescan()
 }
 
-// cyclePane toggles between the incoming and mine panes. The visible set swaps
-// out entirely, so the cursor resets to the top (the `f` filter's behaviour, not
-// cycleSort's cursor-follow — there's no shared PR to track onto).
+// cyclePane toggles between the incoming and mine panes. No PR is shared
+// between them, so the cursor resets to the top.
 func (m Model) cyclePane() Model {
 	m.pane = (m.pane + 1) % 2
 	m.cursor, m.offset = 0, 0
@@ -535,8 +458,7 @@ func (m Model) cyclePane() Model {
 	return m.clampCursor()
 }
 
-// selectedURL returns the URL of the PR under the cursor in the current
-// visible set, or "" when the cursor is out of range (e.g. an empty set).
+// selectedURL returns "" when nothing is selected.
 func (m Model) selectedURL() string {
 	if before := m.visiblePRs(); m.cursor < len(before) {
 		return before[m.cursor].URL
@@ -544,10 +466,8 @@ func (m Model) selectedURL() string {
 	return ""
 }
 
-// followSelection repositions the cursor onto the PR carrying url in the
-// (already mutated) visible set and scrolls it into view. found reports
-// whether it was relocated, so callers can apply their own fallback when the
-// PR didn't survive the mutation (or url was "" to begin with).
+// followSelection moves the cursor onto the PR carrying url in the already
+// mutated visible set, reporting false when that PR is gone.
 func (m Model) followSelection(url string) (Model, bool) {
 	if url == "" {
 		return m, false
@@ -561,10 +481,8 @@ func (m Model) followSelection(url string) (Model, bool) {
 	return m, false
 }
 
-// cycleSort advances sort to the next mode (with wrap-around) and repositions
-// the cursor on the previously-selected PR's new index. Reset-to-zero would be
-// disorienting here: the set is identical, only the order changes, so
-// followSelection always succeeds and the clampCursor fallback is near-dead.
+// cycleSort switches to the next sort mode, keeping the cursor on the same PR:
+// the set is identical, only the order changes.
 func (m Model) cycleSort() Model {
 	url := m.selectedURL()
 	m.sort = (m.sort + 1) % 3
@@ -574,11 +492,8 @@ func (m Model) cycleSort() Model {
 	return m.clampCursor()
 }
 
-// cycleApproval advances the approval filter to the next state (with
-// wrap-around) and keeps the cursor on the previously-selected PR when it
-// survives the new filter. Unlike cycleSort the visible set can shrink, so
-// when the selected PR is filtered out we reset to the top rather than
-// holding a stale index.
+// cycleApproval switches to the next approval filter, keeping the cursor on
+// the same PR when it survives, and resetting to the top otherwise.
 func (m Model) cycleApproval() Model {
 	url := m.selectedURL()
 	m.approval = (m.approval + 1) % 3
@@ -589,8 +504,8 @@ func (m Model) cycleApproval() Model {
 	return m.clampCursor()
 }
 
-// handleHelpKey dismisses the keybindings overlay on any key. ctrl+c still
-// quits — it's the one chord users expect to escape the program from anywhere.
+// handleHelpKey dismisses the keybindings overlay on any key but ctrl+c,
+// which quits from anywhere.
 func (m Model) handleHelpKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	if msg.String() == "ctrl+c" {
 		return m, tea.Quit
@@ -599,12 +514,8 @@ func (m Model) handleHelpKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
-// handleDetailKey drives the PR detail overlay. Unlike handleHelpKey (dismiss
-// on any key), up/down move the selection to the previous/next PR so the user
-// can flip through details without returning to the listing; enter/o opens the
-// current PR in the browser; y yanks its URL to the clipboard (the overlay is
-// where users inspect a PR, so it's a natural place to grab the link — and it
-// stays open, like enter/o); ctrl+c quits; any other key closes the overlay.
+// handleDetailKey keeps the overlay open for up/down (flip through PRs),
+// enter/o and y; any other key closes it.
 func (m Model) handleDetailKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
@@ -641,13 +552,10 @@ func (m Model) handleFilterKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		}
 		return m, nil
 	default:
-		// Key.Text carries printable input only — the space included: PR titles
-		// are multi-word, so "fix login" has to be typable. (v1 delivered space
-		// as KeySpace rather than KeyRunes, so the filter silently dropped it.)
+		// Key.Text carries printable input only, space included.
 		if msg.Text != "" {
 			m.filter += msg.Text
-			// Reset the scroll window along with the cursor: a leftover offset
-			// from a scrolled list would render past the end of a shrunken set.
+			// A leftover offset would render past the end of the shrunken set.
 			m.cursor, m.offset = 0, 0
 		}
 		return m, nil
@@ -661,18 +569,13 @@ func (m Model) openSelected() (Model, tea.Cmd) {
 	}
 	url := visible[m.cursor].URL
 	if err := m.open(url); err != nil {
-		return m, warn(fmt.Sprintf("failed to open %s: %v", url, err))
+		return m, failure(fmt.Sprintf("failed to open %s: %v", url, err))
 	}
 	return m, info("opened " + url)
 }
 
-// yankSelected copies the selected PR's URL to the clipboard via Bubble Tea
-// v2's native tea.SetClipboard, which routes the OSC 52 sequence through the
-// renderer instead of writing os.Stdout directly from Update — no risk of
-// interleaving with a frame flush. OSC 52 is fire-and-forget (the terminal
-// silently ignores it if unsupported), so there is no error path. Like
-// openSelected it never touches the mode, so yanking from the detail overlay
-// leaves the overlay open.
+// yankSelected copies the selected PR's URL through OSC 52, which a terminal
+// without support silently ignores: there is no error path.
 func (m Model) yankSelected() (Model, tea.Cmd) {
 	visible := m.visiblePRs()
 	if m.cursor >= len(visible) {
@@ -682,32 +585,27 @@ func (m Model) yankSelected() (Model, tea.Cmd) {
 	return m, tea.Batch(tea.SetClipboard(url), info("yanked "+url))
 }
 
-// newlyWaitingOnYou counts the PRs classified WaitingOnYou in next that were
-// not WaitingOnYou in prev. Diffing by URL survives re-ordering and
-// re-enrichment; a PR that left the bucket and re-entered counts again.
-// Classification uses the incoming-pane semantics (bucketFor) regardless of
-// the active pane — the transition is about the viewer being on the hook,
-// not about what is on screen.
+// newlyWaitingOnYou counts the PRs that entered WaitingOnYou between prev and
+// next, matched by URL. It uses the incoming semantics whatever the active
+// pane: the point is the viewer being on the hook, not what is on screen.
 func newlyWaitingOnYou(prev, next []gh.PullRequest, login string, minReviews int) int {
 	before := make(map[string]bool, len(prev))
 	for _, pr := range prev {
-		if bucketFor(pr, login, minReviews) == BucketWaitingOnYou {
+		if BucketFor(pr, login, minReviews) == BucketWaitingOnYou {
 			before[pr.URL] = true
 		}
 	}
 	n := 0
 	for _, pr := range next {
-		if bucketFor(pr, login, minReviews) == BucketWaitingOnYou && !before[pr.URL] {
+		if BucketFor(pr, login, minReviews) == BucketWaitingOnYou && !before[pr.URL] {
 			n++
 		}
 	}
 	return n
 }
 
-// bellCmd writes the ASCII BEL through the wired output writer, off the Update
-// goroutine like every other side effect. The terminal (or tmux) translates
-// BEL into the user's configured alert — sound, visual bell, or window flag.
-// Returns nil when no writer is wired (tea.Batch drops nil cmds).
+// bellCmd writes BEL off the Update goroutine, like every other side effect.
+// BEL moves no cursor, so it cannot corrupt the frame.
 func (m Model) bellCmd() tea.Cmd {
 	w := m.bell
 	if w == nil {
@@ -729,10 +627,8 @@ func (m Model) rescanCmd() tea.Cmd {
 	}
 }
 
-// panePRs partitions the fetched set by authorship for the active pane: the
-// viewer's own PRs in viewMine, everyone else's in viewIncoming. It is the
-// scoping step that visiblePRs and cardsView both build on, before the text /
-// approval filters and the sort stack on top.
+// panePRs returns a fresh slice of the active pane's PRs, which visiblePRs
+// and cardsView build on.
 func (m Model) panePRs() []gh.PullRequest {
 	mine := m.pane == viewMine
 	var out []gh.PullRequest
@@ -761,27 +657,25 @@ func (m Model) visiblePRs() []gh.PullRequest {
 		mine := m.approval == approvalMine
 		var filtered []gh.PullRequest
 		for _, pr := range out {
-			if containsLogin(pr.Approvals, m.login) == mine {
+			if slices.Contains(pr.Approvals, m.login) == mine {
 				filtered = append(filtered, pr)
 			}
 		}
 		out = filtered
 	}
-	// Copy before sorting: sort.SliceStable mutates in place. panePRs already
-	// hands back a fresh slice, but the copy keeps visiblePRs total about never
-	// reordering anything its callers might hold.
-	sorted := append([]gh.PullRequest(nil), out...)
-	sort.SliceStable(sorted, func(i, j int) bool {
+	// out never aliases m.prs (panePRs builds a fresh slice), so sorting in
+	// place is safe. Stable, so equal timestamps keep the API order.
+	slices.SortStableFunc(out, func(a, b gh.PullRequest) int {
 		switch m.sort {
 		case sortOldestFirst:
-			return sorted[i].CreatedAt.Before(sorted[j].CreatedAt)
+			return a.CreatedAt.Compare(b.CreatedAt)
 		case sortNewestFirst:
-			return sorted[i].CreatedAt.After(sorted[j].CreatedAt)
+			return b.CreatedAt.Compare(a.CreatedAt)
 		default:
-			return sorted[i].UpdatedAt.After(sorted[j].UpdatedAt)
+			return b.UpdatedAt.Compare(a.UpdatedAt)
 		}
 	})
-	return sorted
+	return out
 }
 
 func (m Model) moveDown() Model {
@@ -837,19 +731,16 @@ func (m Model) rowsVisible() int {
 // listAreaHeight is the vertical room left for the PR rows after the fixed
 // regions (header, cards, section header, footer, status line, separators).
 func (m Model) listAreaHeight() int {
-	// header, rule, blank (after cards), the section header itself, blank
-	// (after section), + the net footerGap line between the list and the
-	// footer (the gap renders two blank lines, but the first one is the last
-	// row's trailing spacer, already counted in its rowHeight budget).
-	fixed := 1 + 1 + 1 + 1 + 1 + 1
-	// Cards are one 4-line row, or a 2×2 grid (8 lines) below fullCardsW. Derive
-	// the height from the same width threshold cardsView uses rather than
-	// rendering cardsView a second time per frame just to count its lines.
+	// header, rule, blank, section header, blank, and the one footerGap line
+	// not already counted as the last row's trailing spacer.
+	fixed := 6
+	// Cards are one 4-line row, or a 2×2 grid below fullCardsW: derived from
+	// the threshold rather than rendering cardsView twice per frame.
 	cardLines := 4
 	if m.width < fullCardsW {
 		cardLines = 8
 	}
 	fixed += cardLines
-	fixed += strings.Count(m.footerView(), "\n") + 1 // footer (always incl. the reserved status line)
+	fixed += strings.Count(m.footerView(), "\n") + 1
 	return m.height - fixed
 }

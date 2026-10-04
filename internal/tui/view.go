@@ -9,15 +9,13 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// View implements tea.Model: the composed frame plus the altscreen request,
-// which Bubble Tea v2 moved from the program options onto the returned view.
+// View implements tea.Model.
 func (m Model) View() tea.View {
 	v := tea.NewView(m.render())
 	v.AltScreen = true
 	return v
 }
 
-// render composes the full dashboard frame as a styled string.
 func (m Model) render() string {
 	if m.width == 0 || m.height == 0 {
 		return ""
@@ -30,12 +28,9 @@ func (m Model) render() string {
 	case modeDetail:
 		return m.detailView()
 	}
-	// Below fullCardsW the four cards no longer fit on one row; cardsView falls
-	// back to a 2×2 grid down to minW (two cards wide). Below that we give up.
-	// The height floor is derived from listAreaHeight rather than hard-coded:
-	// the fixed regions vary with the width (2×2 cards, wrapped footer), and a
-	// view taller than the terminal gets its top — the header — trimmed in
-	// alt-screen mode.
+	// Below two cards wide, give up. The height floor comes from
+	// listAreaHeight because the fixed regions vary with the width, and a view
+	// taller than the terminal gets its header trimmed in alt-screen mode.
 	minW := 1 + minCardW*2 + 2
 	minH := m.height - m.listAreaHeight() + rowHeight
 	if m.width < minW || m.height < minH {
@@ -53,27 +48,17 @@ func (m Model) render() string {
 		m.listView(),
 	}
 
-	body := strings.Join(parts, "\n")
-
-	// The footer hugs the content (right under the list) rather than being pinned
-	// to the bottom: on a tall terminal with few rows, pinning left a large empty
-	// gap between the list and the footer. listView renders only real PRs (capped
-	// at rowsVisible), so the footer lands just below the last row, set off by a
-	// blank-line gap (footerGap) — reserved in listAreaHeight so a full list
-	// doesn't lose its last row to it.
-	return body + footerGap + m.footerView()
+	// The footer hugs the list rather than the screen bottom, which left a
+	// large gap on a tall terminal with few rows.
+	return strings.Join(parts, "\n") + footerGap + m.footerView()
 }
 
-// footerGap is the separator between the list and the footer. listView already
-// ends with the last row's trailing newline, so these two newlines render a
-// two-line gap — a deliberate breathing space that sets the footer apart from
-// the row rhythm (each row is itself followed by one blank line).
+// footerGap renders two blank lines after the list, one more than between
+// rows, so the footer stands apart from the row rhythm.
 const footerGap = "\n\n"
 
 // --- Header --------------------------------------------------------------
 
-// healthColor maps a connection-health flag to the palette: green when the last
-// call succeeded, red when it failed.
 func healthColor(ok bool) lipgloss.Color {
 	if ok {
 		return colGreen
@@ -83,9 +68,8 @@ func healthColor(ok bool) lipgloss.Color {
 
 func (m Model) headerView() string {
 	logo := lipgloss.NewStyle().Foreground(colYellow).Bold(true).Render("▲ KIROSHI")
-	// The brand mark already names the app; trim the redundant "kiroshi " that
-	// version.String() prefixes. Fold the last-scan age into the build
-	// parenthetical so version/commit/built/scanned read as one "app state" line.
+	// The brand mark already names the app; the scan age joins the build
+	// parenthetical.
 	build := strings.TrimPrefix(m.version, "kiroshi ")
 	scanned := "scanned " + humanAgo(m.now.Sub(m.lastScan))
 	if strings.HasSuffix(build, ")") {
@@ -93,9 +77,7 @@ func (m Model) headerView() string {
 	} else {
 		build += " (" + scanned + ")"
 	}
-	// Active search profile, shown only when there is more than one to switch
-	// between (a single-profile config would just repeat "default" forever).
-	// Cyan bold: it is chrome-adjacent context like the version, not an alert.
+	// A single-profile config would just repeat "default" forever.
 	var profileTag string
 	if len(m.profiles) > 1 {
 		profileTag = lipgloss.NewStyle().Foreground(colMuted).Render(" · ") +
@@ -103,18 +85,15 @@ func (m Model) headerView() string {
 	}
 	left := logo + " " + lipgloss.NewStyle().Foreground(colCyan).Render(build) + profileTag
 
-	// Wider whitespace between clusters; a uniform " · " everywhere reads cramped.
+	// A uniform " · " between clusters reads cramped.
 	gap := "      "
 
-	// Filled dots (●) mark status badges (github/jira/auto); the clock stays
-	// plain. github/jira are health-aware: green when the last call succeeded,
-	// red when it failed (jira stays a hollow ○ when unconfigured).
 	jiraDot := lipgloss.NewStyle().Foreground(colMuted).Render("○ jira")
 	if m.jiraEnabled {
 		jiraDot = lipgloss.NewStyle().Foreground(healthColor(m.jiraHealthy)).Render("● jira")
 	}
-	// Auto-refresh as an on/off status badge: green when armed, red when off.
-	autoColor, autoLabel := colRed, "auto off"
+	// Off is a setting, not a failure: muted, never red.
+	autoColor, autoLabel := colMuted, "auto off"
 	if m.refreshInterval > 0 {
 		autoColor, autoLabel = colGreen, "auto "+shortDuration(m.refreshInterval)
 	}
@@ -128,17 +107,12 @@ func (m Model) headerView() string {
 	clock := lipgloss.NewStyle().Foreground(colCyan).Render(m.now.Format("15:04:05"))
 	right := user + gap + strings.Join(status, dot) + gap + clock
 
-	// Degrade by measurement, not by a fixed width threshold: a header wider
-	// than the terminal wraps, which breaks listAreaHeight's single-line
-	// assumption and pushes the view past the screen height (alt-screen trims
-	// the overflow from the top, clipping this very line). Drop the build
-	// parenthetical first, then the status badges + clock, keeping only the
-	// brand mark and @login.
+	// A wrapped header breaks listAreaHeight's single-line assumption, so
+	// degrade by measurement: the build first (trivia, unlike the profile that
+	// decides what is shown), then the badges and clock, then the profile.
 	overflows := func() bool {
 		return lipgloss.Width(left)+lipgloss.Width(right)+3 > m.width // 2 margins + min pad
 	}
-	// Drop the build parenthetical but keep the profile tag: the profile decides
-	// what the dashboard shows, the build is trivia.
 	if overflows() {
 		left = logo + profileTag
 	}
@@ -154,8 +128,7 @@ func (m Model) headerView() string {
 		pad = 1
 	}
 	line := " " + left + strings.Repeat(" ", pad) + right + " "
-	// Last resort (a very long login on a very narrow terminal): clip rather
-	// than wrap.
+	// A very long login on a very narrow terminal: clip rather than wrap.
 	if lipgloss.Width(line) > m.width {
 		line = ansi.Truncate(line, m.width, "…")
 	}
@@ -171,39 +144,29 @@ func (m Model) ruleView() string {
 
 // --- Status cards --------------------------------------------------------
 
-// minCardW is the minimum card width. The labels now fit comfortably (the
-// longest is "IN FLIGHT", 9 chars); 21 is kept as a readability floor that also
-// keeps the responsive thresholds (fullCardsW, the 2×2 fallback) stable.
+// minCardW is a readability floor, well above the longest label.
 const minCardW = 21
 
-// fullCardsW is the smallest terminal width that still fits all four cards on a
-// single row (1-char left margin + four minCardW cards + three 2-char gaps).
-// Below it, cardsView falls back to a 2×2 grid.
+// fullCardsW fits the margin, four cards and three gaps on one row; below it,
+// the cards fall back to a 2×2 grid.
 const fullCardsW = 1 + minCardW*4 + 2*3
 
 func (m Model) cardsView() string {
 	prs := m.panePRs()
 	gap := 2
 
-	// Below fullCardsW, lay the cards out two-per-row so they keep a readable
-	// width instead of being crushed (or refusing to render at all).
 	perRow := 4
 	if m.width < fullCardsW {
 		perRow = 2
 	}
 
-	// Each card's rendered width INCLUDING its 2 border chars. Lipgloss
-	// Width() sets the body width and adds the border on top, so we subtract
-	// 2 inside renderCard.
+	// Rendered width including the border; see renderCard.
 	cardW := (m.width - 1 - gap*(perRow-1)) / perRow
 	if cardW < minCardW {
 		cardW = minCardW
 	}
 
-	// Same four palette slots in both panes; only the labels and the fourth
-	// card's count differ. Mine's fourth card is the real DRAFT subset; the
-	// incoming pane keeps "IN FLIGHT" as the pane total (len), per its locked
-	// semantics.
+	// Incoming's fourth card is the pane total; mine's is the draft subset.
 	stats := computeStats(prs, m.classify)
 	var cards []string
 	if m.pane == viewMine {
@@ -234,9 +197,8 @@ func (m Model) cardsView() string {
 	return indentBlock(lipgloss.JoinVertical(lipgloss.Left, rows...), " ")
 }
 
-// indentBlock prefixes every line of s with prefix. lipgloss.JoinHorizontal
-// emits a multi-line string whose subsequent lines start at column 0, so we
-// reapply the indent line-by-line.
+// indentBlock prefixes every line of s: after the first line, a joined block
+// starts back at column 0.
 func indentBlock(s, prefix string) string {
 	lines := strings.Split(s, "\n")
 	for i, l := range lines {
@@ -245,13 +207,11 @@ func indentBlock(s, prefix string) string {
 	return strings.Join(lines, "\n")
 }
 
-// renderCard renders a single status card. totalWidth is the final rendered
-// width INCLUDING the 1-char border on each side.
+// renderCard renders a status card totalWidth wide, border included:
+// lipgloss adds the border on top of Width.
 func renderCard(label string, count int, color lipgloss.Color, totalWidth int) string {
-	bodyW := totalWidth - 2 // subtract left + right border
-	// A zero count means "nothing in this bucket": mute the number so the eye
-	// jumps to the cards that actually want attention. Label and border keep the
-	// bucket accent so the card's identity stays legible.
+	bodyW := totalWidth - 2
+	// A muted zero lets the eye jump to the cards that want attention.
 	countColor := colBright
 	if count == 0 {
 		countColor = colMuted
@@ -273,12 +233,8 @@ func renderCard(label string, count int, color lipgloss.Color, totalWidth int) s
 func (m Model) sectionHeaderView() string {
 	visible := m.visiblePRs()
 
-	// Tab strip: the active pane is bright+bold+underlined, the other dim. The
-	// underline (not a leading glyph) marks the active tab — an earlier ▶ marker
-	// collided with the selected-row cursor glyph. Underline keeps the width
-	// stable across toggles (unlike brackets). It lives here (rather than the
-	// header's crowded right edge) so it reuses an existing row and leaves
-	// listAreaHeight untouched.
+	// An underline marks the active tab: a glyph would collide with the
+	// selected-row arrow, and brackets would shift the width on toggle.
 	active := lipgloss.NewStyle().Foreground(colBright).Bold(true).Underline(true)
 	idle := lipgloss.NewStyle().Foreground(colDim).Bold(true)
 	incoming, mine := idle, idle
@@ -315,10 +271,7 @@ func (m Model) sectionHeaderView() string {
 func (m Model) listView() string {
 	content := m.listContent()
 	if m.refreshing {
-		// Show the in-flight indicator in place of the rows, padded to the height
-		// the outgoing rows occupy (m.prs isn't replaced until rescanMsg lands) so
-		// the footer — which hugs the list, not the screen bottom — does not jump
-		// when the scan starts or finishes.
+		// Padded to the outgoing rows' height, so the footer does not jump.
 		frame := spinFrames[m.spinFrame%len(spinFrames)]
 		ind := lipgloss.NewStyle().Foreground(colCyan).Render(frame + " rescanning…")
 		return lipgloss.Place(m.width, lipgloss.Height(content),
@@ -327,8 +280,6 @@ func (m Model) listView() string {
 	return content
 }
 
-// listContent renders the PR rows, or an empty-state message when nothing is
-// visible.
 func (m Model) listContent() string {
 	visible := m.visiblePRs()
 	if len(visible) == 0 {
@@ -364,18 +315,14 @@ func (m Model) listContent() string {
 func (m Model) footerView() string {
 	sep := lipgloss.NewStyle().Foreground(colMuted).Render(" · ")
 
-	// Always visible: [?] help anchors the full modal (which lists every
-	// binding), [q] quit. They survive truncation on any width, so the footer
-	// can drop the rest without stranding the user. `p` joins the anchor when it
-	// works (>1 profile) — a headline action worth keeping visible, mirroring the
-	// header's profile tag; it's a no-op with a single profile, so drop it then.
+	// The anchor survives any width, so the footer can drop the rest without
+	// stranding the user: help lists every binding.
 	anchor := keyHint("?", "help") + sep + keyHint("q", "quit")
 	if len(m.profiles) > 1 {
 		anchor = keyHint("p", "profile") + sep + anchor
 	}
 
-	// Priority-ordered teasers, most-used first so the least useful drop first
-	// when the terminal is too narrow to fit them all on one line.
+	// Most-used first: the tail drops on a narrow terminal.
 	hints := []string{
 		keyHint("↑↓", "navigate"),
 		keyHint("tab", "switch view"),
@@ -388,8 +335,6 @@ func (m Model) footerView() string {
 		keyHint("y", "yank"),
 	}
 
-	// Greedily include leading hints while they fit on ONE line alongside the
-	// reserved anchor (width measured with lipgloss.Width — segments are styled).
 	sepW := lipgloss.Width(sep)
 	anchorW := lipgloss.Width(anchor)
 	budget := m.width - 2
@@ -415,16 +360,12 @@ func (m Model) footerView() string {
 	b.WriteString(anchor)
 	bottom := centerLine(b.String(), m.width)
 
-	// The status line is a permanently reserved slot (blank when there is no
-	// notification), so the hint line never shifts up/down as a notification
-	// appears or dismisses — the footer stays a constant two lines. This also
-	// keeps listAreaHeight (which counts footer lines) stable, so the row count
-	// doesn't jump either.
+	// The status line is always reserved, even blank, so neither the hints nor
+	// the row count shift as a notification comes and goes.
 	return m.statusLineView() + "\n" + bottom
 }
 
-// centerLine left-pads a styled line so it sits centered in width columns.
-// Width is measured with lipgloss.Width (the line carries ANSI styling).
+// centerLine left-pads a styled line to center it in width columns.
 func centerLine(s string, width int) string {
 	gap := width - lipgloss.Width(s)
 	if gap <= 0 {
@@ -441,14 +382,12 @@ func (m Model) statusLineView() string {
 		hint := lipgloss.NewStyle().Foreground(colMuted).Render("(enter to confirm · esc to clear)")
 		return " " + label + " " + value + "  " + hint
 	case m.status != "":
-		// Semantic icon derived from the same three-way state that picks the
-		// color, then centered to align with the hint line below (the leading-
-		// space left-align read as just more footer text next to the shortcuts).
+		// Centered over the hints: left-aligned, it read as one more hint.
 		col, icon := colGreen, "✓"
-		switch {
-		case m.statusErr:
+		switch m.statusKind {
+		case statusError:
 			col, icon = colRed, "✗"
-		case m.statusDim:
+		case statusWarn:
 			col, icon = colDim, "⚠"
 		}
 		line := lipgloss.NewStyle().Foreground(col).Render(icon + " " + m.status)

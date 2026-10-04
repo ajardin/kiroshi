@@ -1,7 +1,5 @@
-// Package jira fetches issue status from a Jira Cloud instance over the REST
-// v3 API. It is optional: kiroshi only constructs a Client when a Jira base URL
-// is configured, and any lookup failure degrades to "no ticket" rather than
-// breaking the GitHub dashboard.
+// Package jira fetches issue status from Jira Cloud (REST v3) and extracts
+// issue keys from pull requests.
 package jira
 
 import (
@@ -13,21 +11,20 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
 
-// httpTimeout is the hard deadline applied to every Jira request.
+// httpTimeout is the deadline applied to every Jira request.
 const httpTimeout = 10 * time.Second
 
-// Category mirrors Jira's status.statusCategory.key — the stable tri-state the
-// UI colors by. Jira lets teams rename status NAMES freely ("In Review",
-// "QA"…), but every status maps to one of these fixed category keys, so we key
-// the coloring off the category rather than the display name.
+// Category mirrors Jira's status.statusCategory.key. Teams rename statuses
+// freely ("In Review", "QA"), but each one maps to one of these fixed keys, so
+// the UI colors by category rather than by name.
 type Category string
 
-// Jira status category keys. CategoryUnknown is the zero value, used when a
-// lookup fails or the response carries no recognizable category.
+// Jira status category keys. CategoryUnknown is the zero value.
 const (
 	CategoryUnknown       Category = ""
 	CategoryNew           Category = "new"           // to do / backlog
@@ -35,25 +32,24 @@ const (
 	CategoryDone          Category = "done"
 )
 
-// Status is the resolved state of a Jira issue: the human-readable status name
-// plus its category key.
+// Status is the resolved state of a Jira issue.
 type Status struct {
 	Name     string
 	Category Category
 }
 
-// Lookup is the subset of the Jira client the PR enricher depends on. Declared
-// as an interface so tests can inject a fake without standing up an HTTP server.
+// Lookup is the subset of the Jira client the PR enricher depends on, as an
+// interface so tests can inject a fake.
 type Lookup interface {
 	Issue(ctx context.Context, key string) (Status, error)
 }
 
-// ErrInvalidToken is returned when Jira answers 401, signalling the API token
-// or email is wrong.
+// ErrInvalidToken is returned when Jira answers 401: the API token or the
+// email is wrong.
 var ErrInvalidToken = errors.New("invalid or expired Jira token")
 
-// ErrIssueNotFound is returned when Jira answers 404, i.e. the issue key does
-// not resolve. Callers treat this as "no ticket" rather than a hard failure.
+// ErrIssueNotFound is returned when Jira answers 404: the key does not
+// resolve to an issue.
 var ErrIssueNotFound = errors.New("jira issue not found")
 
 // Client talks to a Jira Cloud instance on behalf of kiroshi.
@@ -63,11 +59,8 @@ type Client struct {
 	auth    string // pre-encoded "Basic <base64(email:token)>" header value
 }
 
-// New builds a Jira Cloud client. baseURL is the instance root
-// (e.g. https://acme.atlassian.net); authentication uses HTTP Basic with the
-// account email as the username and an API token as the password. (Jira
-// Server/Data Center would instead use "Bearer "+token with no email; that
-// path is not implemented.)
+// New builds a Jira Cloud client for the instance root baseURL
+// (https://acme.atlassian.net), authenticating with HTTP Basic email:token.
 func New(baseURL, email, token string) *Client {
 	// Clone the default transport instead of sharing it: anything in the
 	// process calling http.DefaultTransport.CloseIdleConnections — which
@@ -84,7 +77,7 @@ func New(baseURL, email, token string) *Client {
 	}
 }
 
-// issueResponse is the slice of the GET issue payload we decode.
+// issueResponse is the part of the GET issue payload kiroshi decodes.
 type issueResponse struct {
 	Fields struct {
 		Status struct {
@@ -96,9 +89,7 @@ type issueResponse struct {
 	} `json:"fields"`
 }
 
-// Issue fetches the status of a single Jira issue by key. The request is scoped
-// to fields=status to keep the response small. A 401 returns ErrInvalidToken;
-// a 404 returns ErrIssueNotFound.
+// Issue fetches the status of the issue key.
 func (c *Client) Issue(ctx context.Context, key string) (Status, error) {
 	endpoint := c.baseURL + "/rest/api/3/issue/" + url.PathEscape(key) + "?fields=status"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -134,9 +125,8 @@ func (c *Client) Issue(ctx context.Context, key string) (Status, error) {
 	}, nil
 }
 
-// Validate checks the configured credentials against the Jira "myself"
-// endpoint, used by the setup wizard to fail fast on a bad base URL, email or
-// token. A 401 returns ErrInvalidToken; any other non-2xx is wrapped.
+// Validate checks the credentials against the "myself" endpoint, so the setup
+// wizard fails fast on a bad base URL, email or token.
 func (c *Client) Validate(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/rest/api/3/myself", nil)
 	if err != nil {
@@ -161,8 +151,7 @@ func (c *Client) Validate(ctx context.Context) error {
 	}
 }
 
-// categoryFromKey maps a raw statusCategory.key onto Category, defaulting to
-// CategoryUnknown for anything unrecognized.
+// categoryFromKey maps a raw statusCategory.key onto Category.
 func categoryFromKey(key string) Category {
 	switch Category(key) {
 	case CategoryNew, CategoryIndeterminate, CategoryDone:
@@ -172,50 +161,31 @@ func categoryFromKey(key string) Category {
 	}
 }
 
-// keyPattern matches a Jira issue key: a project key (an uppercase letter
-// followed by uppercase letters/digits) and a dash and a number, e.g. PROJ-1234.
+// keyPattern matches a Jira issue key such as PROJ-1234.
 var keyPattern = regexp.MustCompile(`[A-Z][A-Z0-9]+-\d+`)
 
-// projectKeyPattern matches the project-key half of an issue key on its own,
-// i.e. what keyPattern accepts before the dash. Exposed through
-// ValidProjectKey so config validation doesn't restate the grammar.
+// projectKeyPattern matches what keyPattern accepts before the dash.
 var projectKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]+$`)
 
 // ValidProjectKey reports whether s is a well-formed Jira project key (PROJ,
-// AB1) — the shape ExtractKey's allowlist entries must have.
+// AB1), the shape ExtractKey's allowlist entries must have.
 func ValidProjectKey(s string) bool { return projectKeyPattern.MatchString(s) }
 
-// ExtractKey returns the first Jira issue key found across candidates, scanned
-// in order, or "" if none match. Callers pass the branch name first (most
-// reliable, e.g. feature/PROJ-1234-foo), then the title, then the PR body.
+// ExtractKey returns the first issue key found across candidates, scanned in
+// order (branch, title, body), or "" if none match.
 //
-// projects, when non-empty, restricts matches to those project keys. The bare
-// pattern also matches everyday strings like UTF-8, SHA-256 and ISO-8601, and
-// each false positive costs a doomed Jira lookup on every scan. Every match
-// within a candidate is considered rather than just the first, so a real key
-// still wins over a false positive that precedes it ("fix UTF-8 in PROJ-42").
+// A non-empty projects restricts matches to those project keys, because the
+// pattern alone also matches UTF-8, SHA-256 or ISO-8601. Every match within a
+// candidate is considered, so a real key still wins over a false positive
+// before it ("fix UTF-8 in PROJ-42").
 func ExtractKey(projects []string, candidates ...string) string {
 	for _, c := range candidates {
 		for _, key := range keyPattern.FindAllString(c, -1) {
-			if allowedProject(projects, key) {
+			project, _, _ := strings.Cut(key, "-")
+			if len(projects) == 0 || slices.Contains(projects, project) {
 				return key
 			}
 		}
 	}
 	return ""
-}
-
-// allowedProject reports whether key belongs to one of projects; an empty
-// projects list allows every key.
-func allowedProject(projects []string, key string) bool {
-	if len(projects) == 0 {
-		return true
-	}
-	project, _, _ := strings.Cut(key, "-")
-	for _, p := range projects {
-		if p == project {
-			return true
-		}
-	}
-	return false
 }

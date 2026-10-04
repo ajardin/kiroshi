@@ -10,42 +10,32 @@ import (
 	"strings"
 )
 
-// threadsBatchSize is how many PRs one GraphQL request resolves. Batching is
-// the point: one aliased query per ~20 PRs keeps a typical scan at 1–2 extra
-// requests total (vs one REST call per PR, which the REST API couldn't answer
-// anyway — it doesn't expose thread resolution) while staying comfortably
-// under GitHub's GraphQL node limits.
+// threadsBatchSize is how many PRs one aliased GraphQL request resolves: a
+// typical scan costs 1–2 extra requests, well under GitHub's node limits.
 const threadsBatchSize = 20
 
-// threadsPerPR bounds how many review threads are inspected per PR. It is a
-// cap, not pagination: a PR with more threads undercounts. Accepted — the
-// count is a dashboard signal, not an audit.
+// threadsPerPR is a cap, not pagination: a PR with more threads undercounts,
+// which is fine for a dashboard signal.
 const threadsPerPR = 100
 
-// enrichUnresolvedThreads resolves the unresolved review-thread count of
-// every PR in prs via the GraphQL API, in chunks of threadsBatchSize aliases
-// per request. It runs as a batch step after the per-PR REST enrichment (it
-// doesn't fit the per-PR errgroup shape) and, like Jira, degrades instead of
-// failing: any error — one chunk or the whole endpoint (some tokens/orgs
-// restrict GraphQL) — leaves ThreadsKnown false on the affected PRs and the
-// scan lands regardless, with no per-PR noise and no EnrichPartial flag.
+// enrichUnresolvedThreads counts the unresolved review threads of every PR
+// through GraphQL, since REST doesn't expose thread resolution. Like Jira it
+// degrades instead of failing: some tokens and orgs restrict GraphQL, so any
+// error leaves ThreadsKnown false without marking the PR EnrichPartial.
 func (c *Client) enrichUnresolvedThreads(ctx context.Context, prs []PullRequest) {
 	var batch []*PullRequest
 	for i := range prs {
-		if prs[i].Owner == "" || prs[i].Repo == "" || prs[i].Number == 0 {
-			continue
+		if prs[i].located() {
+			batch = append(batch, &prs[i])
 		}
-		batch = append(batch, &prs[i])
 	}
 	for start := 0; start < len(batch); start += threadsBatchSize {
 		c.resolveThreadsChunk(ctx, batch[start:min(start+threadsBatchSize, len(batch))])
 	}
 }
 
-// resolveThreadsChunk runs one aliased GraphQL query for a chunk of PRs and
-// writes the counts back in place. Any failure — network, HTTP status,
-// malformed body, or a null alias in a partial response — leaves the affected
-// PRs unknown (ThreadsKnown false).
+// resolveThreadsChunk runs one aliased query and writes the counts back in
+// place. A null alias in a partial response leaves only that PR unknown.
 func (c *Client) resolveThreadsChunk(ctx context.Context, chunk []*PullRequest) {
 	payload, err := json.Marshal(map[string]string{"query": buildThreadsQuery(chunk)})
 	if err != nil {
@@ -57,8 +47,7 @@ func (c *Client) resolveThreadsChunk(ctx context.Context, chunk []*PullRequest) 
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	// c.gh.Client() carries the auth transport and HTTPTimeout the client was
-	// built with, so the GraphQL call inherits both without new plumbing.
+	// c.gh.Client() carries the auth transport and HTTPTimeout.
 	resp, err := c.gh.Client().Do(req)
 	if err != nil {
 		return
@@ -98,9 +87,8 @@ func (c *Client) resolveThreadsChunk(ctx context.Context, chunk []*PullRequest) 
 	}
 }
 
-// buildThreadsQuery assembles the aliased query for one chunk — one
-// repository/pullRequest selection per PR, aliased pr0..prN so the response
-// fans back onto the chunk by index.
+// buildThreadsQuery aliases one selection per PR as pr0..prN, so the response
+// maps back onto the chunk by index.
 func buildThreadsQuery(chunk []*PullRequest) string {
 	var b strings.Builder
 	b.WriteString("query {")

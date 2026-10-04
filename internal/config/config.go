@@ -1,12 +1,6 @@
-// Package config loads and validates the kiroshi configuration.
-//
-// The configuration is a TOML file whose default location follows the XDG
-// Base Directory spec ($XDG_CONFIG_HOME/kiroshi/config.toml, falling back to
-// ~/.config/kiroshi/config.toml). The path can be overridden on the CLI.
-//
-// The GITHUB_TOKEN environment variable always takes precedence over the
-// github_token field stored in the file, so secrets do not have to live on
-// disk in automated environments.
+// Package config loads, validates and saves the kiroshi TOML configuration.
+// GITHUB_TOKEN and JIRA_API_TOKEN override the tokens stored in the file, so
+// secrets don't have to live on disk in automated environments.
 package config
 
 import (
@@ -24,76 +18,55 @@ import (
 	"github.com/ajardin/kiroshi/internal/jira"
 )
 
-// envToken is the environment variable name that overrides the token stored
-// in the config file; the value of this constant is not itself a credential.
 const envToken = "GITHUB_TOKEN" //nolint:gosec // G101: env var name, not a token
 
-// envJiraToken overrides the Jira API token stored in the config file, mirroring
-// envToken; the value of this constant is not itself a credential.
 const envJiraToken = "JIRA_API_TOKEN" //nolint:gosec // G101: env var name, not a token
 
-// DefaultMinReviews is the fallback for the min_reviews field when the user
-// does not set it explicitly in the config file.
+// DefaultMinReviews applies when the file omits min_reviews.
 const DefaultMinReviews = 2
 
-// ErrNotFound wraps the error returned by Load when the default config path
-// does not exist. Callers use errors.Is to decide whether to offer the
-// interactive setup wizard instead of failing outright.
+// ErrNotFound is wrapped by Load when the default config path does not exist,
+// so the CLI can offer the setup wizard instead of failing.
 var ErrNotFound = errors.New("config not found")
 
-// DefaultProfileName is the name of the implicit profile backed by the
-// top-level search key. It is reserved: a [[profiles]] entry may not reuse it.
+// DefaultProfileName names the implicit profile backed by the top-level search
+// key. A [[profiles]] entry may not reuse it.
 const DefaultProfileName = "default"
 
-// Profile is a named search query the TUI can switch to at runtime. The
-// top-level search key is always the implicit profile named
-// DefaultProfileName; [[profiles]] entries add more.
+// Profile is a named search query the TUI can switch to at runtime.
 type Profile struct {
 	Name   string
 	Search string
 }
 
-// Config is the runtime kiroshi configuration.
-//
-// The three Jira fields are optional and travel together: Jira enrichment is
-// enabled iff JiraBaseURL is set, and when any one is set validate requires all
-// three (Jira Cloud Basic auth needs the account email alongside the token).
+// Config is the runtime kiroshi configuration. The three Jira connection
+// fields are all set or all empty. Notify, JiraProjectKeys and Profiles are
+// hand-edit only: the setup wizard never asks for them.
 type Config struct {
 	GitHubToken string
 	Search      string
 	MinReviews  int
-	// RefreshInterval, when > 0, makes the TUI rescan automatically on that
-	// cadence; zero (the default) disables auto-refresh and leaves rescanning to
-	// the manual "r" key. Stored in the file as a Go duration string ("5m").
+	// RefreshInterval is the auto-rescan cadence; zero disables it.
 	RefreshInterval time.Duration
-	// Notify, when true, makes the TUI emit a terminal bell (plus a status
-	// note) when a rescan moves a PR into the viewer's Waiting On You bucket.
-	// Off by default; hand-edit only (not offered by the setup wizard).
+	// Notify rings the terminal bell when a rescan moves a PR into Waiting On
+	// You.
 	Notify      bool
 	JiraBaseURL string
 	JiraEmail   string
 	JiraToken   string
-	// JiraProjectKeys, when non-empty, restricts Jira issue-key extraction to
-	// these project keys. The key regex alone also matches everyday strings
-	// (UTF-8, SHA-256), each costing a doomed lookup per scan; listing your
-	// projects suppresses them. Empty means "accept any key". Hand-edit only
-	// (the wizard never asks).
+	// JiraProjectKeys restricts issue-key extraction; empty accepts any key.
 	JiraProjectKeys []string
-	// Profiles holds the optional extra search profiles from [[profiles]].
-	// Search itself is always the implicit "default" profile; use AllProfiles
-	// for the full switchable list.
+	// Profiles holds the extra [[profiles]]; AllProfiles adds the default one.
 	Profiles []Profile
 }
 
-// AllProfiles returns every switchable profile: the implicit default (backed
-// by the top-level search key) first, then the [[profiles]] entries in file
-// order. It always has at least one element.
+// AllProfiles returns every switchable profile, the implicit default first,
+// then the [[profiles]] entries in file order.
 func (c *Config) AllProfiles() []Profile {
 	return append([]Profile{{Name: DefaultProfileName, Search: c.Search}}, c.Profiles...)
 }
 
-// LogValue implements slog.LogValuer to prevent the tokens from leaking into
-// structured logs when a *Config is logged as an attribute.
+// LogValue implements slog.LogValuer so the tokens never reach the logs.
 func (c *Config) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.String("search", c.Search),
@@ -131,9 +104,8 @@ type fileProfile struct {
 	Search string `toml:"search"`
 }
 
-// Load reads the TOML configuration at path. When path is empty, the default
-// returned by DefaultPath is used instead. GITHUB_TOKEN in the environment
-// overrides the github_token value from the file.
+// Load reads and validates the configuration at path, or at DefaultPath when
+// path is empty.
 func Load(path string) (*Config, error) {
 	explicit := path != ""
 	if !explicit {
@@ -198,8 +170,7 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
-// resolveSecret returns the env var's value when set, otherwise the file
-// value; both are trimmed.
+// resolveSecret prefers the environment variable over the file value.
 func resolveSecret(envVar, fileVal string) string {
 	if v := strings.TrimSpace(os.Getenv(envVar)); v != "" {
 		return v
@@ -207,9 +178,8 @@ func resolveSecret(envVar, fileVal string) string {
 	return strings.TrimSpace(fileVal)
 }
 
-// DefaultPath returns the XDG-based default config path:
-// $XDG_CONFIG_HOME/kiroshi/config.toml when set, otherwise
-// $HOME/.config/kiroshi/config.toml.
+// DefaultPath returns $XDG_CONFIG_HOME/kiroshi/config.toml, falling back to
+// ~/.config/kiroshi/config.toml.
 func DefaultPath() (string, error) {
 	if xdg := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); xdg != "" {
 		return filepath.Join(xdg, "kiroshi", "config.toml"), nil
@@ -221,16 +191,12 @@ func DefaultPath() (string, error) {
 	return filepath.Join(home, ".config", "kiroshi", "config.toml"), nil
 }
 
-// Save writes c to path as TOML, creating parent directories as needed. The
-// file holds the GitHub token, so it is created with 0600 (and the directory
-// with 0700). MinReviews is always written explicitly via the fileConfig
-// pointer so a deliberate 0 round-trips instead of being re-defaulted on load.
+// Save writes c to path as TOML with mode 0600, since the file holds tokens.
+// MinReviews is always written so a deliberate 0 is not re-defaulted on load.
 //
-// The write is atomic: it goes to a temp file in the same directory which is
-// renamed over the target, so a crash or full disk mid-encode never leaves a
-// corrupted config behind (a corrupt file would also block the auto-wizard,
-// which only triggers when no file exists at all). The rename also guarantees
-// the result is 0600 even when replacing an older, looser-permissioned file.
+// The write goes through a temp file renamed over the target: a crash
+// mid-encode never leaves a corrupt config (which would also block the
+// auto-wizard), and the result is 0600 even over a looser older file.
 func Save(path string, c *Config) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
@@ -269,8 +235,6 @@ func Save(path string, c *Config) error {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("encode config %s: %w", path, err)
 	}
-	// Check Close explicitly: it surfaces deferred write/flush errors that a
-	// deferred Close would silently swallow.
 	if err := f.Close(); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("close config %s: %w", path, err)
@@ -308,9 +272,7 @@ func (c *Config) validate() error {
 	return nil
 }
 
-// validateProfiles enforces the [[profiles]] rules: non-empty unique names,
-// non-empty queries. DefaultProfileName is reserved for the implicit profile
-// backed by the top-level search key, so an entry may not reuse it.
+// validateProfiles requires unique, non-reserved names and non-empty queries.
 func (c *Config) validateProfiles() error {
 	seen := map[string]bool{DefaultProfileName: true}
 	for i, p := range c.Profiles {
@@ -331,9 +293,8 @@ func (c *Config) validateProfiles() error {
 	return nil
 }
 
-// validateJira enforces the all-or-nothing rule for the optional Jira trio: if
-// any of base URL, email or token is set, all three must be (Jira Cloud Basic
-// auth needs the email). Leaving all three empty disables Jira entirely.
+// validateJira requires the Jira trio to be all set or all empty, since Basic
+// auth needs the email alongside the token.
 func (c *Config) validateJira() error {
 	for i, k := range c.JiraProjectKeys {
 		if !jira.ValidProjectKey(k) {
@@ -361,11 +322,17 @@ func (c *Config) validateJira() error {
 	if len(missing) > 0 {
 		return fmt.Errorf("incomplete jira config; missing: %s", strings.Join(missing, "; "))
 	}
-	// Jira auth is HTTP Basic, so the email and token travel on every request;
-	// anything but https would send them in cleartext. Jira Cloud is always
-	// https, so there is no legitimate http:// case to allow.
-	if !strings.HasPrefix(c.JiraBaseURL, "https://") {
-		return fmt.Errorf("jira_base_url must start with https://, got %q", c.JiraBaseURL)
+	if err := ValidateJiraBaseURL(c.JiraBaseURL); err != nil {
+		return fmt.Errorf("jira_base_url %q: %w", c.JiraBaseURL, err)
+	}
+	return nil
+}
+
+// ValidateJiraBaseURL requires https: Basic auth sends the email and token on
+// every request, and Jira Cloud has no legitimate http:// instance.
+func ValidateJiraBaseURL(u string) error {
+	if !strings.HasPrefix(u, "https://") {
+		return errors.New("URL must start with https://")
 	}
 	return nil
 }

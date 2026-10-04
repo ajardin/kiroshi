@@ -10,11 +10,9 @@ import (
 	"github.com/ajardin/kiroshi/internal/tui"
 )
 
-// jsonDocument is what kiroshi writes whenever the TUI is not used — a pipe, a
-// file, CI, or -no-tui. It is the CLI's machine-readable contract, so two rules
-// hold: field names and enum values are stable once released, and every key is
-// always present. An absent value is null or its zero, never a missing key, so
-// consumers can rely on the shape without existence checks.
+// jsonDocument is what kiroshi writes whenever the TUI is not used. It is a
+// contract: names and enum values are stable once released, and every key is
+// always present (no omitempty), an unknown being null.
 type jsonDocument struct {
 	Login        string            `json:"login"`
 	Profile      string            `json:"profile"`
@@ -32,9 +30,8 @@ type jsonCounts struct {
 	InFlight        int `json:"in_flight"`
 }
 
-// jsonPullRequest is one pull request with everything the enrichment resolved.
-// The listing pays for that enrichment either way, so it is all exposed here
-// rather than distilled down the way a rendered row has to be.
+// jsonPullRequest carries every enriched field: the scan pays for them either
+// way, and unlike a rendered row a machine document must not distil.
 type jsonPullRequest struct {
 	Bucket    string    `json:"bucket"`
 	Owner     string    `json:"owner"`
@@ -48,8 +45,8 @@ type jsonPullRequest struct {
 	UpdatedAt time.Time `json:"updated_at"`
 	HeadRef   string    `json:"head_ref"`
 	BaseRef   string    `json:"base_ref"`
-	// CI is one of none, pending, success, failure; MergeState one of clear,
-	// behind, conflict. Both spell out the state the Go zero value leaves empty.
+	// CI is none, pending, success or failure; MergeState is clear, behind or
+	// conflict. Both spell out the state the Go zero value leaves empty.
 	CI             string `json:"ci"`
 	MergeState     string `json:"merge_state"`
 	Additions      int    `json:"additions"`
@@ -58,17 +55,14 @@ type jsonPullRequest struct {
 	Commits        int    `json:"commits"`
 	Comments       int    `json:"comments"`
 	ReviewComments int    `json:"review_comments"`
-	// UnresolvedThreads is null when the GraphQL pass could not resolve it
-	// (restricted token, endpoint error) — a plain 0 would be indistinguishable
-	// from a genuinely clean PR.
+	// UnresolvedThreads is null when GraphQL failed: a 0 would read as clean.
 	UnresolvedThreads *int          `json:"unresolved_threads"`
 	Reviewers         jsonReviewers `json:"reviewers"`
-	// Jira is null when the PR references no resolved ticket. That covers both
-	// "no key found" and "lookup failed", which JiraLookupFailed separates.
+	// Jira is null for both "no key" and "lookup failed"; JiraLookupFailed
+	// separates them.
 	Jira             *jsonJira `json:"jira"`
 	JiraLookupFailed bool      `json:"jira_lookup_failed"`
-	// EnrichPartial marks a PR whose GitHub enrichment failed partway, so the
-	// zero-valued fields above mean "unknown" rather than "empty".
+	// EnrichPartial means the zero-valued fields above are unknown, not empty.
 	EnrichPartial bool `json:"enrich_partial"`
 }
 
@@ -85,9 +79,8 @@ type jsonJira struct {
 	Category string `json:"category"`
 }
 
-// buildJSONDocument classifies prs and assembles the output document.
-// Classification goes through tui.BucketFor, so the JSON and the dashboard can
-// never disagree on which bucket a PR belongs to.
+// buildJSONDocument classifies prs through tui.BucketFor, so the JSON and the
+// dashboard can never disagree.
 func buildJSONDocument(prs []gh.PullRequest, login, profile, search string, minReviews int, scannedAt time.Time) jsonDocument {
 	doc := jsonDocument{
 		Login:        login,
@@ -144,9 +137,8 @@ func buildJSONDocument(prs []gh.PullRequest, login, profile, search string, minR
 	return doc
 }
 
-// writeJSON encodes doc to w, indented (jq does not care, humans reading a
-// terminal do) and without HTML escaping so URLs and titles survive verbatim
-// instead of turning & into &.
+// writeJSON encodes doc indented and without HTML escaping, so a & in a title
+// or URL survives a jq -r pipeline.
 func writeJSON(w io.Writer, doc jsonDocument) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
@@ -186,8 +178,7 @@ func jiraOf(pr gh.PullRequest) *jsonJira {
 	return &jsonJira{Key: pr.JiraKey, Status: pr.JiraStatus, Category: pr.JiraCategory}
 }
 
-// orEmpty keeps a nil slice from marshalling as null: the contract promises
-// every key is present and typed, so an empty reviewer list must be [].
+// orEmpty marshals a nil slice as [] rather than null.
 func orEmpty(s []string) []string {
 	if s == nil {
 		return []string{}

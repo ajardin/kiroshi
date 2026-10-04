@@ -1,7 +1,5 @@
-// Package gh wraps the google/go-github SDK with the narrow surface kiroshi
-// needs: authenticated user lookup and pull request search. Keeping this
-// wrapper lets the rest of the code depend on a small interface instead of
-// the full go-github API, which makes testing and future replacement easy.
+// Package gh wraps go-github with the narrow surface kiroshi needs: the
+// authenticated user and an enriched pull request search.
 package gh
 
 import (
@@ -10,7 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -24,10 +22,8 @@ import (
 // HTTPTimeout is the hard deadline applied to every GitHub request.
 const HTTPTimeout = 10 * time.Second
 
-// enrichConcurrency bounds the number of pull requests enriched in
-// parallel. GitHub's secondary rate limit kicks in around 100 concurrent
-// requests per token; 8 keeps comfortable headroom while fully
-// parallelising a typical dashboard.
+// enrichConcurrency bounds the pull requests enriched in parallel, well under
+// GitHub's secondary rate limit (~100 concurrent requests per token).
 const enrichConcurrency = 8
 
 // User is the identity of the account backing a GitHub token.
@@ -35,9 +31,8 @@ type User struct {
 	Login string
 }
 
-// CIState is the aggregated outcome of all check runs reported against a pull
-// request's head commit. Combined via aggregateCheckRuns; see that function
-// for precedence rules.
+// CIState is the aggregated outcome of the check runs on a pull request's head
+// commit; see aggregateCheckRuns for the precedence rules.
 type CIState string
 
 // CI state values. CIStateNone is the zero value and means "no checks
@@ -49,25 +44,21 @@ const (
 	CIStateFailure CIState = "failure"
 )
 
-// MergeState is the mergeability signal kiroshi surfaces for a pull request,
-// distilled from GitHub's mergeable_state. We only distinguish the two states
-// worth acting on — a merge conflict and a branch behind its base — and collapse
-// everything else (clean, blocked, unstable, draft, has_hooks) into
-// MergeStateClear. GitHub computes mergeable_state lazily on a background job, so
-// a freshly-opened PR commonly reports "unknown"; we map that to clear rather
-// than guess, to avoid flashing a false conflict.
+// MergeState is the mergeability signal distilled from GitHub's
+// mergeable_state: only a conflict and a behind-base branch are worth acting
+// on, everything else is MergeStateClear.
 type MergeState string
 
-// Merge state values. MergeStateClear is the zero value and means "nothing to
-// flag" — it also absorbs GitHub's "unknown" (not-yet-computed) state.
+// Merge state values. MergeStateClear is the zero value.
 const (
 	MergeStateClear    MergeState = ""
 	MergeStateBehind   MergeState = "behind"
 	MergeStateConflict MergeState = "conflict"
 )
 
-// normalizeMergeState maps GitHub's mergeable_state string onto the two states
-// kiroshi surfaces; anything else (including "unknown") becomes MergeStateClear.
+// normalizeMergeState maps GitHub's mergeable_state onto MergeState. GitHub
+// computes it lazily, so a fresh PR reports "unknown": that maps to clear
+// rather than flashing a false conflict.
 func normalizeMergeState(s string) MergeState {
 	switch s {
 	case "dirty":
@@ -79,33 +70,15 @@ func normalizeMergeState(s string) MergeState {
 	}
 }
 
-// PullRequest is the subset of a GitHub pull request kiroshi cares about when
-// listing search results.
+// PullRequest is a search result plus everything the enrichment resolved.
 //
-// RequestedReviewers contains the logins of users who are currently expected
-// to review and have not yet submitted any review (GitHub removes a user from
-// this list once they submit ANY review, including a COMMENTED one).
+// RequestedReviewers are users still expected to review who have submitted
+// nothing yet: GitHub drops a user from that list on ANY review, COMMENTED
+// included. Approvals, ChangesRequested and Commented partition the other
+// reviewers (author excluded) by their current state; see summarizeReviews.
 //
-// Approvals and ChangesRequested hold unique reviewer logins (excluding the
-// author) whose latest decisive review state is the matching one. Commented
-// holds reviewers whose only review activity is COMMENTED — they were
-// implicitly requested at some point (otherwise GitHub wouldn't surface them
-// in the Reviewers panel) and haven't given a decisive answer; classifiers
-// treat them as still "on the hook". DISMISSED reviews reset the per-reviewer
-// state entirely.
-//
-// HeadSHA is the SHA of the pull request's head commit; CIState is the
-// aggregated outcome of the check runs reported against it. MergeState,
-// Additions and Deletions are likewise read from PullRequests.Get (the
-// issues/search response doesn't include them); MergeState flags only a merge
-// conflict or a behind-base branch, see normalizeMergeState.
-//
-// HeadRef and Body are captured for Jira issue-key extraction. JiraKey is the
-// issue key referenced by the PR (from branch, title or body), empty when none
-// is found; JiraStatus and JiraCategory are the resolved Jira status, left
-// empty when Jira is unconfigured or the lookup fails (the cell degrades to
-// "no ticket"). JiraCategory holds the raw statusCategory key
-// ("new"/"indeterminate"/"done"); see internal/jira.
+// The Jira fields stay empty when Jira is unconfigured, no key is found, or the
+// lookup fails. JiraCategory holds the raw statusCategory key.
 type PullRequest struct {
 	Owner              string
 	Repo               string
@@ -132,67 +105,60 @@ type PullRequest struct {
 	Commits            int
 	Comments           int // conversation comments
 	ReviewComments     int // inline review comments
-	// UnresolvedThreads is the number of unresolved review threads, resolved
-	// in a batched GraphQL pass after the REST enrichment (the REST API does
-	// not expose thread resolution). ThreadsKnown distinguishes a genuine
-	// zero from "unknown" (GraphQL failed or is restricted for this token) —
-	// both leave the count at zero. Counts above threadsPerPR undercount.
+	// ThreadsKnown separates a genuine zero UnresolvedThreads from "GraphQL
+	// failed or is restricted for this token".
 	UnresolvedThreads int
 	ThreadsKnown      bool
 	JiraKey           string
 	JiraStatus        string
 	JiraCategory      string
-	// JiraLookupFailed is set when a Jira key was found but the lookup errored
-	// (auth/network/404). It distinguishes a genuine failure from "no ticket"
-	// so the header can flag Jira health without failing the scan.
+	// JiraLookupFailed marks a lookup that errored for another reason than a
+	// 404, so the header can flag Jira health without failing the scan.
 	JiraLookupFailed bool
-	// EnrichPartial is set when a GitHub enricher failed for this PR
-	// (transient 403, odd repo, …): the PR keeps whatever fields were
-	// enriched before the failure and the rest stay zero, instead of the
-	// failure killing the whole scan. Systemic errors (ErrInvalidToken,
-	// ErrRateLimited) still abort the scan; see enrichPullRequest.
+	// EnrichPartial marks a PR whose GitHub enrichment failed partway: the
+	// fields past the failure are zero because they are unknown.
 	EnrichPartial bool
 }
 
-// API is the subset of the GitHub API kiroshi consumes. It is declared as an
-// interface so callers can inject a fake in tests without hitting the real
-// service.
+// located reports whether the search result carried enough coordinates to
+// address the PR in follow-up calls.
+func (pr *PullRequest) located() bool {
+	return pr.Owner != "" && pr.Repo != "" && pr.Number != 0
+}
+
+// ref identifies a PR as owner/repo#number, in error messages and as the
+// rescan cache key.
+func (pr *PullRequest) ref() string {
+	return fmt.Sprintf("%s/%s#%d", pr.Owner, pr.Repo, pr.Number)
+}
+
+// API is the subset of the GitHub API kiroshi consumes, as an interface so
+// tests can inject a fake.
 type API interface {
 	AuthenticatedUser(ctx context.Context) (User, error)
 	SearchPullRequests(ctx context.Context, query string) ([]PullRequest, error)
 }
 
-// Client talks to the GitHub REST API on behalf of kiroshi. When jira is
-// non-nil it also resolves the Jira issue status of each PR; a nil jira
-// disables that enrichment.
-//
-// The client persists across rescans (the TUI's refresh closure captures it),
-// so it carries the per-PR review-state cache that lets a rescan skip the
-// review calls for PRs whose updated_at hasn't moved; see cachedEnrichment.
+// Client talks to the GitHub REST API on behalf of kiroshi. A nil jira
+// disables the Jira enrichment. The client outlives each scan (the TUI's
+// refresh closure captures it), which is what lets it carry the review-state
+// cache.
 type Client struct {
-	gh   *github.Client
-	jira jira.Lookup
-	// jiraProjects, when non-empty, restricts issue-key extraction to those
-	// project keys; see jira.ExtractKey.
+	gh           *github.Client
+	jira         jira.Lookup
 	jiraProjects []string
 
-	// mu guards cache: enrichment runs through an errgroup worker pool, so
-	// concurrent reads and writes would race without it.
-	mu    sync.Mutex
+	mu    sync.Mutex // enrichment runs in parallel
 	cache map[string]cachedEnrichment
 }
 
-// cachedEnrichment memoizes one PR's review state together with the
-// UpdatedAt it was computed at. Review submissions, review-request changes,
-// pushes and title/body edits all bump the PR's updated_at, so an unchanged
-// UpdatedAt guarantees the review state is unchanged and the two REST calls
-// behind it (ListReviewers + ListReviews) can be skipped on rescan.
+// cachedEnrichment memoizes one PR's review state with the UpdatedAt it was
+// computed at. Review submissions, review requests, pushes and edits all bump
+// updated_at, so an unchanged UpdatedAt lets a rescan skip ListReviewers and
+// ListReviews with zero staleness.
 //
-// Deliberately NOT cached: check runs can complete and mergeable_state can
-// flip (base branch moved) without any PR activity, so PullRequests.Get and
-// the check-runs call stay live every scan; Jira is a different service with
-// its own quota and its ticket status moves independently, so it stays live
-// too.
+// Deliberately NOT cached: check runs complete and mergeable_state flips (base
+// branch moved) without any PR activity, and Jira moves on its own.
 type cachedEnrichment struct {
 	updatedAt          time.Time
 	requestedReviewers []string
@@ -201,18 +167,12 @@ type cachedEnrichment struct {
 	commented          []string
 }
 
-// cacheKey identifies a PR across rescans: owner/repo#number.
-func cacheKey(pr *PullRequest) string {
-	return fmt.Sprintf("%s/%s#%d", pr.Owner, pr.Repo, pr.Number)
-}
-
 // reviewStateFromCache copies the cached review state into pr when an entry
-// exists at the same UpdatedAt. A miss or a stale entry returns false and the
-// caller fetches live.
+// exists at the same UpdatedAt.
 func (c *Client) reviewStateFromCache(pr *PullRequest) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	entry, ok := c.cache[cacheKey(pr)]
+	entry, ok := c.cache[pr.ref()]
 	if !ok || !entry.updatedAt.Equal(pr.UpdatedAt) {
 		return false
 	}
@@ -223,15 +183,14 @@ func (c *Client) reviewStateFromCache(pr *PullRequest) bool {
 	return true
 }
 
-// storeReviewState records pr's freshly fetched review state keyed by its
-// UpdatedAt, for reuse on the next scan.
+// storeReviewState records pr's freshly fetched review state for the next scan.
 func (c *Client) storeReviewState(pr *PullRequest) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.cache == nil {
 		c.cache = make(map[string]cachedEnrichment)
 	}
-	c.cache[cacheKey(pr)] = cachedEnrichment{
+	c.cache[pr.ref()] = cachedEnrichment{
 		updatedAt:          pr.UpdatedAt,
 		requestedReviewers: pr.RequestedReviewers,
 		approvals:          pr.Approvals,
@@ -240,12 +199,11 @@ func (c *Client) storeReviewState(pr *PullRequest) {
 	}
 }
 
-// pruneCache evicts entries for PRs absent from the current result set, so
-// PRs that left the search (merged, closed) don't occupy memory forever.
+// pruneCache evicts the PRs that left the search results (merged, closed).
 func (c *Client) pruneCache(prs []PullRequest) {
 	keep := make(map[string]struct{}, len(prs))
 	for i := range prs {
-		keep[cacheKey(&prs[i])] = struct{}{}
+		keep[prs[i].ref()] = struct{}{}
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -256,23 +214,20 @@ func (c *Client) pruneCache(prs []PullRequest) {
 	}
 }
 
-// New returns a Client authenticated with the given personal access token,
-// targeting github.com with a fixed HTTPTimeout per request. Jira enrichment
-// is disabled; use NewWithJira to enable it.
+// New returns a Client authenticated with a personal access token, without
+// Jira enrichment.
 func New(token string) *Client {
 	return newClient(token, "", nil)
 }
 
-// NewWithJira returns a Client that also resolves Jira issue status for each
-// PR. Pass a nil jiraClient to disable Jira enrichment (equivalent to New).
+// NewWithJira returns a Client that also resolves each PR's Jira issue status.
 // projectKeys, when given, restricts issue-key extraction to those projects.
 func NewWithJira(token string, jiraClient jira.Lookup, projectKeys ...string) *Client {
 	return newClient(token, "", jiraClient, projectKeys...)
 }
 
-// newClient is the test-friendly constructor. An empty baseURL targets
-// api.github.com; anything else is used verbatim and lets tests point the
-// client at an httptest.Server. A nil jiraClient disables Jira enrichment.
+// newClient lets tests point the client at an httptest.Server; an empty
+// baseURL targets api.github.com.
 func newClient(token, baseURL string, jiraClient jira.Lookup, projectKeys ...string) *Client {
 	httpClient := &http.Client{Timeout: HTTPTimeout}
 	ghClient := github.NewClient(httpClient).WithAuthToken(token)
@@ -289,21 +244,19 @@ func newClient(token, baseURL string, jiraClient jira.Lookup, projectKeys ...str
 	return &Client{gh: ghClient, jira: jiraClient, jiraProjects: projectKeys}
 }
 
-// ErrInvalidToken is returned when GitHub answers 401 to an authenticated
-// request, signalling the PAT is missing, revoked or expired.
+// ErrInvalidToken is returned when GitHub answers 401: the PAT is missing,
+// revoked or expired.
 var ErrInvalidToken = errors.New("invalid or expired GitHub token")
 
-// ErrRateLimited is returned when GitHub rejects a request because the token
-// exhausted its primary quota or tripped the secondary (abuse) rate limit.
-// The wrapped message carries the reset/retry hint when GitHub provides one.
+// ErrRateLimited is returned when the token exhausted its primary quota or
+// tripped the secondary rate limit. The wrapping message carries the
+// reset/retry hint when GitHub provides one.
 var ErrRateLimited = errors.New("GitHub rate limit exceeded")
 
-// wrapAPIError translates a go-github (response, error) pair into the error
-// kiroshi exposes to callers: a 401 becomes ErrInvalidToken and a rate-limit
-// rejection becomes ErrRateLimited, so the CLI can print an actionable
-// message; anything else is wrapped with op as context. Returns nil when err
-// is nil. Centralised here so every new REST call inherits the translations
-// by default.
+// wrapAPIError translates a go-github (response, error) pair into
+// ErrInvalidToken or ErrRateLimited when it matches, and wraps it with op
+// otherwise. Every REST call goes through it so the CLI can always print an
+// actionable message.
 func wrapAPIError(op string, resp *github.Response, err error) error {
 	if err == nil {
 		return nil
@@ -326,8 +279,6 @@ func wrapAPIError(op string, resp *github.Response, err error) error {
 }
 
 // AuthenticatedUser returns the account associated with the client's token.
-// A 401 is translated into ErrInvalidToken so callers can print an actionable
-// message instead of a raw HTTP error.
 func (c *Client) AuthenticatedUser(ctx context.Context) (User, error) {
 	u, resp, err := c.gh.Users.Get(ctx, "")
 	if err != nil {
@@ -336,26 +287,11 @@ func (c *Client) AuthenticatedUser(ctx context.Context) (User, error) {
 	return User{Login: u.GetLogin()}, nil
 }
 
-// SearchPullRequests runs a GitHub issues/search query and returns only the
-// pull requests it resolves to. It follows pagination to completion; the
-// search API caps results at 1000 regardless. Each result is enriched with
-// requested reviewers, review state, head-SHA + diff stats, and CI state
-// (four additional REST calls per PR — list reviewers, list reviews, pull
-// request detail, list check runs), plus an optional fifth Jira issue lookup
-// when the client was built with NewWithJira, and a batched GraphQL pass that
-// counts unresolved review threads (~1 extra request per 20 PRs, degrading to
-// "unknown" on any GraphQL error). Enrichment runs in parallel across PRs
-// with a worker pool of enrichConcurrency; the order of the returned slice
-// matches the search response order regardless. A 401 is translated into
-// ErrInvalidToken.
-//
-// A GitHub enricher failure marks that one PR EnrichPartial instead of
-// failing the scan; only a failed search, ErrInvalidToken or ErrRateLimited
-// abort (see enrichPullRequest).
-//
-// Across rescans the review-state calls are skipped for PRs whose updated_at
-// hasn't moved (see cachedEnrichment); detail, check runs and Jira stay live.
-// Cache entries for PRs that dropped out of the results are evicted.
+// SearchPullRequests runs an issues/search query to completion (the API caps
+// it at 1000 results) and enriches every pull request it returns, keeping the
+// search order: up to four REST calls per PR plus an optional Jira lookup (see
+// enrichPullRequest), then one batched GraphQL request per threadsBatchSize
+// PRs for the unresolved threads.
 func (c *Client) SearchPullRequests(ctx context.Context, query string) ([]PullRequest, error) {
 	// The endpoint still defaults to the classic search backend, which silently
 	// drops boolean expressions like `(author:A OR author:B)` and returns zero
@@ -396,21 +332,13 @@ func (c *Client) SearchPullRequests(ctx context.Context, query string) ([]PullRe
 	return out, nil
 }
 
-// enrichPullRequest chains the per-PR enrichers in dependency order: review
-// state and PR detail (head SHA + diff stats + branch/body) before the CI
-// state call which consumes the SHA and the Jira lookup which consumes the
-// branch/body. Extracted so the worker pool in SearchPullRequests has a single
-// closure to call per PR.
+// enrichPullRequest chains the per-PR enrichers in dependency order:
+// enrichDetail publishes the head SHA that enrichCIState needs and the
+// branch/body that enrichJiraStatus needs.
 //
-// GitHub enricher errors degrade per PR instead of failing the scan: the
-// error is swallowed, EnrichPartial is set and the chain moves on, so the PR
-// keeps whatever was enriched before the failure (an enricher whose input is
-// missing — e.g. CI without a head SHA — is already a no-op). The review-state
-// cache can't be poisoned by a partial PR: storeReviewState only runs after
-// both review calls succeed, so the next scan retries live. The two systemic
-// errors are the exception — ErrInvalidToken and ErrRateLimited doom every
-// subsequent call, so they propagate and abort the scan with their
-// actionable messages.
+// An enricher error marks the PR EnrichPartial and the chain moves on, so one
+// odd repo never kills the scan. ErrInvalidToken and ErrRateLimited doom every
+// later call, so they abort the scan instead.
 func (c *Client) enrichPullRequest(ctx context.Context, pr *PullRequest) error {
 	for _, enrich := range []func(context.Context, *PullRequest) error{
 		c.enrichReviewState,
@@ -424,43 +352,34 @@ func (c *Client) enrichPullRequest(ctx context.Context, pr *PullRequest) error {
 			pr.EnrichPartial = true
 		}
 	}
-	return c.enrichJiraStatus(ctx, pr)
+	c.enrichJiraStatus(ctx, pr)
+	return nil
 }
 
 // enrichJiraStatus resolves the Jira issue referenced by the PR's branch,
-// title or body into pr.JiraKey / pr.JiraStatus / pr.JiraCategory. It runs
-// last because it needs pr.HeadRef and pr.Body, both populated by enrichDetail.
-//
-// It is a no-op when Jira is unconfigured (c.jira == nil) or no issue key is
-// present. Unlike the other enrichers it never returns an error: Jira is an
-// optional decoration, so any failure leaves all three fields empty and the
-// row falls back to a muted "no ticket" cell rather than failing the whole
-// GitHub scan. The two failure modes are distinguished, though: a 404
-// (jira.ErrIssueNotFound) means the extracted key never pointed at a real
-// ticket — a false-positive regex match or a deleted issue — which is not a
-// Jira problem, so pr.JiraLookupFailed stays untouched. Any other error
-// (auth, network) is an actual lookup failure and sets pr.JiraLookupFailed so
-// the header can flag Jira health.
-func (c *Client) enrichJiraStatus(ctx context.Context, pr *PullRequest) error {
+// title or body. Jira is an optional decoration, so it never fails the scan. A
+// 404 means the extracted key never pointed at a real ticket (a false-positive
+// match, a deleted issue): that is not a Jira health problem, unlike any other
+// error.
+func (c *Client) enrichJiraStatus(ctx context.Context, pr *PullRequest) {
 	if c.jira == nil {
-		return nil
+		return
 	}
 	key := jira.ExtractKey(c.jiraProjects, pr.HeadRef, pr.Title, pr.Body)
 	if key == "" {
-		return nil
+		return
 	}
 	st, err := c.jira.Issue(ctx, key)
 	if errors.Is(err, jira.ErrIssueNotFound) {
-		return nil // no ticket: leave all Jira fields empty, health untouched.
+		return
 	}
 	if err != nil {
 		pr.JiraLookupFailed = true
-		return nil //nolint:nilerr // Jira is optional: degrade to an empty cell, never fail the scan.
+		return
 	}
 	pr.JiraKey = key
 	pr.JiraStatus = st.Name
 	pr.JiraCategory = string(st.Category)
-	return nil
 }
 
 func pullRequestFromIssue(iss *github.Issue) PullRequest {
@@ -478,12 +397,11 @@ func pullRequestFromIssue(iss *github.Issue) PullRequest {
 	}
 }
 
-// enrichReviewState fetches the pending requested reviewers and the review
-// history of pr, populating pr.RequestedReviewers, pr.Approvals and
-// pr.ChangesRequested in place. Both REST calls are skipped when the cache
-// holds this PR's review state at the same UpdatedAt (see cachedEnrichment).
+// enrichReviewState fills the requested reviewers and the per-reviewer state,
+// from the cache when the PR hasn't moved. It only stores after both calls
+// succeed, so a partial PR is retried live on the next scan.
 func (c *Client) enrichReviewState(ctx context.Context, pr *PullRequest) error {
-	if pr.Owner == "" || pr.Repo == "" || pr.Number == 0 {
+	if !pr.located() {
 		return nil
 	}
 	if c.reviewStateFromCache(pr) {
@@ -492,7 +410,7 @@ func (c *Client) enrichReviewState(ctx context.Context, pr *PullRequest) error {
 
 	reviewers, resp, err := c.gh.PullRequests.ListReviewers(ctx, pr.Owner, pr.Repo, pr.Number, nil)
 	if err != nil {
-		return wrapAPIError(fmt.Sprintf("list requested reviewers for %s/%s#%d", pr.Owner, pr.Repo, pr.Number), resp, err)
+		return wrapAPIError("list requested reviewers for "+pr.ref(), resp, err)
 	}
 	if reviewers != nil {
 		for _, u := range reviewers.Users {
@@ -500,7 +418,7 @@ func (c *Client) enrichReviewState(ctx context.Context, pr *PullRequest) error {
 				pr.RequestedReviewers = append(pr.RequestedReviewers, login)
 			}
 		}
-		sort.Strings(pr.RequestedReviewers)
+		slices.Sort(pr.RequestedReviewers)
 	}
 
 	var reviews []*github.PullRequestReview
@@ -508,7 +426,7 @@ func (c *Client) enrichReviewState(ctx context.Context, pr *PullRequest) error {
 	for {
 		page, rresp, err := c.gh.PullRequests.ListReviews(ctx, pr.Owner, pr.Repo, pr.Number, listOpts)
 		if err != nil {
-			return wrapAPIError(fmt.Sprintf("list reviews for %s/%s#%d", pr.Owner, pr.Repo, pr.Number), rresp, err)
+			return wrapAPIError("list reviews for "+pr.ref(), rresp, err)
 		}
 		reviews = append(reviews, page...)
 		if rresp.NextPage == 0 {
@@ -521,16 +439,13 @@ func (c *Client) enrichReviewState(ctx context.Context, pr *PullRequest) error {
 	return nil
 }
 
-// summarizeReviews collapses a chronological review log into the current state
-// per reviewer, then partitions reviewers (excluding the PR author) by their
-// latest review state. DISMISSED clears any prior state for that reviewer,
-// matching GitHub. A COMMENTED review only sets the state when no decisive
-// review (APPROVED / CHANGES_REQUESTED) has been recorded for that reviewer;
-// once a reviewer has given a decisive answer, a later comment doesn't
-// undo it.
+// summarizeReviews replays the review log to get each reviewer's current
+// state, author excluded. The latest decisive review (APPROVED /
+// CHANGES_REQUESTED) sticks, COMMENTED only counts while there is none, and
+// DISMISSED clears the reviewer, matching GitHub.
 func summarizeReviews(reviews []*github.PullRequestReview, author string) (approvals, changesRequested, commented []string) {
-	sort.SliceStable(reviews, func(i, j int) bool {
-		return reviews[i].GetSubmittedAt().Before(reviews[j].GetSubmittedAt().Time)
+	slices.SortStableFunc(reviews, func(a, b *github.PullRequestReview) int {
+		return a.GetSubmittedAt().Compare(b.GetSubmittedAt().Time)
 	})
 
 	state := map[string]string{}
@@ -566,26 +481,22 @@ func summarizeReviews(reviews []*github.PullRequestReview, author string) (appro
 			commented = append(commented, login)
 		}
 	}
-	sort.Strings(approvals)
-	sort.Strings(changesRequested)
-	sort.Strings(commented)
+	slices.Sort(approvals)
+	slices.Sort(changesRequested)
+	slices.Sort(commented)
 	return
 }
 
-// enrichDetail fetches the per-PR detail (PullRequests.Get) and populates the
-// fields that the issues/search response doesn't carry: head SHA, head/base ref
-// (branches), body, merge state, diff stats (additions/deletions/changed files)
-// and the commit/comment counts. enrichCIState relies on pr.HeadSHA and
-// enrichJiraStatus on pr.HeadRef/pr.Body, so this must run before both. Skipped
-// silently when the PR coordinates are incomplete.
+// enrichDetail fills, from a single PullRequests.Get, every field the search
+// response doesn't carry.
 func (c *Client) enrichDetail(ctx context.Context, pr *PullRequest) error {
-	if pr.Owner == "" || pr.Repo == "" || pr.Number == 0 {
+	if !pr.located() {
 		return nil
 	}
 
 	detail, resp, err := c.gh.PullRequests.Get(ctx, pr.Owner, pr.Repo, pr.Number)
 	if err != nil {
-		return wrapAPIError(fmt.Sprintf("fetch pull request %s/%s#%d", pr.Owner, pr.Repo, pr.Number), resp, err)
+		return wrapAPIError("fetch pull request "+pr.ref(), resp, err)
 	}
 	if detail == nil {
 		return nil
@@ -599,7 +510,6 @@ func (c *Client) enrichDetail(ctx context.Context, pr *PullRequest) error {
 	pr.MergeState = normalizeMergeState(detail.GetMergeableState())
 	pr.Additions = detail.GetAdditions()
 	pr.Deletions = detail.GetDeletions()
-	// All free from the Get response above — no extra API call.
 	pr.ChangedFiles = detail.GetChangedFiles()
 	pr.Commits = detail.GetCommits()
 	pr.Comments = detail.GetComments()
@@ -607,9 +517,7 @@ func (c *Client) enrichDetail(ctx context.Context, pr *PullRequest) error {
 	return nil
 }
 
-// enrichCIState aggregates the check runs reported against pr.HeadSHA into
-// pr.CIState. It is a no-op when HeadSHA is empty — enrichDetail must run
-// first to populate it.
+// enrichCIState aggregates the check runs reported against pr.HeadSHA.
 func (c *Client) enrichCIState(ctx context.Context, pr *PullRequest) error {
 	if pr.Owner == "" || pr.Repo == "" || pr.HeadSHA == "" {
 		return nil
@@ -668,14 +576,11 @@ func latestCheckRuns(runs []*github.CheckRun) []*github.CheckRun {
 	return out
 }
 
-// aggregateCheckRuns collapses a list of check runs into a single CIState
-// using GitHub's own merge-gate precedence: any failing run wins; otherwise
-// any still-running run yields pending; otherwise success. An empty list is
-// CIStateNone — distinct from success, so the UI can render "no CI" without
-// claiming a green build. "neutral" and "skipped" conclusions count as
-// success (GitHub doesn't block merge on them); "cancelled", "timed_out",
-// "action_required" and "stale" count as failure (they all require human
-// intervention before merge).
+// aggregateCheckRuns collapses check runs with GitHub's merge-gate precedence:
+// failure > pending > success > none. No runs is CIStateNone, not success: a
+// repo without CI must not render a green build. cancelled, timed_out,
+// action_required and stale all need a human before merge, so they count as
+// failure; neutral and skipped don't block merge, so they count as success.
 func aggregateCheckRuns(runs []*github.CheckRun) CIState {
 	if len(runs) == 0 {
 		return CIStateNone

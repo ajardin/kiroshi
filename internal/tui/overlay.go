@@ -11,24 +11,17 @@ import (
 
 // --- Loading splash ------------------------------------------------------
 
-// loadingTarget is the brand word the decrypt animation resolves into.
 const loadingTarget = "KIROSHI"
 
-// decryptFramesPerChar is how many spinner frames pass before the next
-// character of loadingTarget locks in. spinInterval is 120ms, so each lock is
-// ~240ms and the whole word resolves in roughly 1.7s; past that the title holds
-// while the subtitle keeps blinking (so a slow load doesn't run out of animation).
+// decryptFramesPerChar locks a character every ~240ms, so the word resolves in
+// ~1.7s; past that the subtitle keeps blinking for a slow load.
 const decryptFramesPerChar = 2
 
-// decryptNoise is the 1-cell ASCII pool the unresolved characters cycle
-// through. Glyphs stay ASCII so their cell width never drifts — the same
-// width-stability constraint that keeps the help rows ASCII.
+// decryptNoise stays ASCII so the cell width never drifts.
 const decryptNoise = `ABCDEFGHJKLMNPQRSTUVWXYZ0123456789#%@&!?/\<>$*`
 
-// loadingView renders the full-screen cyberpunk decrypt splash shown while the
-// initial scan runs. The brand word resolves left-to-right out of scrambled
-// glyphs; unresolved positions churn deterministically off spinFrame (no
-// math/rand, so View stays pure and testable).
+// loadingView renders the decrypt splash shown during the first scan. The
+// noise derives from spinFrame rather than math/rand, so View stays pure.
 func (m Model) loadingView() string {
 	revealed := min(len(loadingTarget), m.spinFrame/decryptFramesPerChar)
 
@@ -40,7 +33,6 @@ func (m Model) loadingView() string {
 			word.WriteString(real.Render(string(loadingTarget[i])))
 			continue
 		}
-		// Deterministic per (frame, position) so each cell churns independently.
 		g := decryptNoise[(m.spinFrame*7+i*13)%len(decryptNoise)]
 		word.WriteString(noise.Render(string(g)))
 	}
@@ -50,8 +42,6 @@ func (m Model) loadingView() string {
 
 	prompt := lipgloss.NewStyle().Foreground(colCyan).Render("> ")
 	label := lipgloss.NewStyle().Foreground(colDim).Render("SYNCING OPTICS… ")
-	// Block cursor blinks on frame parity (both glyphs are one cell, so the
-	// centered subtitle doesn't jitter as it toggles).
 	cursor := " "
 	if m.spinFrame%2 == 0 {
 		cursor = "█"
@@ -64,17 +54,10 @@ func (m Model) loadingView() string {
 
 // --- Help overlay --------------------------------------------------------
 
-// helpView renders the keybindings overlay as a centered modal box.
-// The `?` key toggles it; any key dismisses it. It replaces the dashboard for
-// the duration rather than compositing over it — lipgloss v1 can't cleanly
-// back-fill a box on top of already-rendered content (the same constraint that
-// shapes st() in renderRow). The unstyled spaces lipgloss.Place fills the
-// screen with read as a blank backdrop on a dark terminal.
+// helpView renders the keybindings overlay.
 func (m Model) helpView() string {
-	// Keys stay ASCII on purpose: arrow glyphs (↑/↓) are ambiguous-width, so
-	// lipgloss and the terminal disagree on their cell count and the modal
-	// box's right border would drift. Arrow / Home / End all work too; the
-	// words carry that without the layout risk.
+	// Keys stay ASCII: lipgloss and the terminal disagree on the width of
+	// arrow glyphs, which would drift the box's right border.
 	type binding struct{ keys, desc string }
 	bindings := []binding{
 		{"up / down", "move selection"},
@@ -88,7 +71,6 @@ func (m Model) helpView() string {
 		{"s", "cycle sort (updated / oldest / newest)"},
 		{"a", "cycle approval filter"},
 	}
-	// Like the footer, only advertise `p` when there is something to cycle.
 	if len(m.profiles) > 1 {
 		bindings = append(bindings, binding{"p", "cycle search profile"})
 	}
@@ -120,10 +102,9 @@ func (m Model) helpView() string {
 	return m.modalBox(content)
 }
 
-// modalBox wraps content in the shared overlay chrome — a cyan rounded border
-// centered on the screen — and is the single home for it. Both helpView and
-// detailView render through it; the overlay replaces the dashboard rather than
-// compositing over it (see helpView for the lipgloss v1 back-fill constraint).
+// modalBox centers content in the overlays' shared border. An overlay
+// replaces the dashboard rather than compositing over it: lipgloss v1 can't
+// back-fill a box over already-rendered content.
 func (m Model) modalBox(content string) string {
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -135,14 +116,8 @@ func (m Model) modalBox(content string) string {
 
 // --- Detail overlay ------------------------------------------------------
 
-// detailView renders the selected PR's full detail as a centered modal box,
-// following helpView's pattern (it replaces the dashboard rather than
-// compositing — see helpView for the lipgloss v1 back-fill constraint). It is
-// purely presentational: every field shown is already enriched on the
-// PullRequest, so opening it issues no GitHub calls. The `d` key arms it only
-// when a PR is selected and Update drops the overlay when a rescan empties
-// the list; the fallback below is defense in depth for any future mutation
-// path that forgets that invariant.
+// detailView renders the selected PR in full. Every field is already
+// enriched, so it issues no GitHub calls.
 func (m Model) detailView() string {
 	visible := m.visiblePRs()
 	if len(visible) == 0 {
@@ -154,24 +129,19 @@ func (m Model) detailView() string {
 	}
 	pr := visible[m.cursor]
 
-	// Inner content width: wide enough to read a PR body, capped so the box
-	// stays centered and never overflows narrow terminals. The Padding(1,3) and
-	// border eat 8 columns, so leave a margin beyond that.
+	// The border and padding eat 8 columns; leave a margin beyond that.
 	bodyW := min(max(m.width-12, 20), 76)
 
 	muted := lipgloss.NewStyle().Foreground(colMuted)
 	dot := muted.Render(" · ")
 
-	// Title block: "owner/repo #number" in the bucket accent, then the PR title.
 	accent := m.classify(pr).Color()
 	repoLine := lipgloss.NewStyle().Foreground(accent).Bold(true).
 		Render(fmt.Sprintf("%s/%s #%d", pr.Owner, pr.Repo, pr.Number))
 	titleLine := lipgloss.NewStyle().Foreground(colBright).Bold(true).
 		Render(truncate(pr.Title, bodyW))
 
-	// Branch line: "head -> base". ASCII "->" (not "→") — an ambiguous-width
-	// glyph would drift the bordered box's right edge (same constraint as the
-	// glyph-free reviewers block). Shown only when the head ref is known.
+	// ASCII "->": an arrow glyph would drift the box's right border.
 	var branchLine string
 	if pr.HeadRef != "" {
 		branch := pr.HeadRef
@@ -181,7 +151,7 @@ func (m Model) detailView() string {
 		branchLine = lipgloss.NewStyle().Foreground(colDim).Render(truncate(branch, bodyW))
 	}
 
-	// Meta line: reuse the row fragments, ` · `-joined, present items only.
+	// The row fragments, as a flowing line rather than fixed columns.
 	styler := func(fg lipgloss.Color, bold bool) lipgloss.Style {
 		s := lipgloss.NewStyle().Foreground(fg)
 		if bold {
@@ -193,8 +163,6 @@ func (m Model) detailView() string {
 		lipgloss.NewStyle().Foreground(colDim).Render("@" + pr.Author),
 		renderDiff(pr.Additions, pr.Deletions, 0, styler),
 	}
-	// Neutral activity counters (no new accent), omitted when zero. The comment
-	// count sums conversation + inline review comments.
 	if pr.ChangedFiles > 0 {
 		meta = append(meta, lipgloss.NewStyle().Foreground(colDim).Render(countNoun(pr.ChangedFiles, "file")))
 	}
@@ -217,9 +185,7 @@ func (m Model) detailView() string {
 	meta = append(meta, lipgloss.NewStyle().Foreground(ageColor(age)).Render(humanAgo(age)))
 	metaLine := strings.Join(meta, dot)
 
-	// Jira line: pulled out of the packed meta line onto its own labelled row
-	// (inline label + value, like the reviewers block) so the key + status read
-	// at a glance. Present only when a key resolved.
+	// Jira gets its own row so the key and status read at a glance.
 	var jiraLine string
 	if pr.JiraKey != "" {
 		label := lipgloss.NewStyle().Foreground(colDim).Bold(true).Render("JIRA")
@@ -228,10 +194,8 @@ func (m Model) detailView() string {
 		jiraLine = label + "   " + val
 	}
 
-	// Reviewers block.
 	reviewers := renderReviewers(pr, m.login)
 
-	// Body block: wrapped to bodyW, truncated by height with a "more" indicator.
 	bodyHeader := lipgloss.NewStyle().Foreground(colDim).Bold(true).Render("DESCRIPTION")
 	var bodyBlock string
 	if strings.TrimSpace(pr.Body) == "" {
@@ -239,18 +203,15 @@ func (m Model) detailView() string {
 	} else {
 		wrapped := lipgloss.NewStyle().Width(bodyW).Render(strings.ReplaceAll(pr.Body, "\r\n", "\n"))
 		lines := strings.Split(wrapped, "\n")
-		// Budget: reserve rows for border (2), padding (2), title (2), meta (1),
-		// reviewers, headers and hint, then cap hard at maxBodyLines so the
-		// description never dominates the panel on tall terminals — the
-		// indicator covers the rest. The floor keeps a few lines on short
-		// terminals.
+		// Reserve the other rows, keep a floor on short terminals, and cap it
+		// so the description never dominates a tall one.
 		const maxBodyLines = 10
 		reserve := 14
 		if branchLine != "" {
-			reserve++ // the branch line is one extra fixed row
+			reserve++
 		}
 		if jiraLine != "" {
-			reserve += 2 // the Jira line plus its blank spacer row
+			reserve += 2 // the line and its spacer
 		}
 		budget := min(max(m.height-reserve-strings.Count(reviewers, "\n"), 3), maxBodyLines)
 		if len(lines) > budget {
@@ -275,14 +236,9 @@ func (m Model) detailView() string {
 	return m.modalBox(content)
 }
 
-// renderReviewers formats a PR's four reviewer lists into labelled, aligned
-// rows for the detail overlay. Empty lists are dropped; when every list is
-// empty it returns a single muted "no reviewers yet" line. The viewer's own
-// login is bolded so they can spot themselves. State is carried by the label
-// word and its palette color (approved = green, changes = red, commented /
-// still-requested = dim) — deliberately glyph-free: this block lives inside a
-// bordered box, and ambiguous-width glyphs would drift the right border (the
-// same constraint that keeps helpView's rows ASCII; see CLAUDE.md).
+// renderReviewers lists the non-empty reviewer groups with the viewer in
+// bold. The state is carried by colored words, not glyphs, which would drift
+// the box's right border.
 func renderReviewers(pr gh.PullRequest, viewer string) string {
 	type group struct {
 		label  string
